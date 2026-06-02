@@ -64,6 +64,7 @@ from .deadcode_elimination import deadcode_elimination
 from .dedup_constants import dedup_and_promote_constants
 from .chunk_large_tensors import chunk_large_tensors
 from .coarse_tile import coarse_tile
+from .dump_fx_graph import dump_fx_graph
 
 
 logger = get_inductor_logger("passes")
@@ -156,6 +157,7 @@ class CustomPostPasses(CustomGraphPass):
         convert_constant_with_graph_node,
         mm_to_bmm_pass.apply,
         bmm_unflatten_pass.apply,
+        dump_fx_graph,
     ]
 
     def __call__(self, graph: torch.fx.graph.Graph) -> None:
