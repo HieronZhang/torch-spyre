@@ -469,6 +469,134 @@ must outlive the in-place LX window, or the greedy first-fit allocator (`plan_so
 didn't retain it. Keeping `exp` in LX is a candidate optimization to probe once we
 instrument the allocator.
 
+### 6.2 Reading a LoopLevel IR dump entry (ground truth)
+
+Captured with `SPYRE_DUMP_IR=1 LX_PLANNING=1` (dump pass in `dump_loop_ir.py`, wired
+into `CustomPreSchedulingPasses` at `passes.py`). Saved at `haoyang_logs/loop_ir_dump.log`.
+The dump prints the IR twice — BEFORE any pre-scheduling pass and AFTER all 15 — so the
+two can be diffed.
+
+**What the diff shows (softmax).** The `inner_fn` (the actual scalar math) is **identical**
+before and after; the middle-end only *annotates*. Three things appear in the AFTER record:
+1. `FixedLayout` → `FixedTiledLayout` (a `device_layout` / sticks is attached).
+2. `op_it_space_splits` (the work-division plan across 32 cores).
+3. `allocation={'lx': 0}` on the `sub` op only (LX scratchpad placement).
+HBM `pool` allocations are NOT here — they are assigned later by `memory_planning`
+(post-fusion), so at LoopLevel you only see `lx`.
+
+**Two naming systems.** The header `opN:` is the *operation* name (`get_operation_name()`);
+the `inner_fn` bodies reference *buffer* names `bufN`. Operation `op_i` produces buffer
+`buf_i` (1:1, since Spyre realizes every op). So `op1` (sub) reads `buf0` (amax's output)
+and writes `buf1`.
+
+**Anatomy of a pointwise entry — `op1` (sub), AFTER:**
+
+```
+op1: ComputedBuffer                                       # realized (materialized) buffer
+  layout=FixedTiledLayout('spyre:0', torch.float16,
+      size=[512,1024], stride=[1024,1],                   # HOST/logical view (row-major)
+      device_layout=SpyreTensorLayout(                    # PHYSICAL tiled view (added by passes)
+          device_size=[16,512,64], stride_map=[64,1024,1],
+          device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}                                    # memory home (absent => default HBM)
+  op_it_space_splits={d0:32, d1:1}                        # work-division: axis d0 over 32 cores
+  Pointwise('spyre', torch.float16,                       # op.data: elementwise node
+    def inner_fn(index):
+        i0, i1 = index                                    # output iterators, OUTERMOST-FIRST
+        tmp0 = ops.load(arg0_1, i1 + 1024*i0)             # = arg0_1[i0,i1] (flat row-major index)
+        tmp1 = ops.load(buf0, i1)                         # = amax[0,i1]; only i1 => BROADCAST over i0
+        tmp2 = tmp0 - tmp1
+        return tmp2,
+    ranges=[512,1024],                                    # output iteration space
+    origin_node=sub)                                      # provenance to the ATen FX node
+```
+
+**Loop iterators (`index`).** `index` is the tuple of output loop iterators, listed
+**outermost-first** to match `ranges`. For `ranges=[512,1024]`, `index=(i0,i1)`:
+`i0` ∈ [0,512) is the **outer** loop (the rows), `i1` ∈ [0,1024) is the **inner** loop (the
+contiguous columns). Confirm it from the flat index `i1 + 1024*i0`: the outer iterator
+carries the large stride (1024), the inner one is contiguous (stride 1). Which index
+variables appear in a load encodes broadcasting — `ops.load(buf0, i1)` uses only `i1`, so
+amax's single row is reused for every `i0`. (This is the *logical* iteration space; Spyre
+tiles and parallelizes it rather than running literal nested scalar loops.)
+
+**Anatomy of a reduction entry — `op0` (amax), AFTER:**
+
+```
+op0: ComputedBuffer
+  layout=FixedTiledLayout(... size=[1,1024], device_size=[16,1,64], stride_map=[64,-1,1] ...)
+  op_it_space_splits={d0:16, d1:2}
+  Reduction('spyre', torch.float16,
+    def inner_fn(index, rindex):                          # NOTE second arg: rindex
+        _, i1 = index                                     # output is [1,1024]; dim0=1 discarded
+        r0_0 = rindex                                     # reduction coordinate (the 512 rows)
+        tmp0 = ops.load(arg0_1, i1 + 1024*r0_0)           # = arg0_1[r0_0, i1]
+        return tmp0,
+    ranges=[1,1024],                                      # OUTPUT axes (surviving dims)
+    reduction_ranges=[512],                               # axes being collapsed
+    reduction_type=max,                                   # combine op
+    origin_node=amax)
+```
+
+A reduction has **two kinds of axes**:
+- **output axes** (dims that survive) — indexed by `index`, listed in `ranges`;
+- **reduction axes** (dims collapsed away) — indexed by `rindex`, listed in `reduction_ranges`.
+
+`reduction_ranges=[512]` means "for each output element, sweep and combine 512 values."
+`rindex` (`r0_0`) is the loop variable walking those 512 values; the `inner_fn` only *loads*
+`arg0_1[r0_0, i1]`, and `reduction_type=max` supplies the combine. Conceptually:
+
+```
+for i1 in range(1024):          # output coordinate
+    acc = -inf
+    for r0_0 in range(512):     # rindex: the 512 values being combined
+        acc = max(acc, x[r0_0, i1])
+    out[0, i1] = acc
+```
+
+**Work-division split (`op_it_space_splits`) — two ways to use cores for a reduction.**
+Think "column-maxes of a 512×1024 matrix across 32 cores":
+- **Split the OUTPUT axis (1024 columns) — no merge.** Give each core a slab of columns; it
+  computes the *full* max-over-512-rows for its columns alone. Independent, no coordination.
+- **Split the REDUCTION axis (512 rows) — needs a merge.** Give one column to 2 cores: A maxes
+  rows 0–255, B maxes rows 256–511; each yields a **partial** max, then a final step does
+  `max(partialA, partialB)`. Splitting a reduced axis forces this combine ("partial reductions
+  then combined").
+
+`{d0:16, d1:2}` = 16 (columns) × 2 (rows) = **32 cores**. Why not split the columns 32 ways?
+The 1024 column axis = `16 sticks × 64`, and work-division won't cut *inside* a stick (atomic
+unit), so the column split tops out at 16; the leftover factor of 2 goes to the reduction axis.
+Contrast pointwise `sub` `{d0:32, d1:1}`: both dims are output dims, so it simply splits the
+512-row dim 32 ways (16 rows/core, full sticks intact) — no reduction, no merge. (Passes:
+`span_reduction` sets the minimum reduction split needed to fit per-core memory;
+`work_distribution` then fills remaining cores across output dims and at most one reduction dim.)
+
+**`SpyreTensorLayout` fields.** `device_size` = physical dims, **stick axis last**
+(`[16,512,64]`: the 1024 contiguous host dim becomes 16 sticks × 64 elems/stick; device dims
+= host dims + 1). `stride_map` = device-dim → **host stride** (`[64,1024,1]`); the **`-1`**
+sentinel (in reduced tensors, `[64,-1,1]`) marks the reduced/broadcast axis. `device_dtype`
+fixes `elems_per_stick` (64 at fp16).
+
+**Field glossary.**
+
+| Field | Meaning |
+|---|---|
+| `opN:` header / `bufN` in body | operation name / the buffer it produces (1:1) |
+| `ComputedBuffer` | a realized (materialized) buffer |
+| `layout` host `size`/`stride` | logical row-major view PyTorch sees |
+| `device_layout` (`SpyreTensorLayout`) | physical tiled form (sticks) — added by layout passes |
+| `device_size` | physical dims, stick axis last; host_dims + 1 |
+| `stride_map` | device-dim → host-stride; `-1` = reduced/broadcast axis |
+| `allocation` | `lx`=scratchpad, `pool`=HBM arena (added later), absent=default HBM |
+| `op_it_space_splits` | per-axis core counts; product ≈ cores used — added by work-division |
+| `Pointwise` / `Reduction` | the compute node (`op.data`) |
+| `inner_fn(index[, rindex])` | symbolic closure emitting scalar compute via `ops.*` |
+| `index` / `rindex` | output iterators (outermost-first) / reduction iterator |
+| `ops.load(buf, expr)` | scalar load; `expr` = flat index; index vars present ⇒ broadcast pattern |
+| `ranges` / `reduction_ranges` | output iteration space / reduced axis sizes |
+| `reduction_type` | combine op for a reduction (`max`, `sum`, …) |
+| `origin_node` / `origins` | provenance back to the ATen FX node(s) |
+
 ---
 
 ## 7. Where to add an instrumentation / print pass
