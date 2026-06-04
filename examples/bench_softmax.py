@@ -32,6 +32,9 @@ from torch_spyre.execution.bench import measure_latency, net_latency_us
 DEVICE = torch.device("spyre")
 RUNS = int(os.environ.get("BENCH_RUNS", "30"))
 WARMUP = int(os.environ.get("BENCH_WARMUP", "5"))
+# inner: launches per timed sample, synced once -- amortizes the ~ms .cpu() floor
+# so the per-launch device cost can surface. Raise it if the spread stays large.
+INNER = int(os.environ.get("BENCH_INNER", "50"))
 ROWS = int(os.environ.get("BENCH_ROWS", "512"))
 COLS = int(os.environ.get("BENCH_COLS", "1024"))
 
@@ -43,14 +46,23 @@ compiled_sm = torch.compile(lambda a: torch.softmax(a, dim=0))
 compiled_id = torch.compile(lambda a: a + 0.0)
 
 softmax = measure_latency(
-    lambda: compiled_sm(x), runs=RUNS, warmup=WARMUP, label=f"softmax[{ROWS}x{COLS}]"
+    lambda: compiled_sm(x),
+    runs=RUNS,
+    warmup=WARMUP,
+    inner=INNER,
+    label=f"softmax[{ROWS}x{COLS}]",
 )
 baseline = measure_latency(
-    lambda: compiled_id(x), runs=RUNS, warmup=WARMUP, label=f"identity[{ROWS}x{COLS}]"
+    lambda: compiled_id(x),
+    runs=RUNS,
+    warmup=WARMUP,
+    inner=INNER,
+    label=f"identity[{ROWS}x{COLS}]",
 )
 
 print(softmax)
 print(baseline)
 print(
-    f"net softmax compute (min - baseline_min): {net_latency_us(softmax, baseline):.3f} us"
+    f"net softmax compute (min - baseline_min): "
+    f"{net_latency_us(softmax, baseline):.3f} us"
 )

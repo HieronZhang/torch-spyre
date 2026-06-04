@@ -53,11 +53,12 @@ def _default_sync(out) -> None:
 class LatencyStats:
     """Latency samples (nanoseconds) and deterministic-friendly summaries."""
 
-    samples_ns: list[int]
+    samples_ns: list[float]
     label: str = ""
+    inner: int = 1
 
     @property
-    def min_ns(self) -> int:
+    def min_ns(self) -> float:
         return min(self.samples_ns)
 
     @property
@@ -65,7 +66,7 @@ class LatencyStats:
         return statistics.median(self.samples_ns)
 
     @property
-    def max_ns(self) -> int:
+    def max_ns(self) -> float:
         return max(self.samples_ns)
 
     @property
@@ -77,6 +78,7 @@ class LatencyStats:
         return {
             "label": self.label,
             "runs": len(self.samples_ns),
+            "inner": self.inner,
             "min_us": self.min_ns / 1000.0,
             "median_us": self.median_ns / 1000.0,
             "max_us": self.max_ns / 1000.0,
@@ -86,11 +88,12 @@ class LatencyStats:
     def __str__(self) -> str:
         s = self.summary()
         verdict = "deterministic" if self.spread < 0.05 else "NOISY (host jitter?)"
+        amortized = "" if self.inner == 1 else f" inner={self.inner}"
         return (
             f"{s['label'] or 'latency'}: "
             f"min={s['min_us']:.3f}us median={s['median_us']:.3f}us "
             f"max={s['max_us']:.3f}us  spread={s['spread'] * 100:.1f}%  "
-            f"[{verdict}]  (n={s['runs']})"
+            f"[{verdict}]  (n={s['runs']}{amortized})"
         )
 
 
@@ -99,6 +102,7 @@ def measure_latency(
     runs: int = 30,
     warmup: int = 3,
     sync=_default_sync,
+    inner: int = 1,
     label: str = "",
 ) -> LatencyStats:
     """Time a zero-arg workload ``fn`` end-to-end, min-of-N with a forced sync.
@@ -106,24 +110,41 @@ def measure_latency(
     Args:
         fn: zero-arg callable that runs the workload and returns its output
             (a tensor or sequence of tensors, used for the default sync).
-        runs: number of timed iterations (the reported latency is their min).
+        runs: number of timed samples (the reported latency is their min).
         warmup: untimed iterations first (absorbs compile + first-launch cost).
         sync: callable applied to ``fn``'s return value to force device
             completion before stopping the clock. Default copies tensors to host.
+        inner: number of ``fn`` launches per timed sample, with a SINGLE sync at
+            the end; the reported per-sample time is ``total / inner``. Because
+            device launch is asynchronous and the synchronizing ``.cpu()`` costs
+            ~ms, a single launch is sync-dominated. Firing ``inner`` launches
+            back-to-back and syncing once amortizes that floor so the per-launch
+            device cost surfaces. Use a large value (e.g. 50-200) when a single
+            launch is dominated by the sync.
         label: name for the report line.
 
     Returns:
-        LatencyStats over ``runs`` samples.
+        LatencyStats over ``runs`` samples (each is a per-launch time).
     """
+
+    def _burst() -> object:
+        out = None
+        for _ in range(inner):
+            out = fn()
+        sync(out)
+        return out
+
     for _ in range(warmup):
-        sync(fn())
-    samples_ns: list[int] = []
+        _burst()
+    samples_ns: list[float] = []
     for _ in range(runs):
         start = time.perf_counter_ns()
-        out = fn()
+        out = None
+        for _ in range(inner):
+            out = fn()
         sync(out)
-        samples_ns.append(time.perf_counter_ns() - start)
-    return LatencyStats(samples_ns, label=label)
+        samples_ns.append((time.perf_counter_ns() - start) / inner)
+    return LatencyStats(samples_ns, label=label, inner=inner)
 
 
 def net_latency_us(kernel: LatencyStats, baseline: LatencyStats) -> float:
