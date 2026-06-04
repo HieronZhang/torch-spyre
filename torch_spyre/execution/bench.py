@@ -99,8 +99,8 @@ class LatencyStats:
 
 def measure_latency(
     fn,
-    runs: int = 30,
-    warmup: int = 3,
+    runs: int = 50,
+    warmup: int = 5,
     sync=_default_sync,
     inner: int = 1,
     label: str = "",

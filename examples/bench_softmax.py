@@ -30,13 +30,16 @@ import torch
 from torch_spyre.execution.bench import measure_latency, net_latency_us
 
 DEVICE = torch.device("spyre")
-RUNS = int(os.environ.get("BENCH_RUNS", "30"))
-WARMUP = int(os.environ.get("BENCH_WARMUP", "5"))
+RUNS = int(os.environ.get("BENCH_RUNS", "100"))
+WARMUP = int(os.environ.get("BENCH_WARMUP", "3"))
 # inner: launches per timed sample, synced once -- amortizes the ~ms .cpu() floor
-# so the per-launch device cost can surface. Raise it if the spread stays large.
-INNER = int(os.environ.get("BENCH_INNER", "50"))
-ROWS = int(os.environ.get("BENCH_ROWS", "512"))
-COLS = int(os.environ.get("BENCH_COLS", "1024"))
+# so the per-launch device cost can surface. 400 was where softmax converged to a
+# deterministic (<3% spread) per-call min on hardware; raise it if spread is large.
+INNER = int(os.environ.get("BENCH_INNER", "400"))
+# Default to a larger softmax so device compute is less dominated by the ~70us
+# host-per-call floor. Scale up further (e.g. 8192) to push toward compute-bound.
+ROWS = int(os.environ.get("BENCH_ROWS", "4096"))
+COLS = int(os.environ.get("BENCH_COLS", "4096"))
 
 torch.manual_seed(0xAFFE)
 x = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
