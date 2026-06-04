@@ -65,6 +65,7 @@ from .dedup_constants import dedup_and_promote_constants
 from .chunk_large_tensors import chunk_large_tensors
 from .coarse_tile import coarse_tile
 from .dump_fx_graph import dump_fx_graph
+from .dump_loop_ir import dump_loop_ir
 
 
 logger = get_inductor_logger("passes")
@@ -248,6 +249,7 @@ class CustomPreSchedulingPasses(CustomGraphPass):
 
         if logger.isEnabledFor(logging.INFO):
             logger.info("BEFORE PRE-SCHEDULING\n%s", _format_operations(operations))
+        dump_loop_ir(operations, "LoopLevel IR - BEFORE pre-scheduling passes")
 
         deadcode_elimination(operations)
         propagate_spyre_tensor_layouts(operations)
@@ -280,6 +282,7 @@ class CustomPreSchedulingPasses(CustomGraphPass):
 
         if logger.isEnabledFor(logging.INFO):
             logger.info("AFTER PRE-SCHEDULING\n%s", _format_operations(operations))
+        dump_loop_ir(operations, "LoopLevel IR - AFTER pre-scheduling passes")
 
     def uuid(self) -> Optional[Any]:
         files = [

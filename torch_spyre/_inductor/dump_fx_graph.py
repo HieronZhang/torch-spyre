@@ -14,44 +14,14 @@
 
 """Opt-in dumping of the ATen FX graph for inspecting the Spyre pipeline.
 
-Everything here is a no-op unless the environment variable ``SPYRE_DUMP_IR``
-is set to a truthy value (``1``, ``true``, ``yes`` or ``on``), so this module
-is safe to leave wired into the pass pipeline permanently.
-
-Output goes to stderr by default, or is appended to the file named by
-``SPYRE_DUMP_IR_FILE`` when that variable is set.
+A no-op unless ``SPYRE_DUMP_IR`` is set; see :mod:`dump_common` for the sink
+and environment-variable contract.
 """
-
-import os
-import sys
 
 import torch
 import torch.fx
 
-_TRUTHY = {"1", "true", "yes", "on"}
-
-
-def dump_enabled() -> bool:
-    """Return True when SPYRE_DUMP_IR requests dumping."""
-    return os.environ.get("SPYRE_DUMP_IR", "").strip().lower() in _TRUTHY
-
-
-def _emit(text: str) -> None:
-    """Write one dump record to the configured sink (file or stderr)."""
-    dest = os.environ.get("SPYRE_DUMP_IR_FILE")
-    if dest:
-        with open(dest, "a", encoding="utf-8") as f:
-            f.write(text)
-            f.write("\n")
-    else:
-        sys.stderr.write(text)
-        sys.stderr.write("\n")
-        sys.stderr.flush()
-
-
-def _banner(title: str) -> str:
-    bar = "=" * 78
-    return f"{bar}\n==== {title}\n{bar}"
+from .dump_common import banner, dump_enabled, emit
 
 
 def _format_fx_graph(graph: torch.fx.Graph) -> str:
@@ -82,6 +52,6 @@ def dump_fx_graph(
         return
     try:
         body = _format_fx_graph(graph)
-        _emit(f"{_banner(label)}\n{body}\n[{len(graph.nodes)} nodes]\n")
+        emit(f"{banner(label)}\n{body}\n[{len(graph.nodes)} nodes]\n")
     except Exception as exc:  # noqa: BLE001 - instrumentation must not raise
-        _emit(f"[SPYRE_DUMP_IR] failed to dump FX graph: {exc!r}")
+        emit(f"[SPYRE_DUMP_IR] failed to dump FX graph: {exc!r}")
