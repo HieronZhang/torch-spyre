@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import torch
 from torch_spyre._C import launch_kernel, prepare_kernel, launch_jobplan
 from torch_spyre._inductor.logging_utils import get_inductor_logger
 from torch_spyre.execution.profiling import kernel_timer
