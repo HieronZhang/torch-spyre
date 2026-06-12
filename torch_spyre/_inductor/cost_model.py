@@ -19,24 +19,25 @@ LoopLevel IR to guide higher-level optimization. Deliberately NOT a simulator.
 
 Model (per fused bundle / single-op kernel):
 
-    T = fill + hbm_bytes / BW_HBM + lx_bytes / BW_LX
+    T = fill + hbm_bytes / BW_HBM        (LX-resident traffic treated as ~free)
 
-- ``fill`` is the one-time pipeline-fill latency (the fixed term we measured,
-  ~15 us). One per kernel/bundle, not per op.
-- ``BW_HBM`` / ``BW_LX`` are effective *aggregate* bandwidths (GB/s == bytes/ns).
+- ``fill`` is the fixed per-kernel cost (~20 us): pipeline fill/drain + device
+  setup + ~7 us host dispatch/sync residue. One per kernel/bundle, not per op.
+- ``BW_HBM`` is the effective *aggregate* HBM bandwidth (GB/s == bytes/ns).
   Using a single aggregate BW is the "shared HBM" assumption; the SENCORES
   sweep verifies whether core count changes it (add a per-core factor only if a
   benchmark shows the simple model misranks).
 - memory traffic counts each tensor-arg's bytes once, attributed to HBM or LX by
-  its allocation (LX-placed intermediates don't touch HBM). Broadcast inputs are
-  flagged; whether they re-fetch or cache is a measured unknown (``broadcast`` in
+  its allocation. LX-placed tensors don't touch HBM, and their LX traffic is treated
+  as ~free (the measured per-pass LX cost is below run-to-run noise). Broadcast inputs
+  are flagged; whether they re-fetch or cache is a measured unknown (``broadcast`` in
   :class:`ArgTraffic`) and defaults to the conservative full count.
 
 FIRST ROUND: pointwise ops only. Reductions are flagged (``is_reduction``) but
 their cross-core combine cost is not modeled yet.
 
-Parameters live in :class:`CostParams` and are fit from device measurements
-(``examples/bench_*``). Defaults are rough placeholders from early softmax runs.
+Parameters live in :class:`CostParams`, calibrated from device measurements
+(``examples/run_cost_model_plan.sh``).
 """
 
 import dataclasses
@@ -76,25 +77,30 @@ class CostParams:
     """Fittable parameters. BW in GB/s (numerically == bytes/ns).
 
     Fitted from examples/run_cost_model_plan.sh on the run machine (fp16):
-    - fill  ~20 us       (rung 1 intercept)
+    - fill  ~20 us       (rung 1 intercept; op-independent)
     - BW_HBM ~111 GB/s   (rung 1 slope; 2-stream r/w, >=2 cores, shared & saturated)
-    - BW_LX  ~3200 GB/s  (rung 4 chain-depth slope; ~29x HBM, noisy)
+    LX traffic is treated as ~FREE (no BW_LX term): the rung-4 chain showed the
+    per-op LX cost (~1 us) sits below the run-to-run measurement noise (~5 us), so a
+    precise BW_LX can't be resolved and LX-resident tensors barely affect latency.
+    Qualitatively LX is ~29x HBM; quantitatively we drop the term.
     Verified: arithmetic-free for pointwise (rung 2); HBM BW shared, core-independent
-    above 2 cores (rung 5). Known gap: 2-input ops run ~15% over the linear traffic
-    count (effective BW degrades with stream count) -- refine later.
+    above 2 cores (rung 5). Known gap: 2-input ops run ~15-20% over the linear traffic
+    count (3-stream BW ~80 < 2-stream ~111) -- a stream-count-aware BW, refine later.
     """
 
     fill_ns: float = 20_000.0
     bw_hbm_gbps: float = 111.0
-    bw_lx_gbps: float = 3200.0
 
 
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
-    """Predicted device latency (ns) for a bundle of ops (single pipeline fill)."""
+    """Predicted device latency (ns) for a bundle of ops (single fixed term).
+
+    LX-resident traffic is treated as ~free (see :class:`CostParams`), so only HBM
+    bytes contribute; LX-placed tensors already drop out of ``hbm_bytes``.
+    """
     p = params or CostParams()
     hbm_bytes = sum(o.hbm_bytes() for o in ops)
-    lx_bytes = sum(o.lx_bytes() for o in ops)
-    return p.fill_ns + hbm_bytes / p.bw_hbm_gbps + lx_bytes / p.bw_lx_gbps
+    return p.fill_ns + hbm_bytes / p.bw_hbm_gbps
 
 
 def predict_op(op: OpFeatures, params: CostParams | None = None) -> float:
@@ -113,8 +119,7 @@ def explain(ops: list, params: CostParams | None = None) -> str:
         lx_total += lx
         red = " [reduction: NOT modeled]" if o.is_reduction else ""
         lines.append(
-            f"  {o.name:<12} out={o.out_elems} cores={o.cores} "
-            f"hbm={hbm}B lx={lx}B{red}"
+            f"  {o.name:<12} out={o.out_elems} cores={o.cores} hbm={hbm}B lx={lx}B{red}"
         )
         for a in o.args:
             bc = " broadcast" if a.broadcast else ""
@@ -122,6 +127,6 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     t = predict_ops(ops, p)
     lines.append(
         f"  => T = {p.fill_ns:.0f}ns(fill) + {hbm_total}/{p.bw_hbm_gbps}"
-        f" + {lx_total}/{p.bw_lx_gbps} = {t / 1000:.2f} us"
+        f"  (lx {lx_total}B: ~free) = {t / 1000:.2f} us"
     )
     return "\n".join(lines)

@@ -18,14 +18,15 @@
 #
 #   bash examples/run_cost_model_plan.sh
 #
-# Output: stdout (live) AND cost_model_results_<timestamp>.log (forward this file).
+# Output: stdout (live) AND haoyang_logs/cost_model_results_<timestamp>.log (forward this file).
 # Each run prints: cost-model PREDICTION (SPYRE_DUMP_COST, stderr) + measured
 # per-kernel DEVICE latency table (SPYRE_PROFILE_SYNC).
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-LOG="cost_model_results_$(date +%Y%m%d_%H%M%S).log"
+mkdir -p haoyang_logs
+LOG="haoyang_logs/cost_model_results_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee "$LOG") 2>&1
 
 # Common environment for every run.

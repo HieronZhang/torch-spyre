@@ -18,12 +18,15 @@ edits/lint here; hand precise commands to the run machine and paste results back
 - **Measurement is solved.** We can measure deterministic per-kernel **device** latency via
   `SPYRE_PROFILE_SYNC=1` (uses the merge's new `torch_spyre._C.synchronize()`).
 - **First-round model is built and CALIBRATED** (`run_cost_model_plan.sh`, 2026-06-12):
-  `T = fixed + hbm_bytes/BW_HBM + lx_bytes/BW_LX`, with **`fixed≈20µs, BW_HBM≈111 GB/s,
-  BW_LX≈3200 GB/s`** — predicts single-input pointwise (gelu/relu/exp/sigmoid) to **~3%**.
+  `T = fixed + hbm_bytes/BW_HBM`, with **`fixed≈20µs, BW_HBM≈111 GB/s`** — predicts
+  single-input pointwise (gelu/relu/exp/sigmoid) to **~3%**. **LX traffic is treated as ~free**
+  (term dropped; see below).
 - **Verified:** arithmetic-free (pointwise memory-bound); HBM BW shared, core-independent
-  ≥2 cores; LX ~29× faster than HBM. **First round = pointwise only**; reductions deferred.
-- **Open:** 2-input ops run ~20% over (fill-vs-BW unattributed → Rung 3b, controlled
-  equal-bytes experiment queued); broadcast reuse unmeasured.
+  ≥2 cores; LX ~29× faster than HBM (so ~free). **First round = pointwise only**; reductions
+  deferred.
+- **Open:** 2-input ops run ~20% over — **attributed** (Rung 3b) to a lower 3-stream BW
+  (~80 vs 111 GB/s), `fixed` op-independent; fold in a stream-count-aware BW. Broadcast
+  reuse still unmeasured.
 - **Lesson logged** (memory `claim-discipline-perf-modeling`): don't make mechanism claims a
   single data point can't support; name the controlled experiment instead.
 
@@ -67,7 +70,7 @@ to read an op.
 Per kernel/bundle (one fixed term):
 
 ```
-T = fixed + hbm_bytes / BW_HBM + lx_bytes / BW_LX
+T = fixed + hbm_bytes / BW_HBM          (LX-resident traffic treated as ~free)
 ```
 
 - `fixed` (≈**20 µs**) — the **lumped fixed per-kernel overhead**: it is *not* purely
@@ -79,9 +82,14 @@ T = fixed + hbm_bytes / BW_HBM + lx_bytes / BW_LX
   (mis-counted traffic / a missing structural term), not "fixed is op-specific." Any
   refinement must be a *principled* function of structure (e.g. stream count — same for any
   3-stream op), never an arbitrary per-op fudge.
-- `BW_HBM`, `BW_LX` — effective **aggregate** bandwidths in GB/s (numerically == bytes/ns,
+- `BW_HBM` — effective **aggregate** HBM bandwidth in GB/s (numerically == bytes/ns,
   since 1 GB/s = 1 byte/ns). "Aggregate" = the shared-HBM assumption; the SENCORES sweep
-  (§8 rung 5) verifies whether core count changes it.
+  (§8 rung 5) verifies core count doesn't change it.
+- **LX traffic is treated as ~free (no `BW_LX` term).** Rung 4 showed the per-op LX cost
+  (~1 µs) sits *below* the run-to-run measurement noise (~5 µs), so a precise `BW_LX` can't be
+  resolved; LX-resident tensors barely affect latency (LX is ~29× HBM). `lx_bytes` is still
+  computed for inspection but contributes 0 to `T`. (Revisit only if an LX-heavy case
+  misranks — would need a larger-tile LX sweep to lift the signal above the noise.)
 - `hbm_bytes` / `lx_bytes` — sum over every tensor-arg (each input AND the output) of its
   bytes, attributed to HBM or LX by **allocation propagation** (an op's input memory = its
   producer's output allocation). **LX-placed tensors don't count toward HBM.**
@@ -101,9 +109,9 @@ intermediates become per-tile on-chip scratch.)
   needs hints. NOT active in our runs.
 
 **Calibrated values (fp16, fitted from `run_cost_model_plan.sh`):** `fixed≈20µs`,
-`BW_HBM≈111 GB/s` (rung 1 slope; 2-stream r/w, ≥2 cores, shared & saturated),
-`BW_LX≈3200 GB/s` (rung 4, noisy, order-of-magnitude). Single-input pointwise predicted to
-~3% across a 16× size range. See §5 for the data.
+`BW_HBM≈111 GB/s` (rung 1 slope; 2-stream r/w, ≥2 cores, shared & saturated). **LX traffic
+is treated as ~free** (no `BW_LX` term — rung 4 signal was below noise). Single-input
+pointwise predicted to ~3% across a 16× size range. See §5 for the data.
 
 ---
 
@@ -171,7 +179,9 @@ The pointwise ladder, all DEVICE min via `SPYRE_PROFILE_SYNC`:
   **BUT** measured mul is ~20% OVER the byte-linear model — UNATTRIBUTED (could be `BW` or a
   per-stream fixed cost; a single size point can't tell). → Rung 3b (below).
 - **Rung 4 (LX chain, all-LX):** gelu depth 1/2/4/8/16 → 39.6/34.4/34.7/39.3/43.0 — nearly
-  FLAT (16 chained gelus ≈ 1). ⇒ **`BW_LX≈3200 GB/s, ~29× HBM`** (noisy). LX nearly free.
+  FLAT and **non-monotonic** (16 chained gelus ≈ 1). The per-op LX cost (~1 µs) is *below* the
+  run-to-run noise (~5 µs), so `BW_LX` can't be resolved (the ~3200 GB/s "fit" is an artifact).
+  Decision: **treat LX as ~free** (drop the term); qualitatively LX is ~29× HBM.
 - **Rung 5 (SENCORES):** 1→60.3, 2→40.5, 4→43.5, 8→41.9, 16→40.8, 32→40.5. 1→2 helps then
   FLAT ⇒ **HBM BW SHARED, saturates ~2 cores ⇒ core count NOT a direct model term.**
 
@@ -211,8 +221,8 @@ benefit vanishes once per-core `sub` tile (`total/cores × 2 B`) outgrows ~1.6 M
 
 **Cost model (this round):**
 - `torch_spyre/_inductor/cost_model.py` — PURE model: `OpFeatures`, `ArgTraffic`, `CostParams`
-  (**calibrated `fill_ns=20000, bw_hbm_gbps=111, bw_lx_gbps=3200`**), `predict_ops`,
-  `predict_op`, `explain`. No torch deps ⇒ path-loadable/testable.
+  (**calibrated `fill_ns=20000, bw_hbm_gbps=111`; LX treated as free, no `bw_lx`**),
+  `predict_ops`, `predict_op`, `explain`. No torch deps ⇒ path-loadable/testable.
 - `torch_spyre/_inductor/dump_cost_model.py` — `extract_features(operations)` over live IR
   (cores from `op_it_space_splits`; per-arg bytes + LX/HBM via allocation propagation; broadcast
   flag). Hook `dump_cost_model` wired after the AFTER LoopLevel dump in `passes.py`;
@@ -276,7 +286,7 @@ for c in 1 2 4 8 16 32; do SENCORES=$c BENCH_OP=gelu python examples/bench_ops.p
 - [~] traffic = Σ inputs + output — rung 3: holds for 1-in; **2-in ~20% over, UNATTRIBUTED** → rung 3b
 - [x] arithmetic free for pointwise (relu == gelu?) — rung 2 ✓
 - [ ] **broadcast** reuse: cached vs re-fetched — broadcast rung (not yet run)
-- [x] **BW_LX** from chain-depth slope; intermediates placed in LX — rung 4 ✓ (~3200 GB/s, noisy)
+- [x] **LX cost** from chain-depth — rung 4 → per-op LX cost below noise ⇒ **LX treated as ~free** (term dropped)
 - [x] cost-model `extract_features` matches the IR — confirmed (`SPYRE_DUMP_COST` op counts/bytes)
 - [ ] **multi-input fill-vs-BW** (equal-bytes, 2 vs 3 streams, two budgets) — **rung 3b (queued)**
 
@@ -284,8 +294,8 @@ for c in 1 2 4 8 16 32; do SENCORES=$c BENCH_OP=gelu python examples/bench_ops.p
 
 ## 10. Plan / next steps
 
-1. ~~Rungs 1–5~~ DONE — `fixed≈20µs`, `BW_HBM≈111`, `BW_LX≈3200` fitted; arithmetic-free,
-   shared-BW, LX-discount verified. `CostParams` updated.
+1. ~~Rungs 1–5 + 3b~~ DONE — `fixed≈20µs`, `BW_HBM≈111` (2-stream); arithmetic-free, shared-BW
+   verified; LX treated as ~free; multi-input attributed to 3-stream BW ~80. `CostParams` updated.
 2. **Run Rung 3b** (`run_cost_model_plan.sh` includes it) → attribute the 2-input ~20% gap to
    a principled per-stream term (fixed-side or BW-side), keeping `fixed` op-independent.
 3. Resolve **broadcast** (cached vs re-fetched) — needs a `[1,N]`-input bench (not yet built).
@@ -299,14 +309,22 @@ for c in 1 2 4 8 16 32; do SENCORES=$c BENCH_OP=gelu python examples/bench_ops.p
 
 ## 11. Open questions
 
-RESOLVED: shared-vs-per-core HBM BW (rung 5 → SHARED, cores not a direct term); `BW_LX`
-~free vs HBM (rung 4 → ~29× HBM, near-free); arithmetic-free (rung 2).
+RESOLVED: shared-vs-per-core HBM BW (rung 5 → SHARED, cores not a direct term); LX is **~free**
+(rung 4 → per-op LX cost below noise; **term dropped**, qualitatively ~29× HBM); arithmetic-free
+(rung 2); multi-input ~20% gap **attributed** (Rung 3b → lower 3-stream BW ~80, `fixed` op-indep).
 
 Still open:
-- **Multi-input ~20% gap** — fixed-side or BW-side? (Rung 3b queued; keep `fixed` op-independent.)
+- Fold the **stream-count-aware `BW_HBM`** (2-stream ~111, 3-stream ~80) into the model/code.
 - **Broadcast** reuse factor (cached vs re-fetched) — needs a `[1,N]`-input bench.
 - **Reduction combine** cost (deferred) — scales with reduction-axis split (core division).
-- `BW_LX` is order-of-magnitude only (noisy) — tighten if an LX-heavy case misranks (low pri).
+- LX precise BW unresolvable here (signal < noise) — only revisit with a larger-tile LX sweep
+  if an LX-heavy case ever misranks (low pri).
+- **Why is effective `BW_HBM` (~111) only ~half the >200 GB/s DRAM peak?** **GUESS (unverified):**
+  Rung 5 was flat for ≥2 cores ⇒ ~2 cores already saturate the rate, so the limiter looks like
+  a **shared resource *upstream* of the DRAM** (on-chip interconnect / HBM-controller path that
+  feeds the cores) — the >200 GB/s DRAM isn't the wall, the path to it is. (Plus R+W turnaround /
+  DRAM efficiency; 2→3 streams dropping 111→80 hints at concurrent-stream contention.) To test:
+  read-only (`sum`) vs write-only (`fill`/`zeros`) vs R+W (`gelu`); and 1-core BW × N vs the cap.
 - Does effective `BW_HBM` stay constant across access patterns / dtypes for ranking? (verify).
 - LX capacity: exact usable size per core and how work division maps tiles into it (the cliff).
 - `fixed`'s ~7 µs host residue: is it stable across kernels / would a tighter device-only timer
