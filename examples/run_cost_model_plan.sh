@@ -83,6 +83,30 @@ for op in gelu mul add; do
 done
 
 # ---------------------------------------------------------------------------
+# RUNG 3b — attribute the 2-input gap to fill vs BW (controlled).
+#   (a) mul size sweep at fixed 3-stream pattern: slope->BW_3stream, intercept->fill.
+#       If intercept ~= gelu's 20us, the 2-input gap is a BW (slope) effect, not fill.
+#   (b) EQUAL total HBM bytes, different stream count (2 vs 3). Model predicts each
+#       PAIR equal; any measured gap is the pure stream-count effect with fill held
+#       equal. Two budgets: gap constant 3MB->6MB => fixed per-stream cost; gap
+#       doubles => per-byte BW effect.
+#         3MB: mul[512x1024] (3 streams) == gelu[512x1536] (2 streams)  [3,145,728 B]
+#         6MB: mul[512x2048] (3 streams) == gelu[512x3072] (2 streams)  [6,291,456 B]
+# ---------------------------------------------------------------------------
+for n in 512 1024 2048 4096 8192; do
+  step "RUNG3b mul size: mul[512x${n}]" \
+    env BENCH_OP=mul BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_ops.py
+done
+step "RUNG3b equal-bytes 3MB / 3-stream: mul[512x1024]" \
+  env BENCH_OP=mul BENCH_ROWS=512 BENCH_COLS=1024 python examples/bench_ops.py
+step "RUNG3b equal-bytes 3MB / 2-stream: gelu[512x1536]" \
+  env BENCH_OP=gelu BENCH_ROWS=512 BENCH_COLS=1536 python examples/bench_ops.py
+step "RUNG3b equal-bytes 6MB / 3-stream: mul[512x2048]" \
+  env BENCH_OP=mul BENCH_ROWS=512 BENCH_COLS=2048 python examples/bench_ops.py
+step "RUNG3b equal-bytes 6MB / 2-stream: gelu[512x3072]" \
+  env BENCH_OP=gelu BENCH_ROWS=512 BENCH_COLS=3072 python examples/bench_ops.py
+
+# ---------------------------------------------------------------------------
 # RUNG 4 — BW_LX: unary gelu chain, ALL intermediates forced into LX.
 #   Expect: HBM traffic fixed (read x + write y); latency slope vs depth =
 #   2*|x_tile|/BW_LX. First confirm intermediates actually got 'lx'.

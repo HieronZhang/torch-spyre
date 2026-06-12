@@ -73,11 +73,20 @@ class OpFeatures:
 
 @dataclasses.dataclass
 class CostParams:
-    """Fittable parameters. BW in GB/s (numerically == bytes/ns)."""
+    """Fittable parameters. BW in GB/s (numerically == bytes/ns).
 
-    fill_ns: float = 15_000.0
-    bw_hbm_gbps: float = 110.0
-    bw_lx_gbps: float = 1000.0  # placeholder until the LX-chain sweep fits it
+    Fitted from examples/run_cost_model_plan.sh on the run machine (fp16):
+    - fill  ~20 us       (rung 1 intercept)
+    - BW_HBM ~111 GB/s   (rung 1 slope; 2-stream r/w, >=2 cores, shared & saturated)
+    - BW_LX  ~3200 GB/s  (rung 4 chain-depth slope; ~29x HBM, noisy)
+    Verified: arithmetic-free for pointwise (rung 2); HBM BW shared, core-independent
+    above 2 cores (rung 5). Known gap: 2-input ops run ~15% over the linear traffic
+    count (effective BW degrades with stream count) -- refine later.
+    """
+
+    fill_ns: float = 20_000.0
+    bw_hbm_gbps: float = 111.0
+    bw_lx_gbps: float = 3200.0
 
 
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
