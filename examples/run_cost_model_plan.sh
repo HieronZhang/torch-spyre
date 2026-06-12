@@ -136,5 +136,20 @@ for c in 1 2 4 8 16 32; do
     python examples/bench_ops.py
 done
 
+# ---------------------------------------------------------------------------
+# RUNG 6 — broadcast reuse: cached vs re-fetched.
+#   bcast = a[512xN] + b[1xN]  vs  add = a[512xN] + b[512xN] (full), same size.
+#   bcast ~ add (3-pass) => RE-FETCH (count broadcast at full).
+#   bcast ~ gelu (2-pass) => CACHED  (count broadcast at ~one row).
+#   The SPYRE_DUMP_COST line for bcast also flags whether b is a true broadcast
+#   load in the IR (index uses only the column var), not expanded to full.
+# ---------------------------------------------------------------------------
+for n in 1024 4096; do
+  step "RUNG6 broadcast: bcast[512x${n}] (b is [1x${n}])" \
+    env BENCH_OP=bcast BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_ops.py
+  step "RUNG6 full ref:  add[512x${n}]" \
+    env BENCH_OP=add BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_ops.py
+done
+
 echo ""
 echo "================ DONE. forward this file: $LOG ================"

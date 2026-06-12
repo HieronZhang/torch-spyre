@@ -85,7 +85,17 @@ def make_workload():
         x = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
         y = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
         return torch.compile(f), (x, y)
-    raise SystemExit(f"unknown BENCH_OP={OP!r} (use {list(_UNARY) + list(_BINARY)})")
+    if OP == "bcast":
+        # a[ROWS,COLS] + b[1,COLS]: b is read with a BROADCAST index (only the
+        # column var). Compare to `add` (full [ROWS,COLS]+[ROWS,COLS]) at the same
+        # size: bcast ~ add => hardware re-fetches b each row (count it full);
+        # bcast ~ a unary 2-pass op => it loads b once and reuses (cached).
+        x = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
+        b = torch.rand(1, COLS, dtype=torch.float16).to(DEVICE)
+        return torch.compile(lambda a, c: a + c), (x, b)
+    raise SystemExit(
+        f"unknown BENCH_OP={OP!r} (use {list(_UNARY) + list(_BINARY) + ['bcast']})"
+    )
 
 
 compiled, args = make_workload()

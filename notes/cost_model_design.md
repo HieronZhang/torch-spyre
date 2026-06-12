@@ -17,10 +17,15 @@ edits/lint here; hand precise commands to the run machine and paste results back
   higher-level compiler optimization. **Not a cycle-accurate simulator.**
 - **Measurement is solved.** We can measure deterministic per-kernel **device** latency via
   `SPYRE_PROFILE_SYNC=1` (uses the merge's new `torch_spyre._C.synchronize()`).
-- **First-round model is built and matches data to ~4%:**
-  `T = fill + hbm_bytes/BW_HBM + lx_bytes/BW_LX`.
-- **First round = pointwise ops only.** Reductions (cross-core combine) deferred.
-- **Next:** run the op-ladder benches to fit `fill, BW_HBM, BW_LX` and verify assumptions.
+- **First-round model is built and CALIBRATED** (`run_cost_model_plan.sh`, 2026-06-12):
+  `T = fixed + hbm_bytes/BW_HBM + lx_bytes/BW_LX`, with **`fixed≈20µs, BW_HBM≈111 GB/s,
+  BW_LX≈3200 GB/s`** — predicts single-input pointwise (gelu/relu/exp/sigmoid) to **~3%**.
+- **Verified:** arithmetic-free (pointwise memory-bound); HBM BW shared, core-independent
+  ≥2 cores; LX ~29× faster than HBM. **First round = pointwise only**; reductions deferred.
+- **Open:** 2-input ops run ~20% over (fill-vs-BW unattributed → Rung 3b, controlled
+  equal-bytes experiment queued); broadcast reuse unmeasured.
+- **Lesson logged** (memory `claim-discipline-perf-modeling`): don't make mechanism claims a
+  single data point can't support; name the controlled experiment instead.
 
 ---
 
@@ -42,9 +47,10 @@ to read an op.
 ## 2. Design principles (agreed with user)
 
 1. **Relative, not simulator.** Few parameters, coarse. Predict which is faster.
-2. **Bandwidth + one fixed fill, not per-access latency.** A static-dataflow engine streams
-   sticks back-to-back; per-access latency is hidden and shows up once as **pipeline fill**
-   (the measured ~15 µs fixed term). So model traffic ÷ effective bandwidth, plus fill.
+2. **Bandwidth + one fixed term, not per-access latency.** A static-dataflow engine streams
+   sticks back-to-back; per-access latency is hidden and shows up once as a **fixed
+   per-kernel cost** (≈20 µs measured; pipeline fill+drain + device setup + ~7 µs host
+   residue). So model traffic ÷ effective bandwidth, plus that fixed term.
 3. **Effective bandwidth folds in the messy parts.** Real per-core BW depends on DRAM
    controller buffering, concurrent cores, row-buffer hits — but Spyre access is stick-aligned
    (128 B), streaming, statically scheduled, so those are *constant* for a given shape and
@@ -58,13 +64,21 @@ to read an op.
 
 ## 3. The model
 
-Per kernel/bundle (one pipeline fill):
+Per kernel/bundle (one fixed term):
 
 ```
-T = fill + hbm_bytes / BW_HBM + lx_bytes / BW_LX
+T = fixed + hbm_bytes / BW_HBM + lx_bytes / BW_LX
 ```
 
-- `fill` — one-time pipeline-fill latency (≈15 µs measured). **One per kernel**, not per op.
+- `fixed` (≈**20 µs**) — the **lumped fixed per-kernel overhead**: it is *not* purely
+  "pipeline fill." It bundles (a) device pipeline fill+drain, (b) per-kernel device setup
+  (program load, DMA/core config), and (c) **~7 µs host residue** in our measurement (async
+  dispatch + sync-return latency that `SPYRE_PROFILE_SYNC` brackets). **One per kernel**, not
+  per op. **It MUST be op-independent** — relu/gelu/exp/sigmoid (all 2-stream) measured the
+  same ⇒ same `fixed`. If a fit ever needs a different `fixed` per op, the **model is wrong**
+  (mis-counted traffic / a missing structural term), not "fixed is op-specific." Any
+  refinement must be a *principled* function of structure (e.g. stream count — same for any
+  3-stream op), never an arbitrary per-op fudge.
 - `BW_HBM`, `BW_LX` — effective **aggregate** bandwidths in GB/s (numerically == bytes/ns,
   since 1 GB/s = 1 byte/ns). "Aggregate" = the shared-HBM assumption; the SENCORES sweep
   (§8 rung 5) verifies whether core count changes it.
@@ -86,8 +100,10 @@ intermediates become per-tile on-chip scratch.)
 - **Tile fusion** (coarse tiling): inner-loop fusion making intermediates per-tile on-chip;
   needs hints. NOT active in our runs.
 
-Validation so far: gelu[512×1024] (1-in/1-out, all HBM, 2 MB traffic) predicts **34.07 µs**
-with `fill=15µs, BW_HBM=110 GB/s` vs measured `add`≈**32.9 µs** (4%).
+**Calibrated values (fp16, fitted from `run_cost_model_plan.sh`):** `fixed≈20µs`,
+`BW_HBM≈111 GB/s` (rung 1 slope; 2-stream r/w, ≥2 cores, shared & saturated),
+`BW_LX≈3200 GB/s` (rung 4, noisy, order-of-magnitude). Single-input pointwise predicted to
+~3% across a 16× size range. See §5 for the data.
 
 ---
 
@@ -139,8 +155,38 @@ All device-side, deterministic (min-of-N), fp16:
 **Fits** (`latency = fixed + slope × M-elem`):
 - **add ≈ 14.8 µs + 36.2 µs/M-elem** (near-perfect)
 - **softmax ≈ 16.3 µs + 98.6 µs/M-elem** (slope ≈ 2.7× add ⇒ ~2.7 DDR passes)
-- **fixed ≈ 15 µs** shared by both ⇒ op-independent pipeline-fill/launch.
+- **fixed ≈ 15 µs** shared by both ⇒ op-independent fixed cost. (3-point fit; the 5-point
+  gelu ladder in §5.1 refines this to **~20 µs** — use that.)
 - One 0.5 M-elem (2 MB) HBM round-trip ≈ **18 µs** ⇒ **~110 GB/s** effective.
+
+### 5.1 gelu op-ladder calibration (`run_cost_model_plan.sh`, 2026-06-12, fp16)
+
+The pointwise ladder, all DEVICE min via `SPYRE_PROFILE_SYNC`:
+- **Rung 1 (gelu size sweep, ROWS=512):** 0.26M→29.5µs, 0.52M→39.2, 1.05M→59.0, 2.1M→93.0,
+  4.19M→171.5. Clean linear ⇒ **`fixed≈20.1µs`, `BW_HBM≈111 GB/s`** (slope 35.9µs/Melem;
+  2 passes × 2 B). Predicts to ~3%.
+- **Rung 2 (arithmetic):** relu 38.4, gelu 38.2, exp 38.4, sigmoid 34.5 (≈equal) ⇒
+  **arithmetic FREE, memory-bound. CONFIRMED.** (Also confirms `fixed` is op-independent.)
+- **Rung 3 (traffic):** gelu(1-in) 41.0, mul(2-in) 58.1, add 57.7. +1 input ≈ +17µs.
+  **BUT** measured mul is ~20% OVER the byte-linear model — UNATTRIBUTED (could be `BW` or a
+  per-stream fixed cost; a single size point can't tell). → Rung 3b (below).
+- **Rung 4 (LX chain, all-LX):** gelu depth 1/2/4/8/16 → 39.6/34.4/34.7/39.3/43.0 — nearly
+  FLAT (16 chained gelus ≈ 1). ⇒ **`BW_LX≈3200 GB/s, ~29× HBM`** (noisy). LX nearly free.
+- **Rung 5 (SENCORES):** 1→60.3, 2→40.5, 4→43.5, 8→41.9, 16→40.8, 32→40.5. 1→2 helps then
+  FLAT ⇒ **HBM BW SHARED, saturates ~2 cores ⇒ core count NOT a direct model term.**
+
+**Rung 3b (queued)** — controlled multi-input attribution, holding `fixed` op-independent:
+a `mul` size sweep (fit its own `fixed`,`BW`), plus EQUAL-total-bytes/different-stream pairs
+(`mul[512×1024]` 3-stream == `gelu[512×1536]` 2-stream = 3,145,728 B; and the 6 MB pair
+`mul[512×2048]`==`gelu[512×3072]`). The model predicts each pair EQUAL; any gap is the pure
+stream-count effect. Gap constant 3MB→6MB ⇒ fixed per-stream cost; gap doubles ⇒ per-byte BW.
+
+**Core division — effect (Rung 5 + reasoning):** for memory-bound pointwise, core *count*
+(≥2) has **no direct** effect (BW-bound, flat). It matters **indirectly** via: (1) **LX fit** —
+per-core tile = `total/cores`; placement only succeeds if it fits ~1.6 MB, flipping
+`lx↔hbm` bytes (the cliff; already in the model through `allocation`); (2) load balance
+(uneven splits → max-core); (3) **reductions** — splitting the reduced axis adds a cross-core
+combine (a term still owed). Direct access-pattern/locality effects are UNVERIFIED.
 
 **LX experiment** (softmax[512×1024], device min): **LX on = 71.05 µs, off = 91.23 µs ⇒ −20 µs
 (22%)**. LX keeps the `sub` intermediate in SRAM, removing its ~18 µs HBM round-trip (matches
@@ -165,7 +211,7 @@ benefit vanishes once per-core `sub` tile (`total/cores × 2 B`) outgrows ~1.6 M
 
 **Cost model (this round):**
 - `torch_spyre/_inductor/cost_model.py` — PURE model: `OpFeatures`, `ArgTraffic`, `CostParams`
-  (`fill_ns=15000, bw_hbm_gbps=110, bw_lx_gbps=1000` — placeholders), `predict_ops`,
+  (**calibrated `fill_ns=20000, bw_hbm_gbps=111, bw_lx_gbps=3200`**), `predict_ops`,
   `predict_op`, `explain`. No torch deps ⇒ path-loadable/testable.
 - `torch_spyre/_inductor/dump_cost_model.py` — `extract_features(operations)` over live IR
   (cores from `op_it_space_splits`; per-arg bytes + LX/HBM via allocation propagation; broadcast
@@ -224,39 +270,44 @@ for c in 1 2 4 8 16 32; do SENCORES=$c BENCH_OP=gelu python examples/bench_ops.p
 
 ## 9. Verification checklist (earn the right to stay simple)
 
-- [ ] effective `BW_HBM` constant across shapes (size-sweep linearity) — rung 1
-- [ ] `fill` is a real fixed intercept — rung 1
-- [ ] BW shared vs per-core (does latency ∝ 1/cores?) — rung 5
-- [ ] traffic = Σ inputs + output — rung 3
-- [ ] arithmetic free for pointwise (relu == gelu?) — rung 2
-- [ ] **broadcast** reuse: cached vs re-fetched — broadcast rung
-- [ ] **BW_LX** from chain-depth slope; intermediates actually placed in LX — rung 4
-- [ ] cost-model `extract_features` matches the IR (eyeball `SPYRE_DUMP_COST` vs the dump)
+- [x] effective `BW_HBM` constant across shapes (size-sweep linearity) — rung 1 ✓ (~111 GB/s)
+- [x] `fixed` is a real op-independent intercept — rung 1 ✓ (~20 µs; rung 2 confirms op-indep)
+- [x] BW shared vs per-core — rung 5 ✓ (SHARED; flat ≥2 cores; cores not a direct term)
+- [~] traffic = Σ inputs + output — rung 3: holds for 1-in; **2-in ~20% over, UNATTRIBUTED** → rung 3b
+- [x] arithmetic free for pointwise (relu == gelu?) — rung 2 ✓
+- [ ] **broadcast** reuse: cached vs re-fetched — broadcast rung (not yet run)
+- [x] **BW_LX** from chain-depth slope; intermediates placed in LX — rung 4 ✓ (~3200 GB/s, noisy)
+- [x] cost-model `extract_features` matches the IR — confirmed (`SPYRE_DUMP_COST` op counts/bytes)
+- [ ] **multi-input fill-vs-BW** (equal-bytes, 2 vs 3 streams, two budgets) — **rung 3b (queued)**
 
 ---
 
 ## 10. Plan / next steps
 
-1. **Run rung 1**, fit `fill` + `BW_HBM` (optionally build a least-squares fitter that ingests
-   the sweep numbers). Update `CostParams` defaults.
-2. Run rungs 2–3 (arithmetic-free, traffic counting) → confirm the pointwise traffic model.
-3. Run rung 4 (+`SPYRE_DUMP_IR` check) → fit `BW_LX`; rung 5 → settle shared-vs-per-core.
-4. Resolve **broadcast** (cached vs re-fetched) and bake the factor in.
-5. Validate the full pointwise model on `mul`/`add`/`gelu` across sizes; check `SPYRE_DUMP_COST`
-   predictions vs measured per-kernel device min.
-6. **Then** extend to reductions: add the read-dominated traffic + the **cross-core combine**
-   term (when the reduced axis is split). Re-validate on `mean`, then softmax (whole bundle).
-7. Later: tile-fusion regime (hinted examples), matmul (`pt` unit / compute-bound), the LX
+1. ~~Rungs 1–5~~ DONE — `fixed≈20µs`, `BW_HBM≈111`, `BW_LX≈3200` fitted; arithmetic-free,
+   shared-BW, LX-discount verified. `CostParams` updated.
+2. **Run Rung 3b** (`run_cost_model_plan.sh` includes it) → attribute the 2-input ~20% gap to
+   a principled per-stream term (fixed-side or BW-side), keeping `fixed` op-independent.
+3. Resolve **broadcast** (cached vs re-fetched) — needs a `[1,N]`-input bench (not yet built).
+4. Validate the full pointwise model on `mul`/`add`/`gelu` across sizes vs `SPYRE_DUMP_COST`.
+5. **Then** extend to reductions: read-dominated traffic + the **cross-core combine** term
+   (when the reduced axis is split — tied to core division). Re-validate on `mean`, then softmax.
+6. Later: tile-fusion regime (hinted examples), matmul (`pt` unit / compute-bound), the LX
    capacity cliff as a hard constraint.
 
 ---
 
 ## 11. Open questions
 
-- Shared vs per-core HBM BW (rung 5) — biggest single unknown for the model's `cores` handling.
-- Broadcast reuse factor.
-- `BW_LX` absolute value (rung 4) and whether LX is ~free vs HBM (slope ≈ 0?).
-- Reduction combine cost model (deferred).
-- Does effective `BW_HBM` stay constant enough across access patterns for relative ranking, or
-  do we need a per-op correction? (verify, don't assume).
-- LX capacity: exact usable size per core and how work division maps tiles into it.
+RESOLVED: shared-vs-per-core HBM BW (rung 5 → SHARED, cores not a direct term); `BW_LX`
+~free vs HBM (rung 4 → ~29× HBM, near-free); arithmetic-free (rung 2).
+
+Still open:
+- **Multi-input ~20% gap** — fixed-side or BW-side? (Rung 3b queued; keep `fixed` op-independent.)
+- **Broadcast** reuse factor (cached vs re-fetched) — needs a `[1,N]`-input bench.
+- **Reduction combine** cost (deferred) — scales with reduction-axis split (core division).
+- `BW_LX` is order-of-magnitude only (noisy) — tighten if an LX-heavy case misranks (low pri).
+- Does effective `BW_HBM` stay constant across access patterns / dtypes for ranking? (verify).
+- LX capacity: exact usable size per core and how work division maps tiles into it (the cliff).
+- `fixed`'s ~7 µs host residue: is it stable across kernels / would a tighter device-only timer
+  (event timing, still stubbed) change it?
