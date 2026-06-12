@@ -168,3 +168,31 @@ def measure_latency(
 def net_latency_us(kernel: LatencyStats, baseline: LatencyStats) -> float:
     """Min kernel latency with the baseline (launch + transfer) min subtracted."""
     return (kernel.min_ns - baseline.min_ns) / 1000.0
+
+
+def measure_device(fn, runs: int = 100, warmup: int = 20) -> dict:
+    """Measure per-kernel DEVICE latency directly (no host-side e2e timing).
+
+    Runs ``fn`` ``runs`` times; with ``SPYRE_PROFILE_SYNC=1`` the kernel timer in
+    ``SpyreSDSCKernelRunner.run`` blocks on the device after each launch and
+    records that launch's device latency in the profiling registry. Warmup
+    launches (compile + cold) are discarded by resetting the registry after
+    them. The per-kernel ``min_ns`` is the deterministic device latency -- host
+    dispatch/sync jitter only *adds* time, so the min strips it.
+
+    This replaces the end-to-end ``measure_latency`` + identity-baseline approach
+    for calibration: the device latency is read directly, with no host floor to
+    subtract.
+
+    Requires ``SPYRE_PROFILE=1`` and ``SPYRE_PROFILE_SYNC=1`` (the example sets
+    both). Returns a snapshot ``{kernel_name: {count, total_ns, min_ns, max_ns}}``
+    and leaves the registry populated so ``profiling.format_report()`` can print it.
+    """
+    from torch_spyre.execution import profiling
+
+    for _ in range(warmup):
+        fn()
+    profiling.reset()
+    for _ in range(runs):
+        fn()
+    return {name: dict(rec) for name, rec in profiling.records().items()}

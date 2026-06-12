@@ -12,65 +12,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Minimal latency-measurement harness for a compiled Spyre kernel.
+"""Per-kernel DEVICE-latency measurement for a compiled Spyre softmax.
 
-Times compiled softmax end-to-end (min over N runs, forced ``.cpu()`` sync) and
-reports the spread so determinism can be confirmed. Run with ``SPYRE_PROFILE=1``
-to additionally get the per-kernel launch table at exit.
+Measures the softmax kernel's device latency directly via the sync'd profiling
+registry (``SPYRE_PROFILE_SYNC``), with no host-side end-to-end timing or
+identity baseline -- the device number is read straight off the kernel. The min
+strips host/sync jitter; the static-dataflow device is deterministic.
 
-Example:
-    SPYRE_PROFILE=1 python examples/bench_softmax.py
-    BENCH_RUNS=50 BENCH_ROWS=512 BENCH_COLS=1024 python examples/bench_softmax.py
+The header prints ``LX_PLANNING`` so runs are self-documenting. To check whether
+LX scratchpad planning helps this example, compare two runs:
+
+    LX_PLANNING=1 python examples/bench_softmax.py
+    LX_PLANNING=0 python examples/bench_softmax.py
+
+Other knobs: BENCH_ROWS, BENCH_COLS, BENCH_RUNS, BENCH_WARMUP.
 """
 
 import os
 
-import torch
+# Device-side measurement needs the sync'd per-kernel profiling path; enable by
+# default (read at launch time, so setting them here is sufficient).
+os.environ.setdefault("SPYRE_PROFILE", "1")
+os.environ.setdefault("SPYRE_PROFILE_SYNC", "1")
 
-from torch_spyre.execution.bench import device_sync, measure_latency, net_latency_us
+import torch  # noqa: E402
+
+from torch_spyre._inductor import config  # noqa: E402
+from torch_spyre.execution import profiling  # noqa: E402
+from torch_spyre.execution.bench import measure_device  # noqa: E402
 
 DEVICE = torch.device("spyre")
 RUNS = int(os.environ.get("BENCH_RUNS", "100"))
-WARMUP = int(os.environ.get("BENCH_WARMUP", "3"))
-# BENCH_SYNC=device drains the device via torch_spyre._C.synchronize (no D2H copy);
-# anything else uses the default .cpu() sync.
-SYNC = device_sync if os.environ.get("BENCH_SYNC") == "device" else None
-# inner: launches per timed sample, synced once -- amortizes the ~ms .cpu() floor
-# so the per-launch device cost can surface. 400 was where softmax converged to a
-# deterministic (<3% spread) per-call min on hardware; raise it if spread is large.
-INNER = int(os.environ.get("BENCH_INNER", "400"))
-# Default to a larger softmax so device compute is less dominated by the ~70us
-# host-per-call floor. Scale up further (e.g. 8192) to push toward compute-bound.
-ROWS = int(os.environ.get("BENCH_ROWS", "4096"))
-COLS = int(os.environ.get("BENCH_COLS", "4096"))
+WARMUP = int(os.environ.get("BENCH_WARMUP", "20"))
+ROWS = int(os.environ.get("BENCH_ROWS", "512"))
+COLS = int(os.environ.get("BENCH_COLS", "1024"))
 
 torch.manual_seed(0xAFFE)
 x = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
-
 compiled_sm = torch.compile(lambda a: torch.softmax(a, dim=0))
-# An identity baseline to subtract fixed launch + host/device transfer cost.
-compiled_id = torch.compile(lambda a: a + 0.0)
 
-softmax = measure_latency(
-    lambda: compiled_sm(x),
-    runs=RUNS,
-    warmup=WARMUP,
-    inner=INNER,
-    sync=SYNC,
-    label=f"softmax[{ROWS}x{COLS}]",
-)
-baseline = measure_latency(
-    lambda: compiled_id(x),
-    runs=RUNS,
-    warmup=WARMUP,
-    inner=INNER,
-    sync=SYNC,
-    label=f"identity[{ROWS}x{COLS}]",
-)
-
-print(softmax)
-print(baseline)
 print(
-    f"net softmax compute (min - baseline_min): "
-    f"{net_latency_us(softmax, baseline):.3f} us"
+    f"softmax[{ROWS}x{COLS}]  runs={RUNS}  "
+    f"LX_PLANNING={config.lx_planning}  SYNC={profiling.profile_sync_enabled()}"
 )
+measure_device(lambda: compiled_sm(x), runs=RUNS, warmup=WARMUP)
+print(profiling.format_report())
