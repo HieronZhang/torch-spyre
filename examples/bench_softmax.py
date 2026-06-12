@@ -51,6 +51,7 @@ torch.manual_seed(0xAFFE)
 x = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
 compiled_sm = torch.compile(lambda a: torch.softmax(a, dim=0))
 
+profiling.set_report_at_exit(False)  # we print the report ourselves below
 print(
     f"softmax[{ROWS}x{COLS}]  runs={RUNS}  "
     f"LX_PLANNING={config.lx_planning}  SYNC={profiling.profile_sync_enabled()}"

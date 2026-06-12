@@ -77,6 +77,7 @@ from .chunk_large_tensors import chunk_large_tensors
 from .coarse_tile import coarse_tile
 from .dump_fx_graph import dump_fx_graph
 from .dump_loop_ir import dump_loop_ir
+from .dump_cost_model import dump_cost_model
 
 
 logger = get_inductor_logger("passes")
@@ -361,6 +362,7 @@ class CustomPreSchedulingPasses:
         if logger.isEnabledFor(logging.INFO):
             logger.info("AFTER PRE-SCHEDULING\n%s", _format_operations(graph.operations))
         dump_loop_ir(graph.operations, "LoopLevel IR - AFTER pre-scheduling passes")
+        dump_cost_model(graph.operations)
 
     def uuid(self) -> Any | None:
         return _uuid(self.passes)

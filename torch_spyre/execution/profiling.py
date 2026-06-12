@@ -44,6 +44,17 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # name -> {count, total_ns, min_ns, max_ns}
 _records: dict[str, dict] = {}
 _atexit_registered = False
+_report_at_exit = True
+
+
+def set_report_at_exit(enabled: bool) -> None:
+    """Enable/disable the automatic per-kernel report at process exit.
+
+    Callers that print the report themselves (e.g. the bench examples) disable
+    it to avoid a duplicate dump.
+    """
+    global _report_at_exit
+    _report_at_exit = enabled
 
 
 def profile_enabled() -> bool:
@@ -154,8 +165,13 @@ def report() -> None:
         sys.stderr.flush()
 
 
+def _atexit_report() -> None:
+    if _report_at_exit:
+        report()
+
+
 def _ensure_atexit() -> None:
     global _atexit_registered
     if not _atexit_registered:
-        atexit.register(report)
+        atexit.register(_atexit_report)
         _atexit_registered = True
