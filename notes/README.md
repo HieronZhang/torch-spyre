@@ -4,8 +4,7 @@ Three additive features we built on top of the torch-spyre compiler. Each is a
 no-op unless its env var is set, so normal runs are unaffected.
 
 > **Note:** the dumps and cost-model prediction only fire on a fresh compile, so
-> clear the TorchInductor cache before every run (e.g. set
-> `TORCHINDUCTOR_FORCE_DISABLE_CACHES=1`) — otherwise a cached graph is reused and
+> clear the TorchInductor cache before every run (e.g. `rm -rf /tmp/torchinductor_*`) — otherwise a cached graph is reused and
 > nothing is dumped.
 
 ## 1. Dump FX graph and loop-level IR
