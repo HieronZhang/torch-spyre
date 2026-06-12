@@ -19,14 +19,13 @@ Enabled by ``SPYRE_PROFILE=1``. ``kernel_timer`` wraps the device launch in
 is printed at process exit (to stderr, or to ``SPYRE_PROFILE_FILE``). A no-op
 unless the env var is set.
 
-CAVEAT: device execution is asynchronous (``executeProgramAsync``) and the
-stream-sync hooks are no-ops, so this measures host-side *dispatch* latency
-unless a synchronization (e.g. copying a dependent output to host) forces
-device completion. For true device-inclusive latency, time an end-to-end
-region that ends in ``.cpu()`` -- see :func:`torch_spyre.execution.bench.measure_latency`
--- ideally on a single-kernel program. Conversely, if the per-kernel time here
-*scales with problem size*, the runtime is effectively synchronous and these
-numbers are already device-inclusive (a useful probe in itself).
+Device execution is asynchronous (``executeProgramAsync``), so by default this
+measures host-side *dispatch* latency (~microseconds), not device compute. Set
+``SPYRE_PROFILE_SYNC=1`` to block on the device (``torch_spyre._C.synchronize``)
+after each launch -- then the recorded time is that kernel's actual **device**
+latency (serialized, so it kills pipelining; intended for profiling, not
+production). This works for *any* op, including small ones the end-to-end
+wall-clock harness can't resolve below its ~70us host-per-call floor.
 
 Because the device is a static dataflow engine, per-kernel latency is
 deterministic; the reported ``min`` strips host-side jitter and is the value to
@@ -52,6 +51,26 @@ def profile_enabled() -> bool:
     return os.environ.get("SPYRE_PROFILE", "").strip().lower() in _TRUTHY
 
 
+def profile_sync_enabled() -> bool:
+    """Return True when SPYRE_PROFILE_SYNC asks for a device sync per kernel.
+
+    With it set, ``kernel_timer`` blocks on the device after each launch, so the
+    recorded time is the kernel's actual **device** latency (serialized) rather
+    than just async dispatch. Off by default — syncing serializes execution.
+    """
+    return os.environ.get("SPYRE_PROFILE_SYNC", "").strip().lower() in _TRUTHY
+
+
+def _device_synchronize() -> None:
+    """Block until the device finishes queued work (no-op if unavailable)."""
+    try:
+        import torch_spyre._C as _C
+
+        _C.synchronize()
+    except Exception:  # noqa: BLE001 - no runtime/sync -> fall back to dispatch timing
+        pass
+
+
 def reset() -> None:
     """Clear accumulated records (useful for tests / between benchmark phases)."""
     _records.clear()
@@ -72,10 +91,13 @@ def kernel_timer(name: str):
         yield
         return
     _ensure_atexit()
+    sync = profile_sync_enabled()
     start = time.perf_counter_ns()
     try:
         yield
     finally:
+        if sync:
+            _device_synchronize()
         elapsed = time.perf_counter_ns() - start
         rec = _records.get(name)
         if rec is None:
@@ -105,10 +127,16 @@ def format_report() -> str:
         lines.append(
             f"{name:<40}{count:>7}{min_us:>11.3f}{mean_us:>11.3f}{max_us:>11.3f}"
         )
-    lines.append(
-        "[note] host-side dispatch unless a sync forced device completion; "
-        "see bench.measure_latency"
-    )
+    if profile_sync_enabled():
+        lines.append(
+            "[note] SPYRE_PROFILE_SYNC on: times are per-kernel DEVICE latency "
+            "(serialized); trust the min."
+        )
+    else:
+        lines.append(
+            "[note] host-side DISPATCH only (async launch). Set SPYRE_PROFILE_SYNC=1 "
+            "for per-kernel device latency."
+        )
     return "\n".join(lines)
 
 

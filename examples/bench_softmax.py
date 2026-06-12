@@ -27,11 +27,14 @@ import os
 
 import torch
 
-from torch_spyre.execution.bench import measure_latency, net_latency_us
+from torch_spyre.execution.bench import device_sync, measure_latency, net_latency_us
 
 DEVICE = torch.device("spyre")
 RUNS = int(os.environ.get("BENCH_RUNS", "100"))
 WARMUP = int(os.environ.get("BENCH_WARMUP", "3"))
+# BENCH_SYNC=device drains the device via torch_spyre._C.synchronize (no D2H copy);
+# anything else uses the default .cpu() sync.
+SYNC = device_sync if os.environ.get("BENCH_SYNC") == "device" else None
 # inner: launches per timed sample, synced once -- amortizes the ~ms .cpu() floor
 # so the per-launch device cost can surface. 400 was where softmax converged to a
 # deterministic (<3% spread) per-call min on hardware; raise it if spread is large.
@@ -53,6 +56,7 @@ softmax = measure_latency(
     runs=RUNS,
     warmup=WARMUP,
     inner=INNER,
+    sync=SYNC,
     label=f"softmax[{ROWS}x{COLS}]",
 )
 baseline = measure_latency(
@@ -60,6 +64,7 @@ baseline = measure_latency(
     runs=RUNS,
     warmup=WARMUP,
     inner=INNER,
+    sync=SYNC,
     label=f"identity[{ROWS}x{COLS}]",
 )
 

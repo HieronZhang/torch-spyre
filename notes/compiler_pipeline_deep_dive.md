@@ -4,6 +4,16 @@ This document traces a PyTorch program through the entire torch-spyre Inductor b
 
 > **Caveat on upstream line numbers.** torch itself was not importable in the analysis sandbox; upstream PyTorch call-site lines (e.g. `torch/_inductor/graph.py:2260`) were read from a checked-out wheel and may drift across PyTorch versions. The *contracts* — config-key names, the `_update_scheduler → Scheduler` ordering, the five custom-pass hooks — are stable.
 
+> **Post-merge `0afc247` status.** A large merge refactored `passes.py` and the
+> work-division/coarse-tiling subsystems. The verified deltas are corrected inline below
+> (marked **[post-merge]**) and documented in full in **§10**, which is authoritative where
+> it conflicts with the specific line numbers in §1/§4. Headlines: passes now take a
+> `GraphLowering`; the pre-scheduling pipeline is **14 steps**; work division is **three
+> passes** (`span_reduction`, `cost_model_matmul_division`, `work_distribution` — the old
+> `k_fast_division` is gone); coarse tiling stamps a single `loop_info` (`CoarseTileInfo`)
+> attribute; the low-level IR is **still SuperDSC** (KTIR is planned, a new `JobPlan`
+> runtime layer consumes SuperDSC). See §10.
+
 ---
 
 ## 1. Pipeline at a glance
@@ -37,8 +47,8 @@ This document traces a PyTorch program through the entire torch-spyre Inductor b
    GraphLowering.codegen() → _update_scheduler PATCHED (patches.py:119) →
    HOOK 4 (the heaviest)  CustomPreSchedulingPasses(graph)   ← graph.py:2260, BEFORE Scheduler(self.operations)
         ┌──────────────────────────────────────────────────────────────┐
-        │ CustomPreSchedulingPasses.__call__  (passes.py:250-277)       │  operates on graph.operations
-        │  IN ORDER:                                                    │  (flat list[ir.Operation])
+        │ CustomPreSchedulingPasses.__call__  (passes.py:321-366)       │  takes graph: GraphLowering
+        │  14 STEPS IN ORDER  [post-merge 0afc247]:                     │  (mutate graph.operations)
         │   1  deadcode_elimination                                     │
         │   2  propagate_spyre_tensor_layouts                           │
         │   3  optimize_restickify_locations                            │
@@ -46,21 +56,22 @@ This document traces a PyTorch program through the entire torch-spyre Inductor b
         │   5  insert_restickify                                        │
         │   6  insert_bmm_padding                                       │
         │   7  dedup_and_promote_constants                              │
-        │   8  chunk_large_tensors            [config.chunk_large_tensors]│
+        │   8  _maybe_chunk_large_tensors    [config.chunk_large_tensors]│
         │   9  propagate_named_dims                                     │
         │  10  assign_dim_hints                                         │
-        │  11  coarse_tile (+ hints_to_coarse_tile_groups) [coarse_tiling]│
-        │  12  span_reduction                                           │
-        │  13  k_fast_division           [core_id_k_fast_emission]      │
-        │  14  work_distribution                                        │
-        │  15  scratchpad_planning (LX)  [lx_planning]                  │
+        │  11  _maybe_coarse_tile        [only if hint groups present]  │
+        │  12  span_reduction                  ┐ three                  │
+        │  13  _distribute_work:                │ work-                  │
+        │        cost_model_matmul_division +   │ division               │
+        │        work_distribution             ┘ passes                 │
+        │  14  _maybe_scratchpad_planning (LX)  [lx_planning]           │
         └──────────────────────────────────────────────────────────────┘
                                    │
-   Scheduler(self.operations) builds SchedulerNodes →
-   HOOK 5 _pre_fusion_custom_pass  CustomPreFusionPasses  (scheduler.py:2329; propagate_mutation_layouts)
+   Scheduler builds SchedulerNodes →
+   HOOK 5 CustomPreFusionPasses  (propagate_mutation_layouts, build_loop_scheduler_nodes →
+                                  CountedLoopSchedulerNodes, BEFORE Inductor fusion)
    fuse_nodes →
-   HOOK 6 _post_fusion_custom_pass CustomPostFusionPasses (scheduler.py:2333;
-                                    memory_planning[HBM], build_loop_scheduler_nodes, spyre_fuse_nodes)
+   HOOK 6 CustomPostFusionPasses (memory_planning[HBM], spyre_fuse_nodes)
                                    │
         ┌──────────────────────────────────────────────────────────────┐
         │ SuperDSCScheduling.codegen_node (scheduler.py:304)            │  LoopLevel IR → OpSpec
@@ -82,6 +93,15 @@ This document traces a PyTorch program through the entire torch-spyre Inductor b
 ```
 
 There are **six** extension hooks. Five are official Inductor extension points wired via `torch._inductor.config.patch` (`patches.py:85-99`); the sixth is a monkeypatch of `GraphLowering._update_scheduler` (`patches.py:119-123`) that fires **HOOK 4** (`CustomPreSchedulingPasses`) — the only hook that runs on lowered Inductor IR *before* `SchedulerNode`s exist.
+
+> **[post-merge]** `passes.py` was refactored into two pipeline base classes —
+> `_SpyreGraphPassPipeline` (FX-graph hooks, device-guarded) and `_SpyreNodePassPipeline`
+> (scheduler-node hooks) — sharing a `_uuid()` helper, with a `@_runs(...)` tag so
+> config-gated wrappers still key the Inductor cache on the *real* passes' source files. Two
+> structural moves from the diagram above: `build_loop_scheduler_nodes` now runs in **HOOK 5**
+> (`CustomPreFusionPasses`, before Inductor fusion, so `CountedLoopSchedulerNode`s survive),
+> and work division (step 13) is the three passes `cost_model_matmul_division` +
+> `work_distribution` (the old `k_fast_division` was replaced). Full detail in §10.
 
 ---
 
@@ -116,6 +136,12 @@ class OpSpec:
 `LoopSpec` (`op_spec.py:81-100`): `count: Expr`, `body: list[OpSpec|LoopSpec|UnimplementedOp]`, per-level `tiled_symbols`.
 
 These are **plain `@dataclass`es** — no custom `__str__`; `repr()` works but the intended human-readable form is the codegen pretty-print (`_codegen_op_spec_list`, `spyre_kernel.py:691`).
+
+> **[post-merge]** The per-op coarse-tiling tag on a `ComputedBuffer` is now a single
+> `loop_info: CoarseTileInfo` (`loop_info.py`) carrying `loop_group_id`, `loop_count`,
+> `loop_tiled_dims`, and the new `loop_tiled_reduction_dims` (Stage-1 reduction-dim tiling) —
+> replacing the earlier separate `loop_group_id`/`loop_count`/`loop_tiled_dims` attributes
+> described in §4 Stage 4. See §10.4–§10.5.
 
 ### 2.2 The SuperDSC JSON shape (`compute_ops.py:222-552`)
 
@@ -170,7 +196,7 @@ This is the backbone. Three responsibilities:
 
 **Fusion is disabled at three layers**: `SuperDSCScheduling.can_fuse_vertical`/`can_fuse_horizontal` → `False` (`scheduler.py:268-284`); `can_buffer_be_removed_through_fusion` → `False` (`scheduler.py:259-266`); `SpyreHeuristics` (`choices.py:22-60`) `reduction_split_factor=1` and all `can_fuse*` → `False`. Spyre re-implements its own *order-preserving* fusion later (`spyre_fuse_nodes`, §Stage 6).
 
-**Config flags** (`config.py:21-73`, installed via `install_config_module`): `lx_planning` (`LX_PLANNING`), `co_optimizing_lx_planning` (`CO_OPTIMIZING_LX_PLANNING`), `chunk_large_tensors` (`CHUNK_LARGE_TENSORS`), `coarse_tiling` (`COARSE_TILING`), `core_id_k_fast_emission` (`SPYRE_CORE_ID_K_FAST_EMISSION`, default on), `coarse_tiling_groups_fn` (default `None`), `sencores` (`SENCORES`, 1–32, default 32), `global_stick_optimizer`, `dxp_lx_frac_avail`, `bundle_hbm_symbols`, `unroll_loops`.
+**Config flags** (`config.py`, installed via `install_config_module`) **[post-merge: several changed]**: `lx_planning` (`LX_PLANNING`, **now default ON `"1"`**), `co_optimizing_lx_planning` (`CO_OPTIMIZING_LX_PLANNING`), `chunk_large_tensors` (`CHUNK_LARGE_TENSORS`), `core_id_k_fast_emission` (`SPYRE_CORE_ID_K_FAST_EMISSION`, default on), `sencores` (`SENCORES`, 1–32, default 32), `global_stick_optimizer` (default on), `allow_all_ops_in_lx_planning` (**new**, `False`), `dxp_lx_frac_avail`, `bundle_symbolic_args` (`BUNDLE_SYMBOLIC_ARGS` — **renamed from `bundle_hbm_symbols`**), `unroll_loops`. **Removed:** `coarse_tiling` / `COARSE_TILING` and `coarse_tiling_groups_fn` (coarse tiling is now gated by hint-group presence, not a flag).
 
 ---
 
@@ -230,7 +256,7 @@ These run on `graph.operations` (a flat, topo-ordered `list[ir.Operation]`), gat
 
 9. **`propagate_named_dims`** (`propagate_named_dims.py:297`) — **no-op unless** the driver called `name_tensor_dims(...)`. Propagates human-readable axis names; stamps `op.named_dims`, `op.loop_var_dims`, `op.reduction_named_dims` (`:214-221`).
 
-10. **`assign_dim_hints`** (`temp_passes.py:280`) — resolves `spyre_hint(...)` scopes into `op.spyre_hints: list[DimHint]` (`DimHint` at `propagate_hints.py:30`: dim_names, range_size, split_count, dim_index, is_reduction, hint_id). Hints are attached to FX `custom` meta by `spyre_hint` (`propagate_hints.py:67`) and survive AOT re-tracing via `collect_spyre_hints`/`recover_spyre_hints` (`:98-124`). `op.spyre_hints` is the contract consumed by coarse tiling.
+10. **`assign_dim_hints`** **[post-merge: now in `propagate_named_dims.py`, not `temp_passes.py`]** — resolves `spyre_hint(...)` scopes into `op.dim_hints: list[DimHint]` (`DimHint` at `propagate_hints.py`: `dim_names`, `split_count`, `loop_var` (None when the op is broadcast w.r.t. that hint), `is_reduction`, `hint_id`). Hints are attached to FX `custom` meta by `spyre_hint` and survive AOT re-tracing via `collect_spyre_hints`/`recover_spyre_hints`. `op.dim_hints` is the contract consumed by coarse tiling. (Work-division hints `spyre_hint(work_div={...})` are kept separate in `op.work_div_loop_info`.)
 
 ---
 
@@ -242,13 +268,15 @@ Everything here runs **after** stickification/padding (layouts final, in stick u
 
 **`chunk_large_tensors`** (`chunk_large_tensors.py:426`, runs before `span_reduction`) — splits oversized `Pointwise` `ComputedBuffer`s into stick-aligned, memory-safe chunks so work-division need not special-case them. `_needs_chunking` (`:188`): chunk if `per_core_span > MAX_SPAN_BYTES` (256 MB) after best split, or if `total_bytes > MAX_SPAN_BYTES * max_cores`. Chunk 0 is shrunk in place; chunks 1..N-1 become `Scatter` `MutationLayoutSHOULDREMOVE(op)` buffers offset by `chunk_offset` (`_chunk_op`, `:334`). Shares `MAX_SPAN_BYTES` with `work_division.py`.
 
-**`coarse_tile`** (`coarse_tile.py:92`) — gated by `config.coarse_tiling`. Groups come from `config.coarse_tiling_groups_fn` or, by default, `hints_to_coarse_tile_groups(operations)` (`temp_passes.py:413`), which merges consecutive ops with identical `spyre_hints`. It is a **stamping + range-rewriting** pass — no loop node is created yet (that happens post-scheduling). `_stamp_group` (`:567`) validates the group is a contiguous slice (`_validate_contiguous`, `:713`) and stamps three attrs on each op (`:608-610`): `op.loop_group_id` (nesting-path tuple), `op.loop_count`, `op.loop_tiled_dims`. `_divide_ranges` (`:621`) divides `data.ranges` (output ranges for Pointwise; non-reduction outer ranges for Reduction) by `loop_count`, syncs `op.layout.size`/`stride`, and **rebuilds the `SpyreTensorLayout`** for the smaller per-tile buffer. `insert_tiling_propagation` (`:147`) then handles outside consumers: loop-internal scratch → `per_tile_fixed = True`; used inside+outside (Case 1) → allocate full HBM buffer + insert copy op; used only outside (Case 2) → rewire to `MutationLayoutSHOULDREMOVE`.
+**`coarse_tile`** **[post-merge: gating changed]** — now run by the `_maybe_coarse_tile` wrapper **only when hint-derived groups exist** (`groups = hints_to_coarse_tile_groups(graph)`; `coarse_tile(graph, groups=groups)` if `groups`), not by a `config.coarse_tiling` flag. `hints_to_coarse_tile_groups` now lives in `coarse_tile.py` (moved out of `temp_passes.py`) and forms groups from each op's `dim_hints`. It is a **stamping + range-rewriting** pass — no loop node is created yet (that happens post-scheduling). `_stamp_group` validates the group is a contiguous slice and stamps a **single `op.loop_info: CoarseTileInfo`** (`loop_info.py`) holding `loop_group_id` (nesting-path tuple), `loop_count`, `loop_tiled_dims`, and `loop_tiled_reduction_dims` — replacing the earlier three separate attributes. `_divide_ranges` divides `data.ranges` (output ranges) by `loop_count`, syncs `op.layout.size`/`stride`, and **rebuilds the `SpyreTensorLayout`** for the smaller per-tile buffer; for tiled **reduction** dims `_divide_reduction_ranges` divides `data.reduction_ranges` instead (Stage 1, §10.5). `insert_tiling_propagation` then handles outside consumers: loop-internal scratch → `per_tile_fixed = True`; used inside+outside (Case 1) → allocate full HBM buffer + insert copy op; used only outside (Case 2) → rewire to `MutationLayoutSHOULDREMOVE`.
 
 **Work division** (`work_division.py`) — three sequential passes plus a heuristic. The unit of work is the iteration space `iteration_space_from_op(op)` (`pass_utils.py:195`). Splits are committed to `op.op_it_space_splits` via `apply_splits` (`:485`) → `splits_by_index_coeff` (`pass_utils.py:241`), which encodes `{Symbol: split}` as a **coeff-keyed** `ItSpaceSplits` pair (output dims keyed by write-index coefficient, reduction dims by read-index coefficient) — stable across the pre-scheduling→codegen boundary and robust to scheduler symbol renaming. Decoded later via `apply_splits_from_index_coeff` (`pass_utils.py:266`).
 
-- **Pass 1 — `span_reduction`** (`work_division.py:765`, mandatory) — computes the *minimum* splits so every tensor's per-core span ≤ 256 MB (`must_split_vars`, `:279`). Raises `Unsupported` if >1 *reduction* var must split (`:529-535`). topk reductions for k≤4 skipped.
-- **Pass 2 — `k_fast_division`** (`:850`, gated by `core_id_k_fast_emission`) — fires only on `BATCH_MATMUL_OP` reductions; `_try_k_fast_split` (`:624`) proposes `(m=1, n_split, k_split>1)` for narrow-N small-M matmuls (`_PT_ROWS=8` window). Returns claimed ops so Pass 3 skips them.
-- **Pass 3 — `work_distribution`** (`:777`) — distributes remaining cores: honor committed span splits, fill output dims by decreasing size (`prioritize_dimensions`, `:427`), then one reduction dim (`multi_dim_iteration_space_split`, `:108`). `max_cores` from `config.sencores` (1..32). `warn_if_per_core_overflow` (`:259`) logs CRITICAL on residual >256 MB.
+- **Pass 1 — `span_reduction`** (mandatory) — computes the *minimum* splits so every tensor's per-core span ≤ 256 MB. When no tensor violates the limit it leaves the op untouched. Raises `Unsupported` if >1 *reduction* var must split. topk reductions for k≤4 skipped.
+- **Pass 2 — `cost_model_matmul_division`** **[post-merge: replaces `k_fast_division`]** — fires only on `matmul`/`bmm` ops. It enumerates feasible `(b, m, n, k)` splits, prices each with an analytic estimate `cost = (compute + hbm + psum + tie_break) × b^1.4`, and selects the lowest-cost combination. It **declines** (→ Pass 3) when the op is not a matmul/bmm, when Pass 1 already committed a split, when dims are ambiguous, or when its split would use fewer cores than the default Pass 3 split. Returns the claimed ops so Pass 3 skips them. (The K-collaborator ring placement that `core_id_k_fast_emission` used to gate is now a codegen-side permutation.)
+- **Pass 3 — `work_distribution`** — distributes remaining cores (+ matmuls the cost model declined): honor committed span splits, fill output dims by decreasing size (`prioritize_dimensions`), then one reduction dim (`multi_dim_iteration_space_split`). `max_cores` from `config.sencores` (1..32). Logs CRITICAL on residual >256 MB. The `_distribute_work` wrapper runs Pass 2 then Pass 3 so every eligible op is finalized by exactly one of them.
+
+  Named work-division hints `spyre_hint(work_div={...})` (resolved into `op.work_div_loop_info`) are committed directly, bypassing Pass 2's cost model and Pass 3's auto-distribution, and are authoritative even over Pass 1 (with a warning). `SPYRE_INDUCTOR_IGNORE_HINTS=1` disables them.
 
 **`multi_dim_reduction_pass.decompose_multi_dim_reductions`** (`multi_dim_reduction_pass.py:165`) — an FX-graph pass that splits multi-dim reductions into chained single-dim reductions. **Not currently wired into any active pipeline** (no caller in `torch_spyre/` or `tests/`); staged/example code.
 
@@ -258,7 +286,7 @@ Everything here runs **after** stickification/padding (layouts final, in stick u
 
 ### Stage 5 — HOOK 4 tail: LX scratchpad planning (and the separate HBM planner)
 
-**Files:** `scratchpad/allocator.py`, `scratchpad/plan_solver.py`, `scratchpad/utils.py`, `scratchpad/passes.py`, `memory_planning.py`.
+**Files:** `scratchpad/allocator.py`, `scratchpad/utils.py`, `scratchpad/graph_editor.py` **[post-merge: new]**, `scratchpad/firstfit_bestfit_solver.py` **[post-merge: new, replaces the old `plan_solver.py`/`passes.py`]**, `memory_planning.py`. (The scratchpad solver internals were refactored in the merge; the pass-selection detail below — `passes.py:272-276` — now lives in the `_maybe_scratchpad_planning` wrapper.)
 
 There are **two unrelated memory-planning passes**:
 
@@ -268,7 +296,7 @@ There are **two unrelated memory-planning passes**:
 | Runs in | HOOK 4 (pre-scheduling, on `ir.Operation`s) | HOOK 6 (post-fusion, on `BaseSchedulerNode`s) |
 | Pool | per-core 2 MB LX (~1.6 MB usable) | HBM 4 GB intermediates segment (`SEGMENT_SIZE=0x400000000`) |
 | Annotation | `layout.allocation["lx"] = address` | `layout.allocation["pool"] = address` |
-| Gating | `LX_PLANNING=1` (default off) | `SPYRE_INDUCTOR_MEMORY_PLAN` (default on) |
+| Gating | `LX_PLANNING` (**[post-merge] now default ON**) | `SPYRE_INDUCTOR_MEMORY_PLAN` (default on) |
 
 **LX path.** `scratchpad_planning(graph, allocator=None)` (`allocator.py:398`) picks `DefaultAllocator` or, when `CO_OPTIMIZING_LX_PLANNING=1`, `StrategyBCoOptimizingAllocator` (chosen in `passes.py:272-276`). The only durable mutation in the default path is annotating eligible buffers' `FixedTiledLayout.allocation["lx"]` (`_push_allocation`, `:172`). Flow (`plan_allocation`, `:212`): pre-passes (`CloneInputNodesPass`, inert by default) → `_generate_buffers` produces `LifetimeBoundBuffer`s (per-core size, integer liveness `[start,end)`, `in_place_parents`) → `GreedyLayoutSolver.plan_layout` (`plan_solver.py:143`, greedy linear-scan / register-allocation sweep with first-fit `_find_free_block`, **no defrag, no eviction**; address `None` → stays in HBM) → write addresses.
 
@@ -298,7 +326,7 @@ Both annotations feed codegen: a buffer with `lx` or `pool` is removed from kern
 
 **`store` → OpSpec (the core transition).** The whole RValue tree for one buffer is flattened into **exactly one** OpSpec at `store`/`store_reduction` (`:509`/`:568`):
 - `create_tensor_arg` (`:385`) turns each `TensorAccess` into a `TensorArg`: `concretize_index` (`pass_utils.py:87`) replaces size symbols, `compute_coordinates` (`views.py:61`) projects the flat index onto device coordinates, and only non-scratchpad tensors are registered as kernel args (`:410-414`).
-- `create_op_spec` (`:417`) validates dtypes (FP32 only for `SPYRE_FP32_OPS`), folds work-division splits into `it_space_extended = {sym: (range, split)}` via `apply_splits_from_index_coeff`, computes coarse-tile `tiled_symbols` from `loop_tiled_dims`, and constructs the `OpSpec`.
+- `create_op_spec` (`:417`) validates dtypes (FP32 only for `SPYRE_FP32_OPS`), folds work-division splits into `it_space_extended = {sym: (range, split)}` via `apply_splits_from_index_coeff`, computes coarse-tile `tiled_symbols` from `loop_info.loop_tiled_dims` **[post-merge: was the separate `loop_tiled_dims` attr]** (plus reduction-tiled symbols appended after the output syms, Stage 1), and constructs the `OpSpec`.
 - For a **bare `TensorAccess`** store (pure copy), the op name is chosen *geometrically* (`:548-564`): all-zero input coords → `IDENTITY_OP` (broadcast); stick variable differs → `RESTICKIFY_OP`; else `IDENTITY_OP`.
 - `BATCH_MATMUL_OP` is special-cased (two tensor inputs + output, `:597-611`); reduction `op_info` is pulled from `node.data.op_info`.
 
@@ -326,7 +354,7 @@ Both annotations feed codegen: a buffer with `lx` or `pool` is removed from kern
 
 **`parse_op_spec`** (`superdsc.py:529`) — the field-by-field OpSpec → `SDSCSpec` mapping: symbol renaming to canonical labels (`INPUT_DIM_LABELS`/`OUTPUT_DIM_LABELS`/`MATMUL_DIM_LABELS`), `_concretize_for_sdsc` forcing concrete sizes (`:426`, TODO issue#220 for symbolic), work-division → `dim_splits`/`num_cores`/`work_slices`, device dim order + stick dim from `device_coordinates` (`_get_device_dim_order`, `:216`), matmul K-padding (`_extend_matmul_k_to_padded`, `:455`), per-tensor `SDSCArgs` (`_create_sdsc_tensors`, `:319`: per-dim `scales` [1 normal, -1 reduced, -2 stick-reduction], `strides`, `offsets`, `backGap`, layout dedup by `(dim_order, stick_dim_order, stick_size)` → `LAYOUT_LABELS`), padding/masking, opfunc selection (`nonstick` suffix for non-stick reductions), `execution_unit` (`"pt"` matmul / `"sfp"` otherwise), and `core_id → work-slice` mapping (`_get_core_to_slice_mapping`, `:135`; K-fast variant `:156`).
 
-**Address modes** (`compute_ops.py`, controlled by `bundle_hbm_symbols`, default `False`): `use_symbols=False` bakes concrete HBM byte addresses into `startAddressCoreCorelet_` (`:330`); `use_symbols=True` registers negative symbol IDs + `affine_strides` for runtime `affine.apply` (`:276`).
+**Address modes** (`compute_ops.py`, controlled by `bundle_symbolic_args` **[post-merge: renamed from `bundle_hbm_symbols`]**, default `False`): `use_symbols=False` bakes concrete HBM byte addresses into `startAddressCoreCorelet_` (`:330`); `use_symbols=True` registers negative symbol IDs + `affine_strides` for runtime `affine.apply` (`:276`).
 
 **Host wrapper** (`wrapper.py`, `SpyrePythonWrapperCodegen`): `make_buffer_allocation` (`:110`) emits `spyre_empty_with_layout(...)` for `FixedTiledLayout` buffers; `generate` (`:75`) injects a shared `_pool` scratch (`allocate_pool`, `:152`) sized from `V.graph.pool_size`; `noop_simplify_loops_impl` (`:164`) disables Inductor's loop-contiguity simplification.
 
@@ -679,3 +707,137 @@ corroborates this synthesis. Notable confirmations and verbatim phrasings:
   dump the on-disk `sdsc_N.json` + `bundle.mlir`).
 - **KTIR** — confirmed as the planned MLIR-based replacement for the SuperDSC JSON wire
   format.
+
+---
+
+## 10. Repo refresh (merge `0afc247`) — pipeline changes & claim verification
+
+A large merge landed (`0afc247`, ~179 files, +27k/−4k). This section is authoritative
+where it conflicts with §1/§4 specifics. Verified against the merged code and the refreshed
+docs (`inductor_frontend.md`, `coarse_tiling_loops.md`, `work_division_planning.md`,
+`ktir.md`, `backend.md`).
+
+### 10.1 Two claims, verified
+
+**Claim A — "ops are now fused at tile level, so the LoopLevel IR is just the actual inner
+loop": PARTIALLY CORRECT — true ONLY for hint-driven coarse-tiled groups.**
+
+- TRUE for ops inside a `spyre_hint(tiles=/slices=/num_tiles_per_dim={...})` scope.
+  `coarse_tile` divides that op's `data.ranges`, `layout.size/stride`, and the
+  `device_layout` `device_size` **down to a single tile** (`coarse_tile.py:1058-1148`), and
+  codegen wraps the per-tile op sequence in a `LoopSpec(count=K, body=[OpSpec, ...])` via a
+  `CountedLoopSchedulerNode` (`scheduler.py`). So for those ops the IR/OpSpec body *is* the
+  single-tile inner loop; `loop_count` + `tiled_symbols` + `affine.apply` reconstruct full
+  addressing. Intermediates stay in LX across ops within the tile.
+- FALSE / not applicable for **un-hinted** ops. Coarse tiling is opt-in: without hints,
+  `hints_to_coarse_tile_groups` yields nothing, ops keep their **full** ranges, and codegen
+  uses the flat path — no inner loop. **Our plain `examples/softmax.py` has no hints, so it
+  is NOT coarse-tiled** — which is exactly why our LoopLevel dump (§6.2) showed full
+  `[512,1024]`/`[1,1024]` ranges, not a tile. `OpSpec.tiled_symbols` is non-empty *exactly
+  when* the op was codegen'd inside a `CountedLoopSchedulerNode`.
+- The loop **wrapper** lives at the scheduler/codegen layers (`CountedLoopSchedulerNode` →
+  `LoopSpec`), not in the LoopLevel IR node — the op node only carries the `loop_info` tag
+  plus reduced ranges.
+
+**Claim B — "the low-level IR should NOT be SuperDSC": WRONG (as of the merged code).**
+
+- The compiler **still emits SuperDSC**: `generate_bundle` → `sdsc_N.json` + `bundle.mlir`
+  → `dxp_standalone` (`async_compile.py:47-65`, `codegen/bundle.py`, `compute_ops.py`).
+  Nothing changed at the `OpSpec` → low-level boundary.
+- **KTIR** is the *planned* successor (RFC 0682; `ktir.md`, `backend.md` "From SuperDSC to
+  KTIR"). The spec is stable and a reference interpreter exists, but "the backend lowering
+  path is in development" — **not production**. Only one mention in code (a TODO comment in
+  `temp_passes.py`).
+- The kernel of truth behind the claim: a **new runtime execution layer** was added —
+  **`JobPlan` / `JobPlanStep`** (`csrc/job_plan.*`, `csrc/prepare_kernel.*`, bound in
+  `module.cpp` as `prepare_kernel`/`launch_jobplan`). It translates DeepTools' *SpyreCode*
+  (itself produced from the SDSC bundle) into an ordered execution plan of H2D / D2H /
+  Compute / HostCompute steps. It is **downstream of** SuperDSC (consumes it), opt-in via
+  `DUMP_SPYRE_CODE`, and does **not** replace the compiler's low-level IR.
+
+> Net: **SuperDSC = still the low-level compiler IR / wire format.** JobPlan = a new *runtime*
+> execution IR *below* the backend. KTIR = future.
+
+### 10.2 Pipeline structure now (six hooks, refactored)
+
+`passes.py` was rewritten around two pipeline base classes — `_SpyreGraphPassPipeline`
+(FX-graph passes, device-guarded) and `_SpyreNodePassPipeline` (scheduler-node passes) —
+sharing a `_uuid()` helper, with a `@_runs(...)` tag so config-gated wrappers still key the
+Inductor cache on the *real* passes' source files. Passes now receive a `GraphLowering`
+`graph` (not a `list[Operation]`).
+
+The six hooks (five upstream + the monkey-patched sixth):
+
+| Hook | Runs now |
+|---|---|
+| `CustomPreGradPasses` | (empty) |
+| `CustomPrePasses` | `collect_spyre_hints` |
+| `CustomPostPasses` | `recover_spyre_hints`, `convert_constant_with_graph_node`, `mm_to_bmm_pass`, `mark_direct_unit_bmm_pass`, `bmm_unflatten_pass` **+ our `dump_fx_graph`** |
+| `CustomPreFusionPasses` | `propagate_mutation_layouts`, `build_loop_scheduler_nodes` (builds `CountedLoopSchedulerNode`s **before** Inductor fusion) |
+| `CustomPostFusionPasses` | `memory_planning`, `spyre_fuse_nodes` |
+| `CustomPreSchedulingPasses` | the 14-step pipeline below (via `_update_scheduler` monkeypatch) **+ our `dump_loop_ir` BEFORE & AFTER** |
+
+The **14** pre-scheduling steps (`passes.py:321-346`), in order:
+`deadcode_elimination` · `propagate_spyre_tensor_layouts` · `optimize_restickify_locations`
+· `finalize_layouts` · `insert_restickify` · `insert_bmm_padding` ·
+`dedup_and_promote_constants` · `_maybe_chunk_large_tensors` [gated] · `propagate_named_dims`
+· `assign_dim_hints` · `_maybe_coarse_tile` [hint-gated] · `span_reduction` ·
+`_distribute_work` (`cost_model_matmul_division` + `work_distribution`) ·
+`_maybe_scratchpad_planning` [LX-gated].
+
+Changes vs the old §4 model: work division is now **three** passes; `coarse_tile` (step 11)
+is new; `assign_dim_hints` moved into `propagate_named_dims.py`; every pass takes `graph`.
+
+### 10.3 Work division is now THREE passes (`work_division_planning.md`)
+
+1. **`span_reduction`** — commits the *minimum* splits to keep per-core span ≤ 256 MB; else
+   leaves the op untouched.
+2. **`cost_model_matmul_division`** — matmul/bmm only; enumerates `(b,m,n,k)` splits, prices
+   each via `cost = (compute + hbm + psum + tie_break) × b^1.4`, picks the cheapest. Declines
+   to Pass 3 if not a matmul / Pass 1 already split / dims ambiguous / it would use fewer
+   cores than the default.
+3. **`work_distribution`** — everything else (+ declined matmuls); fills output dims by
+   decreasing size, then ≤ 1 reduction dim.
+
+Named work-division hints `spyre_hint(work_div={...})` resolve per-op and are committed
+directly (bypassing auto-distribution and the matmul cost model), authoritative even over
+Pass 1 (with a warning). `SPYRE_INDUCTOR_IGNORE_HINTS=1` disables them. Kept **separate** from
+coarse-tiling hints `spyre_hint(tiles=...)`.
+
+### 10.4 New op attributes (now shown by `_format_operations` / our loop-IR dump)
+
+- **`loop_info: CoarseTileInfo`** (`loop_info.py`): `loop_group_id` (nesting-path tuple),
+  `loop_count` (per-level trip counts), `loop_tiled_dims` (per-level output-range indices),
+  `loop_tiled_reduction_dims` (NEW — per-level reduction-range indices, Stage 1).
+- **`dim_hints: list[DimHint]`** (`propagate_hints.py`): `dim_names`, `split_count`,
+  `loop_var`, `is_reduction`, `hint_id` — the *input* to coarse tiling from `spyre_hint`
+  scopes. (passes.py `_format_operations` now also prints `dim_hints`/`loop_info`.)
+
+### 10.5 Stage 1 reduction-dim tiling (#2572)
+
+Coarse tiling can now tile a **non-stick reduction** dim via "fill-init + per-tile combine":
+allocate a full-size HBM accumulator, fill it with the reduction identity (`sum`→0/`add`,
+`max`→−∞/`maximum`, …), insert an in-loop combine op that merges each tile's partial, mark
+the output `per_tile_fixed`, and patch outside consumers. Stick-dim reduction tiling and
+mixed output+reduction levels (Stage 2) raise `RuntimeError` for now.
+
+### 10.6 Why the running script likely fails
+
+Static analysis of the merged middle-end **and** our instrumentation/bench is **clean**: all
+imports resolve, no conflict markers, pass signatures match the new `GraphLowering` contract,
+`dump_fx_graph`/`dump_loop_ir`/`bench`/`profiling` are all compatible, and the #2585
+"utilities" refactor touched **only test files**. So the failure is not a Python-level break
+we can see here.
+
+Most likely cause: **the C++ extension `_C` needs rebuilding.** The merge changed `csrc/`
+heavily — `job_plan.{h,cpp}`, `prepare_kernel.{h,cpp}`, `module.cpp` (+38), `spyre_mem.cpp`,
+`spyre_tensor_impl.h` — so a stale installed `_C` will ABI-mismatch or miss symbols. Rebuild
+on the run machine (the project's editable/build step) and re-run. If it still fails, the
+**traceback is required** (static Python is clean); localize with
+`SPYRE_DUMP_IR=1 TORCH_LOGS="+inductor"`. Cosmetic only: `kernel_runner.py:16` carries an
+unused `import torch` from the merge resolution (ruff F401, harmless at runtime).
+
+### 10.7 Doc drift to ignore
+
+`getting_started/how_torch_spyre_works.md` and `key_concepts.md` still describe work division
+as "two-pass" — **stale**; use the three-pass model in `work_division_planning.md`.

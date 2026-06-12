@@ -49,6 +49,22 @@ def _default_sync(out) -> None:
                 item.to("cpu")
 
 
+def device_sync(out=None) -> None:
+    """Force device completion via the runtime synchronize (no D2H copy).
+
+    Pass as ``measure_latency(..., sync=device_sync)`` to drain the device
+    without paying the output-tensor transfer that ``.cpu()`` incurs -- a
+    cleaner end-to-end device-time measurement. Falls back to the ``.cpu()``
+    sync if the runtime synchronize is unavailable.
+    """
+    try:
+        import torch_spyre._C as _C
+
+        _C.synchronize()
+    except Exception:  # noqa: BLE001 - no runtime -> fall back to host-copy sync
+        _default_sync(out)
+
+
 @dataclass
 class LatencyStats:
     """Latency samples (nanoseconds) and deterministic-friendly summaries."""
@@ -101,7 +117,7 @@ def measure_latency(
     fn,
     runs: int = 50,
     warmup: int = 5,
-    sync=_default_sync,
+    sync=None,
     inner: int = 1,
     label: str = "",
 ) -> LatencyStats:
@@ -126,6 +142,8 @@ def measure_latency(
     Returns:
         LatencyStats over ``runs`` samples (each is a per-launch time).
     """
+    if sync is None:
+        sync = _default_sync
 
     def _burst() -> object:
         out = None
