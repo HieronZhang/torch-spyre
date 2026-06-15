@@ -19,7 +19,8 @@ Pair with ``SPYRE_DUMP_COST=1`` to print the cost-model prediction at compile
 time, so predicted vs measured can be compared in one run.
 
 Knobs:
-    BENCH_OP    gelu | relu | sigmoid | exp | mul | add   (default gelu)
+    BENCH_OP    gelu | relu | sigmoid | exp | mul | add | add3 | add4 |
+                bcast | mulbcast                          (default gelu)
     BENCH_DEPTH N   chain a unary op N times (for the LX-bandwidth sweep)
     BENCH_LX_ALL 1  force ALL ops LX-eligible (config.allow_all_ops_in_lx_planning)
     BENCH_ROWS, BENCH_COLS, BENCH_RUNS, BENCH_WARMUP
@@ -65,8 +66,22 @@ _UNARY = {
     "exp": torch.exp,
 }
 _BINARY = {"mul": lambda a, b: a * b, "add": lambda a, b: a + b}
+# n full inputs summed in ONE fused kernel: stream count = n_inputs + 1
+# (n reads + 1 write). gelu=2, mul/add=3, add3=4, add4=5 -> a stream-count sweep
+# to map effective per-byte rate vs # concurrent streams.
+_NARY_ADD = {"add3": 3, "add4": 4}
+# Broadcast second operand b[1,COLS]: counted at ~one row iff the device caches it.
+# mulbcast mirrors bcast to check the caching result is not add-specific.
+_BCAST = {"bcast": lambda a, b: a + b, "mulbcast": lambda a, b: a * b}
 
 torch.manual_seed(0xAFFE)
+
+
+def _sum_all(*ts):
+    acc = ts[0]
+    for t in ts[1:]:
+        acc = acc + t
+    return acc
 
 
 def make_workload():
@@ -85,16 +100,26 @@ def make_workload():
         x = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
         y = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
         return torch.compile(f), (x, y)
-    if OP == "bcast":
-        # a[ROWS,COLS] + b[1,COLS]: b is read with a BROADCAST index (only the
-        # column var). Compare to `add` (full [ROWS,COLS]+[ROWS,COLS]) at the same
-        # size: bcast ~ add => hardware re-fetches b each row (count it full);
+    if OP in _NARY_ADD:
+        # n full [ROWS,COLS] inputs summed in ONE fused kernel: n reads + 1 write
+        # => n+1 streams. Sweeping add3 (4-stream) / add4 (5-stream) alongside gelu
+        # (2) and mul/add (3) maps effective per-byte rate vs stream count, so we
+        # can tell a smooth contention curve from a one-time 2->3 step.
+        n = _NARY_ADD[OP]
+        xs = [torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE) for _ in range(n)]
+        return torch.compile(_sum_all), tuple(xs)
+    if OP in _BCAST:
+        # a[ROWS,COLS] (op) b[1,COLS]: b is read with a BROADCAST index (only the
+        # column var). Compare to the full binary (a (op) [ROWS,COLS]) at the same
+        # size: bcast ~ full => hardware re-fetches b each row (count it full);
         # bcast ~ a unary 2-pass op => it loads b once and reuses (cached).
+        f = _BCAST[OP]
         x = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
         b = torch.rand(1, COLS, dtype=torch.float16).to(DEVICE)
-        return torch.compile(lambda a, c: a + c), (x, b)
+        return torch.compile(f), (x, b)
     raise SystemExit(
-        f"unknown BENCH_OP={OP!r} (use {list(_UNARY) + list(_BINARY) + ['bcast']})"
+        f"unknown BENCH_OP={OP!r} (use "
+        f"{list(_UNARY) + list(_BINARY) + list(_NARY_ADD) + list(_BCAST)})"
     )
 
 

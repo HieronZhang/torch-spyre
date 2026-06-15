@@ -150,6 +150,28 @@ for n in 1024 4096; do
     env BENCH_OP=bcast BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_ops.py
   step "RUNG6 full ref:  add[512x${n}]" \
     env BENCH_OP=add BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_ops.py
+  step "RUNG6 mul-broadcast: mulbcast[512x${n}] (b is [1x${n}])" \
+    env BENCH_OP=mulbcast BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_ops.py
+  step "RUNG6 mul full ref: mul[512x${n}]" \
+    env BENCH_OP=mul BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_ops.py
+done
+
+# ---------------------------------------------------------------------------
+# RUNG 7 — effective per-byte rate vs # concurrent streams.
+#   ops: gelu (2-stream) | mul (3) | add3 (4) | add4 (5). Each a size sweep.
+#   Per op, fit slope -> rate(n_streams) and intercept -> fill. Tells us whether
+#   the rate keeps dropping with each added stream (contention curve) or steps
+#   once at 2->3 then plateaus, and whether fill stays op/stream-independent.
+#   NOTE: this measures effective per-byte RATE, not proven DRAM bandwidth --
+#   from latency alone we can't separate DRAM contention from on-chip issue rate.
+#   Each n-ary add must compile to ONE fused kernel (n input loads + 1 store);
+#   the per-kernel table below confirms it (a single sdsc_fused_* row).
+# ---------------------------------------------------------------------------
+for op in gelu mul add3 add4; do
+  for n in 512 1024 2048 4096; do
+    step "RUNG7 streams: ${op}[512x${n}]" \
+      env BENCH_OP="$op" BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_ops.py
+  done
 done
 
 echo ""
