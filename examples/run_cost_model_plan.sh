@@ -174,5 +174,23 @@ for op in gelu mul add3 add4; do
   done
 done
 
+# ---------------------------------------------------------------------------
+# RUNG 8 — peak-bandwidth probe: why is effective BW ~111 vs the 204.8 GB/s
+#   LPDDR5 peak (_HBM_BW_GBS in work_division.py)?
+#   copy (2-stream r/w) and read (read-only reduction), size sweep to large.
+#   Watch: does effective BW PLATEAU (~111 = a real ceiling) or keep climbing
+#   toward 204.8 (so 111 was a small-op/ramp artifact)? Does read-only (1 pass)
+#   come in at ~half copy's latency (shared rate) or faster (bidirectional cap)?
+#   NB: this is the latency-inferred BW only. The ACTUAL DDR bandwidth needs
+#   aiu-smi paired with BENCH_BW_SUSTAIN_S -- run that separately (two-terminal;
+#   see examples/bench_bandwidth.py header + docs .../profiling/device_monitoring.md).
+# ---------------------------------------------------------------------------
+for op in copy read; do
+  for n in 1024 4096 16384 65536; do
+    step "RUNG8 bandwidth: ${op}[512x${n}]" \
+      env BENCH_BW_OP="$op" BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_bandwidth.py
+  done
+done
+
 echo ""
 echo "================ DONE. forward this file: $LOG ================"
