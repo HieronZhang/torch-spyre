@@ -192,5 +192,36 @@ for op in copy read write; do
   done
 done
 
+# ---------------------------------------------------------------------------
+# RUNG 9 — tile-footprint / burst-size test: copy at a large FIXED size, sweep
+#   SENCORES. Fewer cores => bigger per-core tile => bigger contiguous DMA bursts.
+#   If copy's read+write BW RISES as tiles grow, the ~98 cap is burst/scratchpad-
+#   limited (the "memory requests are limited" effect). If FLAT, the cap is
+#   intrinsic to mixing reads+writes (turnaround / half-duplex), not request size.
+#   This is the control that separates the burst-size mechanism from turnaround.
+# ---------------------------------------------------------------------------
+for c in 1 2 4 8 16 32; do
+  step "RUNG9 tile-size: copy[512x16384] SENCORES=${c}" \
+    env SENCORES="$c" BENCH_BW_OP=copy BENCH_ROWS=512 BENCH_COLS=16384 \
+    python examples/bench_bandwidth.py
+done
+
+# ---------------------------------------------------------------------------
+# RUNG 10 — read/write turnaround V-curve (latency side): hold the read pattern
+#   fixed (one contiguous read of x) and add writes, so write-fraction goes
+#   copy 1R1W=0.50 -> w2 1R2W=0.67 -> w3 1R3W=0.75. With read-only (0.0 ~172) and
+#   write-only (1.0 ~146) from rung 8, this maps effective BW vs write-fraction.
+#   A V-shaped dip (minimum near balanced 1:1) is the turnaround signature; a flat
+#   or monotonic curve is not. REQUIRES w2/w3 to FUSE to one kernel (1 read + N
+#   writes) -- the printed kernel count + SPYRE_DUMP_COST (1 input, N outputs) confirm
+#   it; if they split, the read count is wrong and the point is invalid (note it).
+# ---------------------------------------------------------------------------
+for op in copy w2 w3; do
+  for n in 16384 65536; do
+    step "RUNG10 write-frac: ${op}[512x${n}]" \
+      env BENCH_BW_OP="$op" BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_bandwidth.py
+  done
+done
+
 echo ""
 echo "================ DONE. forward this file: $LOG ================"

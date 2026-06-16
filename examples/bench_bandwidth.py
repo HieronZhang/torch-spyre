@@ -20,16 +20,24 @@ compiler's own matmul model uses the LPDDR5 *peak* of 204.8 GB/s
 large, low-compute memory traffic across all cores to find what bandwidth is
 actually achievable and explain the ~1.85x gap (204.8 / 111).
 
-Three workloads, contrasted:
-    copy  : y = x + 1.0          2-stream  (1 read + 1 write)  -> read+write BW
-    read  : y = x.sum(dim=-1)    read-only (~1 read, tiny write) -> isolates read BW
-    write : y = b[1,N] + c[N,1]  write-only (both inputs broadcast -> cached ~free
-            per rung 6, output is the full grid) -> isolates write BW
+Workloads, contrasted:
+    copy  : y = x + 1.0           1R+1W (read+write, balanced) -> read+write BW
+    read  : y = x.sum(dim=-1)     read-only (~1R, tiny write)  -> isolates read BW
+    write : y = b[1,N] + c[N,1]   write-only (inputs broadcast -> cached ~free per
+            rung 6, output is the full grid) -> isolates write BW
+    w2/w3 : x -> (x+1, x-1[, x*2]) 1R + 2-3 writes (write-heavy; SAME single read as
+            copy) -> fills the write-fraction axis between copy (0.5) and write (1.0)
 
-Rung 8 found read ~175 GB/s (85% of the 204.8 LPDDR5 peak) but copy ~98: writes are
-the bottleneck. ``write`` confirms the write rate directly (inferred ~68 GB/s from
-read vs copy). Check the SPYRE_DUMP_COST line for ``write`` shows BOTH inputs flagged
-broadcast -- so it really is write-dominated, not a hidden full read.
+Rung 8: read-only ~172 GB/s and write-only ~146 (both ~75-85% of the 204.8 LPDDR5
+peak), but balanced copy only ~98 -- LOWER than either alone. So the binding limit is
+running reads and writes TOGETHER, not the write rate (writes alone are fast). The
+*mechanism* is open (DRAM read/write bus turnaround? half-duplex link? scratchpad
+burst-size?). w2/w3 map BW vs write-fraction: a V-shaped dip (minimum at balanced 1:1)
+is the turnaround signature. aiu-smi (bus utilization) is the decisive check -- see
+notes/bandwidth_turnaround_experiment.md.
+
+NOTE: w2/w3 are valid only if they fuse to ONE kernel (1 read + N writes); the script
+prints the kernel count and SPYRE_DUMP_COST shows the op's input/output structure.
 
 The effective BW here is bytes / device-min-latency (== GB/s). The fixed ~20 us
 per-kernel term depresses it at small sizes, so SWEEP size: the asymptote (large
@@ -42,7 +50,7 @@ device_monitoring.md). If aiu-smi reads ~200 while our latency BW reads ~111, th
 gap is host/ramp overhead; if aiu-smi also reads ~111, that IS the ceiling.
 
 Knobs:
-    BENCH_BW_OP        copy | read | write      (default copy)
+    BENCH_BW_OP        copy | read | write | w2 | w3   (default copy)
     BENCH_ROWS, BENCH_COLS                      shape (default 512 x 8192)
     BENCH_RUNS, BENCH_WARMUP
     BENCH_BW_SUSTAIN_S N   after measuring, loop the op for ~N seconds so aiu-smi
@@ -57,6 +65,12 @@ Examples:
     BENCH_BW_OP=read BENCH_COLS=16384 python examples/bench_bandwidth.py
     # write-only: confirm the write bottleneck (both inputs broadcast, output full)
     BENCH_BW_OP=write BENCH_COLS=16384 python examples/bench_bandwidth.py
+    # write-fraction sweep (turnaround V-curve): copy(0.5) -> w2(0.67) -> w3(0.75)
+    for op in copy w2 w3; do \
+      BENCH_BW_OP=$op BENCH_COLS=65536 python examples/bench_bandwidth.py; done
+    # tile-size test: copy at large size, sweep cores (bigger tile = bigger bursts)
+    for c in 1 2 4 8 16 32; do SENCORES=$c BENCH_BW_OP=copy \
+      BENCH_COLS=16384 python examples/bench_bandwidth.py; done
     # aiu-smi window (start aiu-smi in another shell during the sustained phase)
     BENCH_BW_OP=copy BENCH_COLS=65536 BENCH_BW_SUSTAIN_S=20 \
       python examples/bench_bandwidth.py
@@ -91,10 +105,14 @@ PEAK_GBPS = 204.8  # _HBM_BW_GBS: LPDDR5 aggregate peak (work_division.py)
 #           negligible next to the [ROWS,COLS] read)
 #   write = write full grid from broadcasts  -> 1  (write-only; both inputs [1,N]/[N,1]
 #           load once and cache ~free per rung 6, so ~no read traffic)
+#   w2/w3 = 1 read of x + 2/3 writes (write-heavy; only valid if it fuses to one
+#           kernel -- otherwise each output re-reads x and the read count is wrong)
 _OPS = {
     "copy": (lambda x: x + 1.0, 2),
     "read": (lambda x: x.sum(dim=-1), 1),
     "write": (lambda b, c: b + c, 1),
+    "w2": (lambda x: (x + 1.0, x - 1.0), 3),
+    "w3": (lambda x: (x + 1.0, x - 1.0, x * 2.0), 4),
 }
 
 
