@@ -21,23 +21,22 @@ large, low-compute memory traffic across all cores to find what bandwidth is
 actually achievable and explain the ~1.85x gap (204.8 / 111).
 
 Workloads, contrasted:
-    copy  : y = x + 1.0           1R+1W (read+write, balanced) -> read+write BW
+    neg   : y = -x                genuine 1R+1W, NO constant -> constant-free check
+    copy  : y = x + 1.0           1R+1W (the scalar 1.0 is a broadcast immediate,
+            costs ~no HBM -- copy's latency ~= gelu's, a true unary)
     read  : y = x.sum(dim=-1)     read-only (~1R, tiny write)  -> isolates read BW
     write : y = b[1,N] + c[N,1]   write-only (inputs broadcast -> cached ~free per
             rung 6, output is the full grid) -> isolates write BW
-    w2/w3 : x -> (x+1, x-1[, x*2]) 1R + 2-3 writes (write-heavy; SAME single read as
-            copy) -> fills the write-fraction axis between copy (0.5) and write (1.0)
 
-Rung 8: read-only ~172 GB/s and write-only ~146 (both ~75-85% of the 204.8 LPDDR5
-peak), but balanced copy only ~98 -- LOWER than either alone. So the binding limit is
-running reads and writes TOGETHER, not the write rate (writes alone are fast). The
-*mechanism* is open (DRAM read/write bus turnaround? half-duplex link? scratchpad
-burst-size?). w2/w3 map BW vs write-fraction: a V-shaped dip (minimum at balanced 1:1)
-is the turnaround signature. aiu-smi (bus utilization) is the decisive check -- see
-notes/bandwidth_turnaround_experiment.md.
+copy IS genuinely 1R+1W: the scalar 1.0 is the maximally-broadcast input, cached on-chip
+like the rung-6 broadcasts (empirically copy ~= gelu, a true unary, in latency). An old
+dump counted it as a full read (3 passes) -- a cost-model bug, now fixed (0-loop-var
+indices are flagged broadcast/free). So copy ~98 GB/s IS the genuine balanced read+write
+rate, and the penalty (98 << read ~172 / write ~146) stands. `neg` re-confirms at large
+size. The OPEN question is the penalty's MECHANISM (turnaround? half-duplex? shared-bus
+saturation?) -- see rung 9 + notes/bandwidth_turnaround_experiment.md.
 
-NOTE: w2/w3 are valid only if they fuse to ONE kernel (1 read + N writes); the script
-prints the kernel count and SPYRE_DUMP_COST shows the op's input/output structure.
+w2/w3 (multi-output) are CONFOUNDED -- each output re-reads x; do not trust their BW.
 
 The effective BW here is bytes / device-min-latency (== GB/s). The fixed ~20 us
 per-kernel term depresses it at small sizes, so SWEEP size: the asymptote (large
@@ -50,7 +49,7 @@ device_monitoring.md). If aiu-smi reads ~200 while our latency BW reads ~111, th
 gap is host/ramp overhead; if aiu-smi also reads ~111, that IS the ceiling.
 
 Knobs:
-    BENCH_BW_OP        copy | read | write | w2 | w3   (default copy)
+    BENCH_BW_OP        neg | copy | read | write | w2 | w3   (default copy)
     BENCH_ROWS, BENCH_COLS                      shape (default 512 x 8192)
     BENCH_RUNS, BENCH_WARMUP
     BENCH_BW_SUSTAIN_S N   after measuring, loop the op for ~N seconds so aiu-smi
@@ -105,9 +104,16 @@ PEAK_GBPS = 204.8  # _HBM_BW_GBS: LPDDR5 aggregate peak (work_division.py)
 #           negligible next to the [ROWS,COLS] read)
 #   write = write full grid from broadcasts  -> 1  (write-only; both inputs [1,N]/[N,1]
 #           load once and cache ~free per rung 6, so ~no read traffic)
-#   w2/w3 = 1 read of x + 2/3 writes (write-heavy; only valid if it fuses to one
-#           kernel -- otherwise each output re-reads x and the read count is wrong)
+#   neg   = genuine 1 read + 1 write, NO constant operand -> a constant-free check
+#           on copy. copy (x+1.0) is ALSO 1R+1W: the scalar 1.0 is a broadcast
+#           immediate that costs ~no HBM (same caching as rung 6; copy's latency
+#           ~= gelu's, a true unary). The dump's old "3 passes" was an extraction
+#           bug (scalars have 0 loop vars, now flagged broadcast/free). Expect
+#           neg ~= copy; both give the genuine balanced read+write rate.
+#   w2/w3 = multi-output: CONFOUNDED -- each output re-reads x (not a shared load),
+#           so they are NOT 1R:NW. Kept only for the record; do not trust their BW.
 _OPS = {
+    "neg": (lambda x: -x, 2),
     "copy": (lambda x: x + 1.0, 2),
     "read": (lambda x: x.sum(dim=-1), 1),
     "write": (lambda b, c: b + c, 1),

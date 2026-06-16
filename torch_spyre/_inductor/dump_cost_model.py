@@ -133,11 +133,14 @@ def extract_op_features(op) -> OpFeatures:
         name = getattr(dep, "name", "?")
         index = getattr(dep, "index", None)
         # Broadcast heuristic: the read index references fewer loop variables
-        # than the output rank.
+        # than the output rank -> it is loaded once and cached (~free), like the
+        # rung-6 broadcasts. This INCLUDES scalars/constants (0 loop vars, e.g. the
+        # `1.0` in `x + 1.0`): a scalar is the maximally-broadcast input, not a full
+        # HBM read. (The old `0 < n_index_vars` wrongly counted scalars as full.)
         broadcast = False
         try:
             n_index_vars = len(getattr(index, "free_symbols", []) or [])
-            broadcast = 0 < n_index_vars < n_out_vars
+            broadcast = n_index_vars < n_out_vars
         except Exception:  # noqa: BLE001
             broadcast = False
         args.append(

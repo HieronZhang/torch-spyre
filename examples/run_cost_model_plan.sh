@@ -185,7 +185,8 @@ done
 #   aiu-smi paired with BENCH_BW_SUSTAIN_S -- run that separately (two-terminal;
 #   see examples/bench_bandwidth.py header + docs .../profiling/device_monitoring.md).
 # ---------------------------------------------------------------------------
-for op in copy read write; do
+# neg is a constant-free 1R+1W check on copy (scalar should be free -> neg ~= copy).
+for op in neg copy read write; do
   for n in 1024 4096 16384 65536; do
     step "RUNG8 bandwidth: ${op}[512x${n}]" \
       env BENCH_BW_OP="$op" BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_bandwidth.py
