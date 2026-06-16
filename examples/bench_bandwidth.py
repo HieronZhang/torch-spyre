@@ -20,13 +20,16 @@ compiler's own matmul model uses the LPDDR5 *peak* of 204.8 GB/s
 large, low-compute memory traffic across all cores to find what bandwidth is
 actually achievable and explain the ~1.85x gap (204.8 / 111).
 
-Two workloads, contrasted:
-    copy : y = x + 1.0        2-stream  (1 read + 1 write)  -> read+write BW
-    read : y = x.sum(dim=-1)  read-only (~1 read, tiny write) -> isolates read BW
+Three workloads, contrasted:
+    copy  : y = x + 1.0          2-stream  (1 read + 1 write)  -> read+write BW
+    read  : y = x.sum(dim=-1)    read-only (~1 read, tiny write) -> isolates read BW
+    write : y = b[1,N] + c[N,1]  write-only (both inputs broadcast -> cached ~free
+            per rung 6, output is the full grid) -> isolates write BW
 
-If ``read`` (1 pass) is ~half the latency of ``copy`` (2 passes) at the same size,
-read and write share one rate (no bidirectional penalty). If ``read`` is faster
-than that, reads are cheaper than writes -> the cap is read+write contention.
+Rung 8 found read ~175 GB/s (85% of the 204.8 LPDDR5 peak) but copy ~98: writes are
+the bottleneck. ``write`` confirms the write rate directly (inferred ~68 GB/s from
+read vs copy). Check the SPYRE_DUMP_COST line for ``write`` shows BOTH inputs flagged
+broadcast -- so it really is write-dominated, not a hidden full read.
 
 The effective BW here is bytes / device-min-latency (== GB/s). The fixed ~20 us
 per-kernel term depresses it at small sizes, so SWEEP size: the asymptote (large
@@ -39,7 +42,7 @@ device_monitoring.md). If aiu-smi reads ~200 while our latency BW reads ~111, th
 gap is host/ramp overhead; if aiu-smi also reads ~111, that IS the ceiling.
 
 Knobs:
-    BENCH_BW_OP        copy | read              (default copy)
+    BENCH_BW_OP        copy | read | write      (default copy)
     BENCH_ROWS, BENCH_COLS                      shape (default 512 x 8192)
     BENCH_RUNS, BENCH_WARMUP
     BENCH_BW_SUSTAIN_S N   after measuring, loop the op for ~N seconds so aiu-smi
@@ -52,6 +55,8 @@ Examples:
       BENCH_BW_OP=copy BENCH_COLS=$n python examples/bench_bandwidth.py; done
     # read-only vs read+write at one big size
     BENCH_BW_OP=read BENCH_COLS=16384 python examples/bench_bandwidth.py
+    # write-only: confirm the write bottleneck (both inputs broadcast, output full)
+    BENCH_BW_OP=write BENCH_COLS=16384 python examples/bench_bandwidth.py
     # aiu-smi window (start aiu-smi in another shell during the sustained phase)
     BENCH_BW_OP=copy BENCH_COLS=65536 BENCH_BW_SUSTAIN_S=20 \
       python examples/bench_bandwidth.py
@@ -80,14 +85,31 @@ DT = 2  # fp16 bytes
 FILL_NS = 20_000.0  # calibrated per-kernel fixed term (cost_model.py)
 PEAK_GBPS = 204.8  # _HBM_BW_GBS: LPDDR5 aggregate peak (work_division.py)
 
-# op -> (fn, hbm_passes). passes = memory passes counted for the BW estimate:
-#   copy = read x + write y              -> 2
-#   read = read x + write tiny reduction -> ~1 (read-only; the [ROWS] write is
-#          negligible next to the [ROWS,COLS] read)
+# op -> (fn, hbm_passes). passes = the dominant HBM memory passes for the BW est:
+#   copy  = read x + write y                 -> 2  (read + write)
+#   read  = read x + write tiny reduction    -> 1  (read-only; the [ROWS] write is
+#           negligible next to the [ROWS,COLS] read)
+#   write = write full grid from broadcasts  -> 1  (write-only; both inputs [1,N]/[N,1]
+#           load once and cache ~free per rung 6, so ~no read traffic)
 _OPS = {
     "copy": (lambda x: x + 1.0, 2),
     "read": (lambda x: x.sum(dim=-1), 1),
+    "write": (lambda b, c: b + c, 1),
 }
+
+
+def _make_inputs(op):
+    """Device input tensors for OP (all produce a [ROWS,COLS] working set).
+
+    ``write`` adds two broadcast operands (b[1,COLS] + c[ROWS,1]) -> a full
+    [ROWS,COLS] output; both inputs load once and cache (~free per rung 6), so the
+    kernel is write-dominated. Confirm via the broadcast flags in SPYRE_DUMP_COST.
+    """
+    if op == "write":
+        b = torch.rand(1, COLS, dtype=torch.float16).to(DEVICE)
+        c = torch.rand(ROWS, 1, dtype=torch.float16).to(DEVICE)
+        return (b, c)
+    return (torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE),)
 
 torch.manual_seed(0xAFFE)
 
@@ -106,7 +128,7 @@ def main():
     if OP not in _OPS:
         raise SystemExit(f"unknown BENCH_BW_OP={OP!r} (use {list(_OPS)})")
     fn, passes = _OPS[OP]
-    x = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
+    inputs = _make_inputs(OP)
     compiled = torch.compile(fn)
 
     elems = ROWS * COLS
@@ -118,7 +140,7 @@ def main():
         f"passes={passes} bytes={bytes_moved}  SENCORES={cores}"
     )
 
-    snap = measure_device(lambda: compiled(x), runs=RUNS, warmup=WARMUP)
+    snap = measure_device(lambda: compiled(*inputs), runs=RUNS, warmup=WARMUP)
     print(profiling.format_report())
 
     # Total device time for one workload = sum of its kernels' deterministic mins
@@ -154,7 +176,7 @@ def main():
         launches = 0
         while time.perf_counter() - t0 < SUSTAIN_S:
             for _ in range(50):
-                compiled(x)
+                compiled(*inputs)
             launches += 50
             _sync()
         wall = time.perf_counter() - t0

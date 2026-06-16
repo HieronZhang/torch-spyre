@@ -30,8 +30,10 @@ Model (per fused bundle / single-op kernel):
 - memory traffic counts each tensor-arg's bytes once, attributed to HBM or LX by
   its allocation. LX-placed tensors don't touch HBM, and their LX traffic is treated
   as ~free (the measured per-pass LX cost is below run-to-run noise). Broadcast inputs
-  are flagged; whether they re-fetch or cache is a measured unknown (``broadcast`` in
-  :class:`ArgTraffic`) and defaults to the conservative full count.
+  are cached on-chip (loaded once, reused across the broadcast dim) and so add ~no HBM
+  traffic -- verified by the rung-6 bcast/mulbcast runs, which land on the 2-pass
+  latency. They are flagged (``broadcast`` in :class:`ArgTraffic`) and excluded from
+  ``hbm_bytes``.
 
 FIRST ROUND: pointwise ops only. Reductions are flagged (``is_reduction``) but
 their cross-core combine cost is not modeled yet.
@@ -50,8 +52,8 @@ class ArgTraffic:
     name: str
     role: str  # "input" | "output"
     mem: str  # "lx" | "hbm"
-    elems: int  # traffic element count (broadcast-adjusted)
-    broadcast: bool = False
+    elems: int  # full element count for this arg (pre-broadcast-discount)
+    broadcast: bool = False  # cached on-chip -> excluded from hbm_bytes()
 
 
 @dataclasses.dataclass
@@ -66,7 +68,14 @@ class OpFeatures:
     args: list  # list[ArgTraffic]
 
     def hbm_bytes(self) -> int:
-        return sum(a.elems for a in self.args if a.mem == "hbm") * self.dtype_bytes
+        # Broadcast inputs are cached on-chip (loaded once, reused across the
+        # broadcast dim), so they add ~no HBM traffic. Verified on device: the
+        # rung-6 bcast/mulbcast runs land on the 2-pass (no-broadcast) latency,
+        # i.e. the [1,N] operand is effectively free. So exclude broadcast args.
+        return (
+            sum(a.elems for a in self.args if a.mem == "hbm" and not a.broadcast)
+            * self.dtype_bytes
+        )
 
     def lx_bytes(self) -> int:
         return sum(a.elems for a in self.args if a.mem == "lx") * self.dtype_bytes
@@ -84,8 +93,13 @@ class CostParams:
     precise BW_LX can't be resolved and LX-resident tensors barely affect latency.
     Qualitatively LX is ~29x HBM; quantitatively we drop the term.
     Verified: arithmetic-free for pointwise (rung 2); HBM BW shared, core-independent
-    above 2 cores (rung 5). Known gap: 2-input ops run ~15-20% over the linear traffic
-    count (3-stream BW ~80 < 2-stream ~111) -- a stream-count-aware BW, refine later.
+    above 2 cores (rung 5); broadcast inputs cached/free (rung 6).
+    Open (single BW=111 is a blend): rung 7 FALSIFIED a stream-count BW law -- 4/5-
+    input fused adds (intermediates staged in LX, so still 1 HBM write) match the
+    1-input rate, so it is NOT "more streams = slower"; only plain 2-input mul/add is
+    anomalously ~15-25% slow. Rung 8 indicates reads are far cheaper than writes
+    (read-only ~175 GB/s, 85% of the 204.8 LPDDR5 peak, vs read+write ~98), so a
+    read/write-aware BW is the likely refinement -- pending a write-only probe.
     """
 
     fill_ns: float = 20_000.0
@@ -122,7 +136,7 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             f"  {o.name:<12} out={o.out_elems} cores={o.cores} hbm={hbm}B lx={lx}B{red}"
         )
         for a in o.args:
-            bc = " broadcast" if a.broadcast else ""
+            bc = " broadcast (cached: ~free)" if a.broadcast else ""
             lines.append(f"      {a.role:<6} {a.mem:<3} {a.elems} elems{bc}")
     t = predict_ops(ops, p)
     lines.append(
