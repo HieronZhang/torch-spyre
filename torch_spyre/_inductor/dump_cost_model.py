@@ -113,6 +113,24 @@ def extract_op_features(op) -> OpFeatures:
     out_elems = _prod_ints(out_size)
     cores = _cores(op)
 
+    # Reduction sizing: the full input read = output space x REDUCTION space
+    # (Reduction.get_reduction_size() = reduction_ranges). And the reduced axis may
+    # be split across cores -> a cross-core ring combine.
+    reduction_size = 1
+    reduction_cores = 1
+    if is_reduction:
+        get_rsize = getattr(data, "get_reduction_size", None)
+        if callable(get_rsize):
+            try:
+                reduction_size = _prod_ints(get_rsize())
+            except Exception:  # noqa: BLE001 - symbolic/unresolved -> no scaling
+                reduction_size = 1
+        # Work division splits OUTPUT dims first, then the reduced axis with leftover
+        # cores -> the reduced axis is split only when out_elems < cores. Approx k as
+        # the cores not absorbed by the output (refine if rung 11 needs the combine).
+        if out_elems < cores:
+            reduction_cores = max(1, cores // max(1, out_elems))
+
     args: list = []
     # Output arg.
     args.append(
@@ -143,15 +161,18 @@ def extract_op_features(op) -> OpFeatures:
             broadcast = n_index_vars < n_out_vars
         except Exception:  # noqa: BLE001
             broadcast = False
+        # Non-broadcast reads = full output traffic; a reduction's reduced input is
+        # read over the full input space (out_elems x reduction_size). Broadcast/
+        # scalar reads are cached -> excluded downstream by hbm_bytes().
+        read_elems = out_elems
+        if is_reduction and not broadcast:
+            read_elems = out_elems * reduction_size
         args.append(
             ArgTraffic(
                 name=name,
                 role="input",
                 mem=_input_mem(name),
-                # First round: count non-broadcast reads as full output traffic.
-                # Broadcast traffic (cached vs re-fetched) is a measured unknown;
-                # default to the full (conservative) count and flag it.
-                elems=out_elems,
+                elems=read_elems,
                 broadcast=broadcast,
             )
         )
@@ -163,6 +184,7 @@ def extract_op_features(op) -> OpFeatures:
         cores=cores,
         dtype_bytes=dtype_bytes,
         args=args,
+        reduction_cores=reduction_cores,
     )
 
 

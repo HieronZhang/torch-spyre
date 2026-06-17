@@ -35,8 +35,11 @@ Model (per fused bundle / single-op kernel):
   latency. They are flagged (``broadcast`` in :class:`ArgTraffic`) and excluded from
   ``hbm_bytes``.
 
-FIRST ROUND: pointwise ops only. Reductions are flagged (``is_reduction``) but
-their cross-core combine cost is not modeled yet.
+Pointwise is calibrated. REDUCTIONS have an INITIAL (unverified) model: read the
+full input (out_elems x reduction_size) at the read-only rate, write the small
+output, plus a cross-core ring-combine term when the reduced axis is split across
+cores. Parameters (``bw_read_gbps``, ``psum_per_elem_ns``, the combine form) are to
+be calibrated by rung 11. Matmul is out of scope for now.
 
 Parameters live in :class:`CostParams`, calibrated from device measurements
 (``examples/run_cost_model_plan.sh``).
@@ -66,6 +69,7 @@ class OpFeatures:
     cores: int
     dtype_bytes: int
     args: list  # list[ArgTraffic]
+    reduction_cores: int = 1  # cores splitting the REDUCED axis (1 = none → no combine)
 
     def hbm_bytes(self) -> int:
         # Broadcast inputs are cached on-chip (loaded once, reused across the
@@ -94,27 +98,46 @@ class CostParams:
     Qualitatively LX is ~29x HBM; quantitatively we drop the term.
     Verified: arithmetic-free for pointwise (rung 2); HBM BW shared, core-independent
     above 2 cores (rung 5); broadcast inputs cached/free (rung 6).
-    Open (single BW=111 is a blend): rung 7 FALSIFIED a stream-count BW law -- 4/5-
-    input fused adds (intermediates staged in LX, so still 1 HBM write) match the
-    1-input rate, so it is NOT "more streams = slower"; only plain 2-input mul/add is
-    anomalously ~15-25% slow. Rung 8 indicates reads are far cheaper than writes
-    (read-only ~175 GB/s, 85% of the 204.8 LPDDR5 peak, vs read+write ~98), so a
-    read/write-aware BW is the likely refinement -- pending a write-only probe.
+    BW_HBM=111 is the BALANCED read+write rate. Rung 8 (measured): read-only ~176 GB/s
+    (86% of the 204.8 LPDDR5 peak; _HBM_BW_GBS in work_division.py), write-only ~146,
+    balanced 1R+1W ~97. Mixing reads+writes ~halves throughput, so pointwise caps ~100.
+    A read/write-aware BW (reads 176 / writes 146) is a future refinement, worth it only
+    if the blend misranks read-heavy ops (reductions).
+    Open: rung 7 FALSIFIED a stream-count BW law -- 4/5-input fused adds keep their
+    intermediate in LX (still 1 HBM write) and match the 1-input rate, so NOT
+    "more streams = slower". Only plain 2-input mul/add is ~15-25% slow (unexplained).
+    The penalty's mechanism (turnaround? half-duplex? shared bus) needs an aiu-smi
+    capture -- see notes/bandwidth_turnaround_experiment.md.
     """
 
     fill_ns: float = 20_000.0
     bw_hbm_gbps: float = 111.0
+    # Reductions (INITIAL, unverified — see rung 11). Read-dominated, so the full
+    # input read uses the read-only rate, not the balanced blend. The cross-core
+    # ring combine (when the reduced axis is split across k cores) is (k-1) hops,
+    # each touching every output element -- mirrors the matmul PSUM term
+    # (_PSUM_PER_ELEM_US=1.4e-4 us/elem in work_division.py). Both to be calibrated.
+    bw_read_gbps: float = 176.0  # rung-8 read-only asymptote
+    psum_per_elem_ns: float = 0.14  # 1.4e-4 us/elem/hop, from the matmul model
 
 
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
     """Predicted device latency (ns) for a bundle of ops (single fixed term).
 
     LX-resident traffic is treated as ~free (see :class:`CostParams`), so only HBM
-    bytes contribute; LX-placed tensors already drop out of ``hbm_bytes``.
+    bytes contribute. Pointwise ops use the balanced read+write ``bw_hbm_gbps``;
+    REDUCTIONS are read-dominated, so they use the read-only ``bw_read_gbps`` plus a
+    cross-core ring-combine term when the reduced axis is split across cores.
     """
     p = params or CostParams()
-    hbm_bytes = sum(o.hbm_bytes() for o in ops)
-    return p.fill_ns + hbm_bytes / p.bw_hbm_gbps
+    t = p.fill_ns
+    for o in ops:
+        if o.is_reduction:
+            t += o.hbm_bytes() / p.bw_read_gbps
+            t += max(0, o.reduction_cores - 1) * o.out_elems * p.psum_per_elem_ns
+        else:
+            t += o.hbm_bytes() / p.bw_hbm_gbps
+    return t
 
 
 def predict_op(op: OpFeatures, params: CostParams | None = None) -> float:
@@ -126,12 +149,16 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     """Human-readable breakdown of the prediction for a bundle of ops."""
     p = params or CostParams()
     lines = []
-    hbm_total = lx_total = 0
     for o in ops:
         hbm, lx = o.hbm_bytes(), o.lx_bytes()
-        hbm_total += hbm
-        lx_total += lx
-        red = " [reduction: NOT modeled]" if o.is_reduction else ""
+        if o.is_reduction:
+            combine = max(0, o.reduction_cores - 1) * o.out_elems * p.psum_per_elem_ns
+            red = (
+                f" [reduction: read@{p.bw_read_gbps:.0f}, "
+                f"combine {combine:.0f}ns (k={o.reduction_cores})]"
+            )
+        else:
+            red = ""
         lines.append(
             f"  {o.name:<12} out={o.out_elems} cores={o.cores} hbm={hbm}B lx={lx}B{red}"
         )
@@ -140,7 +167,7 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             lines.append(f"      {a.role:<6} {a.mem:<3} {a.elems} elems{bc}")
     t = predict_ops(ops, p)
     lines.append(
-        f"  => T = {p.fill_ns:.0f}ns(fill) + {hbm_total}/{p.bw_hbm_gbps}"
-        f"  (lx {lx_total}B: ~free) = {t / 1000:.2f} us"
+        f"  => T = {t / 1000:.2f} us  (fill {p.fill_ns / 1000:.0f}us; pointwise "
+        f"@{p.bw_hbm_gbps:.0f}, reductions @{p.bw_read_gbps:.0f} + ring combine)"
     )
     return "\n".join(lines)

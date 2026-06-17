@@ -20,7 +20,7 @@ time, so predicted vs measured can be compared in one run.
 
 Knobs:
     BENCH_OP    gelu | relu | sigmoid | exp | mul | add | add3 | add4 |
-                bcast | mulbcast                          (default gelu)
+                bcast | mulbcast | sumrow | sumall | amax | mean   (default gelu)
     BENCH_DEPTH N   chain a unary op N times (for the LX-bandwidth sweep)
     BENCH_LX_ALL 1  force ALL ops LX-eligible (config.allow_all_ops_in_lx_planning)
     BENCH_ROWS, BENCH_COLS, BENCH_RUNS, BENCH_WARMUP
@@ -73,6 +73,16 @@ _NARY_ADD = {"add3": 3, "add4": 4}
 # Broadcast second operand b[1,COLS]: counted at ~one row iff the device caches it.
 # mulbcast mirrors bcast to check the caching result is not add-specific.
 _BCAST = {"bcast": lambda a, b: a + b, "mulbcast": lambda a, b: a * b}
+# Reductions (1 input -> reduced output). sumrow/amax/mean keep a big [ROWS] output
+# (the reduced axis is NOT split across cores -> no cross-core combine); sumall
+# reduces to a scalar (reduced axis split across ALL cores -> exercises the ring
+# combine). sum vs amax vs mean at one size = the arithmetic-free check for reductions.
+_REDUCE = {
+    "sumrow": lambda x: x.sum(dim=-1),
+    "sumall": lambda x: x.sum(),
+    "amax": lambda x: x.amax(dim=-1),
+    "mean": lambda x: x.mean(dim=-1),
+}
 
 torch.manual_seed(0xAFFE)
 
@@ -117,10 +127,15 @@ def make_workload():
         x = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
         b = torch.rand(1, COLS, dtype=torch.float16).to(DEVICE)
         return torch.compile(f), (x, b)
-    raise SystemExit(
-        f"unknown BENCH_OP={OP!r} (use "
-        f"{list(_UNARY) + list(_BINARY) + list(_NARY_ADD) + list(_BCAST)})"
+    if OP in _REDUCE:
+        # 1 input reduced. The model reads the FULL input (out x reduction_size) at
+        # the read rate; sumall (scalar out) also exercises the cross-core ring combine.
+        x = torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE)
+        return torch.compile(_REDUCE[OP]), (x,)
+    known = (
+        list(_UNARY) + list(_BINARY) + list(_NARY_ADD) + list(_BCAST) + list(_REDUCE)
     )
+    raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
 
 
 compiled, args = make_workload()

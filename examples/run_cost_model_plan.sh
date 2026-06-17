@@ -224,5 +224,28 @@ for op in copy w2 w3; do
   done
 done
 
+# ---------------------------------------------------------------------------
+# RUNG 11 — reductions (INITIAL model: read the full input @ the read rate ~176,
+#   plus a cross-core ring combine when the reduced axis is split across cores).
+#   (a) arithmetic-free? sumrow vs amax vs mean, same size (equal => free, like rung 2).
+#   (b) read-dominated traffic: sumrow size sweep -> latency ~ full-input read at the
+#       read rate; the [ROWS] output is negligible. Fits bw_read for reductions.
+#   (c) cross-core ring combine: sumall (scalar out -> reduced axis split across ALL
+#       cores) vs sumrow (output=ROWS -> reduced axis NOT split). At equal input,
+#       sumall ~= sumrow if combine << HBM I/O (expected); a gap fits psum_per_elem.
+#   Pair with SPYRE_DUMP_COST to check the reduction input is now sized as the FULL
+#   input (out_elems x reduction_size), not the output size.
+# ---------------------------------------------------------------------------
+for op in sumrow amax mean; do
+  step "RUNG11a arithmetic: ${op}[512x4096]" \
+    env BENCH_OP="$op" BENCH_ROWS=512 BENCH_COLS=4096 python examples/bench_ops.py
+done
+for n in 1024 4096 16384; do
+  step "RUNG11b read-BW: sumrow[512x${n}]" \
+    env BENCH_OP=sumrow BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_ops.py
+  step "RUNG11c combine: sumall[512x${n}]" \
+    env BENCH_OP=sumall BENCH_ROWS=512 BENCH_COLS="$n" python examples/bench_ops.py
+done
+
 echo ""
 echo "================ DONE. forward this file: $LOG ================"
