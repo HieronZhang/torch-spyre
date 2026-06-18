@@ -29,14 +29,15 @@ NOTE: this is a TIME + memory-allocation profiler -- it has NO DRAM bandwidth / 
 vs-write / bus-utilization counters, so it CANNOT explain why read+write halves
 bandwidth (that needs aiu-smi). It only gives cleaner device time.
 
-Knobs: BENCH_OP (gelu|copy|neg|read|write), BENCH_ROWS, BENCH_COLS, BENCH_WARMUP.
+Knobs: BENCH_OP, BENCH_ROWS, BENCH_COLS, BENCH_WARMUP. BENCH_OP is any of the
+bench_ops/bench_bandwidth ops: neg copy gelu relu sigmoid exp | mul add | add3 add4 |
+read sumrow sumall amax mean | bcast mulbcast | write.
 
 Examples:
-    # validate the timer at a real size (compare to bench_ops.py min for the same op)
-    BENCH_OP=gelu BENCH_COLS=1024 python examples/profile_ops.py
-    # is the device Memset fixed across sizes? sweep and watch its Self SPYRE us
-    for n in 1024 16384; do \
-      BENCH_OP=copy BENCH_COLS=$n python examples/profile_ops.py; done
+    # one op (prints the table + a parseable SUMMARY line with kernel_us / memset_us)
+    BENCH_OP=neg BENCH_COLS=1024 python examples/profile_ops.py
+    # full golden re-sweep (rebuild the model from kernel time):
+    bash examples/run_profile_sweep.sh
 """
 
 import os
@@ -58,19 +59,53 @@ def _rand(*shape):
     return torch.rand(*shape, dtype=torch.float16).to(DEVICE)
 
 
+def _sum_all(*ts):
+    acc = ts[0]
+    for t in ts[1:]:
+        acc = acc + t
+    return acc
+
+
+# Same ops as bench_ops/bench_bandwidth so the GOLDEN kernel times map 1:1.
+_UNARY = {  # 1 read + 1 write (gelu/relu/sigmoid/exp also probe arithmetic-free)
+    "neg": lambda x: -x,  # cleanest balanced 1R+1W (no constant)
+    "copy": lambda x: x + 1.0,  # scalar 1.0 is a cached broadcast -> still 1R+1W
+    "gelu": F.gelu,
+    "relu": torch.relu,
+    "sigmoid": torch.sigmoid,
+    "exp": torch.exp,
+}
+_BINARY = {"mul": lambda a, b: a * b, "add": lambda a, b: a + b}  # 2R + 1W
+_NARY = {"add3": 3, "add4": 4}  # n inputs summed (intermediates staged in LX)
+_REDUCE = {  # read-dominated; sumall reduces to a scalar -> ring combine
+    "read": lambda x: x.sum(dim=-1),
+    "sumrow": lambda x: x.sum(dim=-1),
+    "sumall": lambda x: x.sum(),
+    "amax": lambda x: x.amax(dim=-1),
+    "mean": lambda x: x.mean(dim=-1),
+}
+_BCAST = {"bcast": lambda a, b: a + b, "mulbcast": lambda a, b: a * b}  # b = [1, COLS]
+
+
 def make_workload():
-    """Same ops as bench_ops/bench_bandwidth so the numbers line up."""
-    if OP == "gelu":
-        return torch.compile(F.gelu), (_rand(ROWS, COLS),)
-    if OP == "copy":  # 1R+1W (scalar 1.0 is a cached broadcast -> free)
-        return torch.compile(lambda x: x + 1.0), (_rand(ROWS, COLS),)
-    if OP == "neg":  # genuine 1R+1W, no constant
-        return torch.compile(lambda x: -x), (_rand(ROWS, COLS),)
-    if OP == "read":  # read-only reduction
-        return torch.compile(lambda x: x.sum(dim=-1)), (_rand(ROWS, COLS),)
-    if OP == "write":  # write-only (both inputs broadcast -> cached)
+    if OP in _UNARY:
+        return torch.compile(_UNARY[OP]), (_rand(ROWS, COLS),)
+    if OP in _BINARY:
+        return torch.compile(_BINARY[OP]), (_rand(ROWS, COLS), _rand(ROWS, COLS))
+    if OP in _NARY:
+        xs = tuple(_rand(ROWS, COLS) for _ in range(_NARY[OP]))
+        return torch.compile(_sum_all), xs
+    if OP in _REDUCE:
+        return torch.compile(_REDUCE[OP]), (_rand(ROWS, COLS),)
+    if OP in _BCAST:
+        return torch.compile(_BCAST[OP]), (_rand(ROWS, COLS), _rand(1, COLS))
+    if OP == "write":  # write-only: both inputs broadcast -> cached
         return torch.compile(lambda b, c: b + c), (_rand(1, COLS), _rand(ROWS, 1))
-    raise SystemExit(f"unknown BENCH_OP={OP!r} (use gelu|copy|neg|read|write)")
+    known = (
+        list(_UNARY) + list(_BINARY) + list(_NARY) + list(_REDUCE) + list(_BCAST)
+        + ["write"]
+    )
+    raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
 
 
 def main():
@@ -86,10 +121,29 @@ def main():
         compiled(*args).cpu()
 
     print(f"== {OP}[{ROWS}x{COLS}] -- compare 'Self SPYRE' to bench_ops.py min ==")
+    ka = prof.key_averages()
+    print(ka.table(sort_by="cuda_time_total", row_limit=20).replace("CUDA", "AIU"))
+
+    # Parseable one-liner for a size sweep -> re-fit fill + BW on the GOLDEN kernel
+    # time, and track the (non-deterministic) Memset overhead separately.
+    kernel = memset = other = 0.0
+    for ev in ka:
+        us = getattr(ev, "self_device_time_total", 0) or getattr(
+            ev, "self_cuda_time_total", 0
+        )
+        if not us or us <= 0:
+            continue
+        if "sdsc_fused" in ev.key:
+            kernel += us
+        elif "Memset" in ev.key:
+            memset += us
+        else:
+            other += us
+    elems = ROWS * COLS
     print(
-        prof.key_averages()
-        .table(sort_by="cuda_time_total", row_limit=20)
-        .replace("CUDA", "AIU")
+        f"SUMMARY op={OP} rows={ROWS} cols={COLS} elems={elems} "
+        f"kernel_us={kernel:.3f} memset_us={memset:.3f} other_dev_us={other:.3f} "
+        f"total_dev_us={kernel + memset + other:.3f}"
     )
 
 

@@ -35,11 +35,21 @@ Model (per fused bundle / single-op kernel):
   latency. They are flagged (``broadcast`` in :class:`ArgTraffic`) and excluded from
   ``hbm_bytes``.
 
-Pointwise is calibrated. REDUCTIONS have an INITIAL (unverified) model: read the
-full input (out_elems x reduction_size) at the read-only rate, write the small
-output, plus a cross-core ring-combine term when the reduced axis is split across
-cores. Parameters (``bw_read_gbps``, ``psum_per_elem_ns``, the combine form) are to
-be calibrated by rung 11. Matmul is out of scope for now.
+Byte counts use each arg's DEVICE layout (stick-padded ``device_size``), not the
+torch logical shape -- so a reduction's reduced input is naturally full-sized and
+stick rounding is captured. REDUCTIONS have an INITIAL (unverified) model: read the
+full input at the read-only rate, write the small output, plus a cross-core ring-
+combine term when the reduced axis is split across cores. Parameters (``bw_read_gbps``,
+``psum_per_elem_ns``, the combine form) are to be calibrated by rung 11. Matmul out
+of scope for now.
+
+CALIBRATION NOTE: the golden per-op measurement is the torch.profiler "Self SPYRE"
+(sdsc_fused) KERNEL device time. Our SPYRE_PROFILE_SYNC min measured kernel + a non-
+deterministic ~20us overhead bucket (the profiler's separate "Memset (Device)" =
+host/device setup), so the old ``fill_ns`` ~20us is that OVERHEAD, not kernel cost.
+The traffic term alone matches the kernel (gelu[512x1024]: 17.3us kernel ~= 18.9us
+traffic). Re-fit ``fill_ns`` against profiler kernel times across sizes (it should
+drop toward a small device pipeline-fill).
 
 Parameters live in :class:`CostParams`, calibrated from device measurements
 (``examples/run_cost_model_plan.sh``).

@@ -91,17 +91,38 @@ def _mem_of_layout(layout) -> str:
     return "hbm"
 
 
-def _input_mem(name: str) -> str:
-    """Resolve a read buffer's memory residency (LX vs HBM); default HBM."""
+def _device_elems(layout, fallback: int) -> int:
+    """Stick-padded DEVICE element count from a committed FixedTiledLayout -- the TRUE
+    I/O size (sticks are 64 fp16 elems; a row of N rounds up to ceil(N/64)*64). Falls
+    back to the logical count when the device layout isn't available. Use this, not the
+    torch logical shape, so the byte count reflects what actually moves on device.
+    """
+    dl = getattr(layout, "device_layout", None)
+    ds = getattr(dl, "device_size", None) if dl is not None else None
+    try:
+        if ds:
+            return _prod_ints(ds)
+    except Exception:  # noqa: BLE001 - symbolic/unresolved -> logical fallback
+        pass
+    return fallback
+
+
+def _input_traffic(name: str):
+    """(mem, device_elems) for a read buffer. ``device_elems`` is the buffer's own
+    stick-padded device size (logical size if uncommitted) -- so a reduction's reduced
+    input is naturally full-sized, with no separate reduction_size scaling. Returns
+    (None, None) if the buffer can't be resolved (caller falls back)."""
     try:
         from torch._inductor.virtualized import V
 
         buf = V.graph.get_buffer(name)
         if buf is not None:
-            return _mem_of_layout(buf.get_layout())
-    except Exception:  # noqa: BLE001 - graph inputs / unresolved -> HBM
+            layout = buf.get_layout()
+            elems = _device_elems(layout, _prod_ints(buf.get_size()))
+            return _mem_of_layout(layout), elems
+    except Exception:  # noqa: BLE001 - graph inputs / unresolved
         pass
-    return "hbm"
+    return None, None
 
 
 def extract_op_features(op) -> OpFeatures:
@@ -110,29 +131,22 @@ def extract_op_features(op) -> OpFeatures:
     is_reduction = getattr(data, "reduction_type", None) is not None
     dtype_bytes = _int(getattr(op.get_dtype(), "itemsize", 2), 2)
     out_size = list(op.get_size())
-    out_elems = _prod_ints(out_size)
+    # TRUE I/O sizes come from the committed DEVICE layout (sticks), not the torch
+    # logical shape -- a row of N fp16 rounds up to ceil(N/64)*64, and reduction/
+    # broadcast operands carry their own device size.
+    out_elems = _device_elems(op.get_layout(), _prod_ints(out_size))
+
     cores = _cores(op)
 
-    # Reduction sizing: the full input read = output space x REDUCTION space
-    # (Reduction.get_reduction_size() = reduction_ranges). And the reduced axis may
-    # be split across cores -> a cross-core ring combine.
-    reduction_size = 1
+    # Cross-core ring combine: work division splits OUTPUT dims first, then the reduced
+    # axis with leftover cores -> the reduced axis is split only when out_elems < cores.
+    # Approx k as the cores not absorbed by the output (refine if rung 11 needs it).
     reduction_cores = 1
-    if is_reduction:
-        get_rsize = getattr(data, "get_reduction_size", None)
-        if callable(get_rsize):
-            try:
-                reduction_size = _prod_ints(get_rsize())
-            except Exception:  # noqa: BLE001 - symbolic/unresolved -> no scaling
-                reduction_size = 1
-        # Work division splits OUTPUT dims first, then the reduced axis with leftover
-        # cores -> the reduced axis is split only when out_elems < cores. Approx k as
-        # the cores not absorbed by the output (refine if rung 11 needs the combine).
-        if out_elems < cores:
-            reduction_cores = max(1, cores // max(1, out_elems))
+    if is_reduction and out_elems < cores:
+        reduction_cores = max(1, cores // max(1, out_elems))
 
     args: list = []
-    # Output arg.
+    # Output arg (device-sized).
     args.append(
         ArgTraffic(
             name=op.get_operation_name(),
@@ -141,7 +155,9 @@ def extract_op_features(op) -> OpFeatures:
             elems=out_elems,
         )
     )
-    # Input args, from the op's reads.
+    # Input args, from the op's reads. Each read is sized by ITS OWN buffer's device
+    # layout -- so a reduction's reduced input is naturally full-sized (no separate
+    # reduction scaling), and a broadcast operand carries its real (one-row) size.
     try:
         reads = op.get_read_writes().reads
     except Exception:  # noqa: BLE001
@@ -161,18 +177,15 @@ def extract_op_features(op) -> OpFeatures:
             broadcast = n_index_vars < n_out_vars
         except Exception:  # noqa: BLE001
             broadcast = False
-        # Non-broadcast reads = full output traffic; a reduction's reduced input is
-        # read over the full input space (out_elems x reduction_size). Broadcast/
-        # scalar reads are cached -> excluded downstream by hbm_bytes().
-        read_elems = out_elems
-        if is_reduction and not broadcast:
-            read_elems = out_elems * reduction_size
+        mem, in_elems = _input_traffic(name)
+        if in_elems is None:  # unresolved buffer -> conservative fallback
+            mem, in_elems = "hbm", out_elems
         args.append(
             ArgTraffic(
                 name=name,
                 role="input",
-                mem=_input_mem(name),
-                elems=read_elems,
+                mem=mem,
+                elems=in_elems,
                 broadcast=broadcast,
             )
         )
