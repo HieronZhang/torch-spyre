@@ -119,19 +119,23 @@ def make_workload():
 
 
 def _print_io(io: dict) -> None:
-    """Per-tensor device-layout I/O the COST MODEL counts: dims, residency, bytes."""
-    print("-- device-layout I/O (cost model, stick-padded) --")
+    """Per-tensor device-layout I/O the COST MODEL counts: dims, residency, bytes.
+
+    Lines are prefixed ``IO `` so the sweep (run_profile_sweep.sh) can grep them
+    alongside the SUMMARY line instead of dropping the breakdown.
+    """
+    print("IO -- device-layout I/O (cost model, stick-padded) --")
     for o in io.get("ops", []):
         red = " [reduction]" if o.get("is_reduction") else ""
-        print(f"  op {o['name']}{red}")
+        print(f"IO   op {o['name']}{red}")
         for a in o["args"]:
             bc = " broadcast->cached (0 counted)" if a["broadcast"] else ""
             print(
-                f"    {a['role']:<6} {a['dims']} in {a['mem']} = "
+                f"IO     {a['role']:<6} {a['dims']} in {a['mem']} = "
                 f"{a['elems']} elems x 2B = {a['bytes']} B"
                 f"  (hbm counted: {a['hbm_counted']} B){bc}"
             )
-    print(f"  => HBM I/O total = {io.get('hbm_bytes', 0)} B  "
+    print(f"IO   => HBM I/O total = {io.get('hbm_bytes', 0)} B  "
           f"(lx {io.get('lx_bytes', 0)} B, ~free)")
 
 

@@ -39,10 +39,10 @@ echo "==== golden profiler re-sweep $(date) ====" | tee "$LOG"
 echo "git: $(git rev-parse --short HEAD 2>/dev/null)  rows: $ROWS  sections: $SECTIONS" \
   | tee -a "$LOG"
 
-run() {  # run <op> <cols> -> append SUMMARY (io_hbm_bytes / kernel_us / bw_gbps / memset)
+run() {  # run <op> <cols> -> append the IO device-layout breakdown + SUMMARY line
   local out
   out=$(BENCH_OP="$1" BENCH_ROWS="$ROWS" BENCH_COLS="$2" \
-        python examples/profile_ops.py 2>/dev/null | grep '^SUMMARY')
+        python examples/profile_ops.py 2>/dev/null | grep -E '^(IO |SUMMARY)')
   echo "${out:-SUMMARY op=$1 cols=$2 FAILED}" | tee -a "$LOG"
 }
 has() { [[ " $SECTIONS " == *" $1 "* ]]; }

@@ -17,10 +17,10 @@ edits/lint here; hand precise commands to the run machine and paste results back
   higher-level compiler optimization. **Not a cycle-accurate simulator.**
 - **Measurement is solved.** We can measure deterministic per-kernel **device** latency via
   `SPYRE_PROFILE_SYNC=1` (uses the merge's new `torch_spyre._C.synchronize()`).
-- **First-round model is built and CALIBRATED** (`run_cost_model_plan.sh`):
-  `T = fixed + hbm_bytes/BW_HBM`, with **`fixed≈20µs, BW_HBM≈111 GB/s`** — predicts
-  single-input pointwise (gelu/relu/exp/sigmoid) to **~3%**. **LX traffic ~free** (term dropped).
-  `BW_HBM≈111` is specifically the **balanced read+write** rate (see bandwidth below).
+- **Model RE-ANCHORED on the golden profiler kernel time** (`run_profile_sweep.sh`, §5.3):
+  `T_kernel = hbm_bytes/BW_HBM` with **`fill≈0, BW_HBM≈102 GB/s`** (balanced 1R+1W; R²≈1.0).
+  The old `fixed≈20µs` was non-deterministic Memset/host **overhead** (size-scaling), NOT kernel
+  cost — now excluded. **LX traffic ~free.** read/write split + reductions pending sweep §B–F.
 - **Verified:** arithmetic-free (pointwise memory-bound); HBM BW shared, core-independent
   ≥2 cores; LX ~29× HBM (so ~free); **broadcast AND scalar inputs are cached → ~free**
   (Rung 6, encoded). **First round = pointwise only**; reductions deferred.
@@ -100,6 +100,13 @@ T = fixed + hbm_bytes / BW_HBM          (LX-resident traffic treated as ~free)
 - `hbm_bytes` / `lx_bytes` — sum over every tensor-arg (each input AND the output) of its
   bytes, attributed to HBM or LX by **allocation propagation** (an op's input memory = its
   producer's output allocation). **LX-placed tensors don't count toward HBM.**
+- **Sizes come from the DEVICE layout (sticks), not the torch logical shape.** Each arg's bytes
+  use `FixedTiledLayout.device_layout.device_size` (stick-padded: a row of N fp16 rounds up to
+  `ceil(N/64)*64`), available post-`finalize_layouts` where the cost dump runs. Each read is
+  sized by ITS OWN buffer's device layout — so a reduction's reduced input is **naturally
+  full-sized** (no separate `reduction_size` scaling), and a `[1,N]` broadcast carries its real
+  one-row device size (it's excluded anyway). This avoids miscounting e.g. a broadcast operand
+  expanded into `[1,N,64]` stick groups.
 - **Broadcast/scalar inputs are CACHED → ~free** (Rung 6, VERIFIED). An input whose index
   references fewer loop vars than the output rank — **including 0 vars (a scalar like the `1.0`
   in `x+1.0`)** — is loaded once and reused, so it adds ~no HBM traffic. Excluded from
@@ -150,6 +157,17 @@ Static dataflow ⇒ device latency is **deterministic**. Strategy: take the **mi
   the registry's per-kernel **min** is real device latency, for ANY op (small included).
 - **Don't use end-to-end `net` or the identity baseline for small ops** — host-wrapper
   differences dominate (gave nonsensical negative nets). Read the per-kernel device min directly.
+
+**GOLDEN measurement = the profiler's kernel device time.** `torch.profiler`
+(`ProfilerActivity.PrivateUse1`, needs the kineto-spyre wheel; `examples/profile_ops.py`)
+reports a **"Self SPYRE"** column = the TRUE per-kernel (`sdsc_fused_*`) device time. This is
+the standard to trust going forward. Cross-check (gelu[512×1024]): kernel **17.3 µs** ≈ our
+*traffic* term (18.9 µs) ✓. Our `SPYRE_PROFILE_SYNC` min (~37.9 µs) = kernel + a separate,
+**non-deterministic ~20 µs overhead** (the profiler's `Memset (Device)` = host/device setup),
+so the old **`fixed ≈ 20 µs` is that OVERHEAD bucket, not kernel cost**. When predicting the
+KERNEL time, re-fit `fill_ns` against profiler kernel times across sizes (expect it to drop to a
+small device pipeline-fill). The Memset scales (12.5 µs tiny → 28.8 µs at 512×1024) and sits
+OUTSIDE our `kernel_timer` bracket — characterize it with a `profile_ops` size sweep.
 
 **Env vars (instrument):**
 | var | effect |
@@ -236,6 +254,10 @@ benefit vanishes once per-core `sub` tile (`total/cores × 2 B`) outgrows ~1.6 M
   (broadcast-fill) ~**146**, balanced 1R+1W (`neg`/`copy`) ~**97**. `neg`≈`copy` confirms the
   scalar is free. **Reads ~saturate the 204.8 LPDDR5 peak; mixing in writes ~halves it** — the
   real reason pointwise caps ~100-110 (not a "half the DRAM peak" mystery).
+  *Byte-count sanity check:* at the same tensor size `copy` (1R+1W) moves 2× the bytes of `read`
+  (~1R), so the bytes are counted consistently. But the TIME ratio is **not** a clean 2× — it is
+  1.3× (small, overhead-compressed) → 3.4× (large), i.e. >2× once size dominates. That excess
+  over 2× IS the R+W penalty (`copy` runs at ~half `read`'s BW); a clean 2× would mean no penalty.
 - **Rung 9 (copy × SENCORES, large fixed size).** BW rises 1→4 cores (41→112) then plateaus
   ~100; **bigger per-core tiles do NOT help** (1 core is slowest) ⇒ the cap is a **shared-bus
   saturation reached at ~4 cores**, NOT per-core burst/scratchpad size.
@@ -247,6 +269,23 @@ benefit vanishes once per-core `sub` tile (`total/cores × 2 B`) outgrows ~1.6 M
 or the n-ary fused adds. Not stream-count (add3/add4 are fast), not arithmetic (Rung 2). The
 n-ary adds stage their intermediate in LX while `mul` writes straight to HBM — but why that
 single difference costs ~20% is unresolved. Flagged, not modeled.
+
+### 5.3 GOLDEN re-anchor on profiler kernel time (`run_profile_sweep.sh`, 2026-06-18, section A)
+
+We re-built the model on the **profiler's per-kernel device time** ("Self SPYRE"), discarding
+the old SPYRE_PROFILE_SYNC fit (whose ~20 µs "fixed" was non-deterministic overhead). Section A
+(neg + gelu size sweep, fp16):
+
+- **Kernel time is linear in I/O, with ~ZERO fixed.** `kernel = fill + bytes/BW`: neg fill −2.4 µs
+  (≈0), BW **104** GB/s, R²=0.9997; gelu fill −3.4 µs (≈0), BW **100**, R²=1.000. So **`fill_ns→0`,
+  `BW_HBM→102`** (balanced 1R+1W kernel rate). gelu≈neg ⇒ arithmetic-free on the golden time.
+- **The Memset/setup overhead is NOT fixed — it scales with I/O.** neg `11.5 µs + 0.0275 ns/elem`,
+  gelu `25.9 µs + 0.0244 ns/elem` (fixed part noisy/non-deterministic; the per-elem scaling is
+  real, ~60% of the kernel slope). So the old "20 µs" was just the fixed component at small sizes.
+
+`cost_model.py` updated: `fill_ns=0`, `bw_hbm_gbps=102`. **Pending** (sweep sections B–F not yet
+run): re-anchor read/write BW + the R+W penalty (D), reductions `bw_read`/`psum` (F) — those
+constants are still MIN-based and flagged in `CostParams`.
 
 ---
 
@@ -407,4 +446,8 @@ Still open:
 - **Access-pattern / bulk-load:** does a strided (non-contiguous) layout drop BW vs the modeled
   contiguous case? (Exp A in the bandwidth note; gated on confirming the compiled path honors a
   custom layout.)
+- **Re-anchor on the profiler kernel time (golden).** Collect `profile_ops` "Self SPYRE" kernel
+  times across sizes/ops and **re-fit `fill_ns`** — the old ~20 µs was the non-deterministic
+  host/Memset overhead, not kernel cost; the kernel-time fixed should be small. Also characterize
+  the `Memset (Device)` (scales 12.5→28.8 µs; is it per-call work we should surface?).
 - `fixed`'s ~7 µs host residue: stable across kernels / would a device-only timer change it?
