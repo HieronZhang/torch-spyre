@@ -35,9 +35,10 @@ read sumrow sumall amax mean | bcast mulbcast | write.
 
 Examples:
     # one op (prints the table + a parseable SUMMARY line with kernel_us / memset_us)
-    BENCH_OP=neg BENCH_COLS=1024 python examples/profile_ops.py
+    BENCH_OP=neg BENCH_COLS=1024 \
+        python docs/source/user_guide/examples/profile_ops.py
     # full golden re-sweep (rebuild the model from kernel time):
-    bash examples/run_profile_sweep.sh
+    bash docs/source/user_guide/examples/run_profile_sweep.sh
 """
 
 import os
