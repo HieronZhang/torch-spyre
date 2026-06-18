@@ -91,38 +91,39 @@ def _mem_of_layout(layout) -> str:
     return "hbm"
 
 
-def _device_elems(layout, fallback: int) -> int:
-    """Stick-padded DEVICE element count from a committed FixedTiledLayout -- the TRUE
-    I/O size (sticks are 64 fp16 elems; a row of N rounds up to ceil(N/64)*64). Falls
-    back to the logical count when the device layout isn't available. Use this, not the
-    torch logical shape, so the byte count reflects what actually moves on device.
+def _device_dims(layout):
+    """Stick-padded DEVICE dims (e.g. [4, 512, 64]) from a committed FixedTiledLayout
+    -- the TRUE shape that moves (sticks are 64 fp16 elems; a row of N rounds up to
+    ceil(N/64)*64). None when the device layout isn't available (use logical instead).
     """
     dl = getattr(layout, "device_layout", None)
     ds = getattr(dl, "device_size", None) if dl is not None else None
+    if not ds:
+        return None
     try:
-        if ds:
-            return _prod_ints(ds)
-    except Exception:  # noqa: BLE001 - symbolic/unresolved -> logical fallback
-        pass
-    return fallback
+        return [_int(x, 1) for x in ds]
+    except Exception:  # noqa: BLE001 - symbolic/unresolved
+        return None
 
 
 def _input_traffic(name: str):
-    """(mem, device_elems) for a read buffer. ``device_elems`` is the buffer's own
-    stick-padded device size (logical size if uncommitted) -- so a reduction's reduced
-    input is naturally full-sized, with no separate reduction_size scaling. Returns
-    (None, None) if the buffer can't be resolved (caller falls back)."""
+    """(mem, dims, elems) for a read buffer -- ``dims`` is the device (stick) shape,
+    ``elems`` its product (logical fallback if the device layout isn't committed). So a
+    reduction's reduced input is naturally full-sized, with no reduction_size scaling.
+    Returns (None, None, None) if the buffer can't be resolved (caller falls back)."""
     try:
         from torch._inductor.virtualized import V
 
         buf = V.graph.get_buffer(name)
         if buf is not None:
             layout = buf.get_layout()
-            elems = _device_elems(layout, _prod_ints(buf.get_size()))
-            return _mem_of_layout(layout), elems
+            dims = _device_dims(layout)
+            logical = list(buf.get_size())
+            elems = _prod_ints(dims) if dims else _prod_ints(logical)
+            return _mem_of_layout(layout), (dims if dims else logical), elems
     except Exception:  # noqa: BLE001 - graph inputs / unresolved
         pass
-    return None, None
+    return None, None, None
 
 
 def extract_op_features(op) -> OpFeatures:
@@ -134,7 +135,8 @@ def extract_op_features(op) -> OpFeatures:
     # TRUE I/O sizes come from the committed DEVICE layout (sticks), not the torch
     # logical shape -- a row of N fp16 rounds up to ceil(N/64)*64, and reduction/
     # broadcast operands carry their own device size.
-    out_elems = _device_elems(op.get_layout(), _prod_ints(out_size))
+    out_dims = _device_dims(op.get_layout()) or out_size
+    out_elems = _prod_ints(out_dims)
 
     cores = _cores(op)
 
@@ -153,6 +155,7 @@ def extract_op_features(op) -> OpFeatures:
             role="output",
             mem=_mem_of_layout(op.get_layout()),
             elems=out_elems,
+            dims=list(out_dims),
         )
     )
     # Input args, from the op's reads. Each read is sized by ITS OWN buffer's device
@@ -177,9 +180,9 @@ def extract_op_features(op) -> OpFeatures:
             broadcast = n_index_vars < n_out_vars
         except Exception:  # noqa: BLE001
             broadcast = False
-        mem, in_elems = _input_traffic(name)
+        mem, dims, in_elems = _input_traffic(name)
         if in_elems is None:  # unresolved buffer -> conservative fallback
-            mem, in_elems = "hbm", out_elems
+            mem, dims, in_elems = "hbm", list(out_dims), out_elems
         args.append(
             ArgTraffic(
                 name=name,
@@ -187,6 +190,7 @@ def extract_op_features(op) -> OpFeatures:
                 mem=mem,
                 elems=in_elems,
                 broadcast=broadcast,
+                dims=list(dims),
             )
         )
 
@@ -213,6 +217,39 @@ def extract_features(operations: list) -> list:
     return feats
 
 
+# Totals + per-arg detail from the most recent extraction, using the DEVICE-layout
+# byte accounting. Tools (e.g. examples/profile_ops.py) read this to get the model's
+# I/O size and verify BW = hbm_bytes / kernel_time, without re-parsing the printed dump.
+LAST_IO: dict = {}
+
+
+def _record_last_io(feats: list) -> None:
+    global LAST_IO
+    ops = []
+    for o in feats:
+        args = []
+        for a in o.args:
+            bs = a.elems * o.dtype_bytes
+            counted = 0 if (a.mem != "hbm" or a.broadcast) else bs
+            args.append(
+                {
+                    "role": a.role,
+                    "mem": a.mem,
+                    "dims": list(a.dims) if a.dims else [a.elems],
+                    "elems": a.elems,
+                    "bytes": bs,
+                    "hbm_counted": counted,
+                    "broadcast": a.broadcast,
+                }
+            )
+        ops.append({"name": o.name, "is_reduction": o.is_reduction, "args": args})
+    LAST_IO = {
+        "hbm_bytes": sum(o.hbm_bytes() for o in feats),
+        "lx_bytes": sum(o.lx_bytes() for o in feats),
+        "ops": ops,
+    }
+
+
 def dump_cost_model(operations: list) -> None:
     """Print per-op cost features + predicted latency; no-op unless SPYRE_DUMP_COST.
 
@@ -225,6 +262,7 @@ def dump_cost_model(operations: list) -> None:
 
     try:
         feats = extract_features(operations)
+        _record_last_io(feats)
         bar = banner("Cost model features + prediction (after pre-scheduling)")
         emit(f"{bar}\n{explain(feats)}\n")
     except Exception as exc:  # noqa: BLE001 - instrumentation must not raise

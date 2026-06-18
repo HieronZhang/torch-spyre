@@ -32,14 +32,16 @@ cd "$(dirname "$0")/.." || exit 1
 mkdir -p haoyang_logs
 LOG="haoyang_logs/profile_sweep_$(date +%Y%m%d_%H%M%S).log"
 SECTIONS="${SECTIONS:-A B C D E F}"
+ROWS="${ROWS:-2048}"   # bigger than 512 so each of 32 cores gets many rows (>=64/core)
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1   # recompile each run
 
 echo "==== golden profiler re-sweep $(date) ====" | tee "$LOG"
-echo "git: $(git rev-parse --short HEAD 2>/dev/null)  sections: $SECTIONS" | tee -a "$LOG"
+echo "git: $(git rev-parse --short HEAD 2>/dev/null)  rows: $ROWS  sections: $SECTIONS" \
+  | tee -a "$LOG"
 
-run() {  # run <op> <cols>   -> append the SUMMARY (kernel_us / memset_us / total)
+run() {  # run <op> <cols> -> append SUMMARY (io_hbm_bytes / kernel_us / bw_gbps / memset)
   local out
-  out=$(BENCH_OP="$1" BENCH_ROWS=512 BENCH_COLS="$2" \
+  out=$(BENCH_OP="$1" BENCH_ROWS="$ROWS" BENCH_COLS="$2" \
         python examples/profile_ops.py 2>/dev/null | grep '^SUMMARY')
   echo "${out:-SUMMARY op=$1 cols=$2 FAILED}" | tee -a "$LOG"
 }
@@ -58,12 +60,16 @@ has C && { echo "## C traffic / stream count" | tee -a "$LOG"
 has D && { echo "## D bandwidth read/write/balanced" | tee -a "$LOG"
   for op in read write copy neg; do
     for n in 1024 4096 16384 65536; do run "$op" "$n"; done; done; }
-# E) broadcast: bcast/mulbcast vs add/mul (cached -> 2-pass?)
-has E && { echo "## E broadcast" | tee -a "$LOG"
-  for op in bcast add mulbcast mul; do for n in 1024 4096; do run "$op" "$n"; done; done; }
-# F) reductions: sumrow/amax/mean (arith-free) + sumall (ring combine)
+# E) broadcast (cached -> 2-pass kernel?): row-vec bcast/mulbcast vs full add/mul, plus
+#    col-vec bcastcol (b[R,1], a degenerate dim -> stick-padded device size). Check the
+#    per-tensor dims/hbm-counted in the dump + bw_gbps to confirm caching both directions.
+has E && { echo "## E broadcast (row + col)" | tee -a "$LOG"
+  for op in bcast bcastcol add mulbcast mul; do
+    for n in 1024 4096; do run "$op" "$n"; done; done; }
+# F) reductions: read-dominated BW (sumrow size sweep); arith-free (sum/amax/mean); the
+#    OTHER reduced axis (sumcol = dim 0); and the ring combine (sumall -> scalar output).
 has F && { echo "## F reductions" | tee -a "$LOG"
-  for op in sumrow amax mean sumall; do
+  for op in sumrow sumcol amax mean sumall; do
     for n in 1024 4096 16384; do run "$op" "$n"; done; done; }
 
 echo "==== DONE -> forward $LOG ====" | tee -a "$LOG"

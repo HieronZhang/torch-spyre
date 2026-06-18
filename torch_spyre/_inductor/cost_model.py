@@ -65,8 +65,10 @@ class ArgTraffic:
     name: str
     role: str  # "input" | "output"
     mem: str  # "lx" | "hbm"
-    elems: int  # full element count for this arg (pre-broadcast-discount)
+    elems: int  # device element count = prod(dims) (pre-broadcast-discount)
     broadcast: bool = False  # cached on-chip -> excluded from hbm_bytes()
+    # DEVICE (stick) shape, e.g. [4, 512, 64]
+    dims: list = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -99,35 +101,34 @@ class OpFeatures:
 class CostParams:
     """Fittable parameters. BW in GB/s (numerically == bytes/ns).
 
-    Fitted from examples/run_cost_model_plan.sh on the run machine (fp16):
-    - fill  ~20 us       (rung 1 intercept; op-independent)
-    - BW_HBM ~111 GB/s   (rung 1 slope; 2-stream r/w, >=2 cores, shared & saturated)
-    LX traffic is treated as ~FREE (no BW_LX term): the rung-4 chain showed the
-    per-op LX cost (~1 us) sits below the run-to-run measurement noise (~5 us), so a
-    precise BW_LX can't be resolved and LX-resident tensors barely affect latency.
-    Qualitatively LX is ~29x HBM; quantitatively we drop the term.
-    Verified: arithmetic-free for pointwise (rung 2); HBM BW shared, core-independent
-    above 2 cores (rung 5); broadcast inputs cached/free (rung 6).
-    BW_HBM=111 is the BALANCED read+write rate. Rung 8 (measured): read-only ~176 GB/s
-    (86% of the 204.8 LPDDR5 peak; _HBM_BW_GBS in work_division.py), write-only ~146,
-    balanced 1R+1W ~97. Mixing reads+writes ~halves throughput, so pointwise caps ~100.
-    A read/write-aware BW (reads 176 / writes 146) is a future refinement, worth it only
-    if the blend misranks read-heavy ops (reductions).
-    Open: rung 7 FALSIFIED a stream-count BW law -- 4/5-input fused adds keep their
-    intermediate in LX (still 1 HBM write) and match the 1-input rate, so NOT
-    "more streams = slower". Only plain 2-input mul/add is ~15-25% slow (unexplained).
-    The penalty's mechanism (turnaround? half-duplex? shared bus) needs an aiu-smi
-    capture -- see notes/bandwidth_turnaround_experiment.md.
+    The model predicts the GOLDEN per-kernel device time (torch.profiler "Self SPYRE"),
+    NOT our old SPYRE_PROFILE_SYNC min (which folded in a non-deterministic, size-
+    scaling Memset/host overhead -- tracked separately, not modeled).
+
+    Fitted from the profiler sweep (examples/run_profile_sweep.sh, section A, fp16):
+    - fill ~0 us   -- the kernel has NO fixed term (neg/gelu intercepts -2 to -3 us,
+      i.e. ~0; the old ~20 us "fixed" was the overhead bucket, now excluded).
+    - BW_HBM ~102 GB/s -- balanced 1R+1W kernel slope (neg 104, gelu 100; R^2 ~ 1.0).
+      Kernel time is essentially bytes/BW, linear in I/O size.
+    LX traffic ~FREE (rung-4 LX cost below noise; ~29x HBM). Verified: arithmetic-free
+    (gelu==neg on kernel time); broadcast/scalar inputs cached/free (rung 6); HBM BW
+    shared, core-independent >=2 cores (rung 5).
+    PENDING re-anchor on kernel time (sweep sections B-F not yet run):
+    - read/write split & the R+W penalty: bw_read/bw_write below are MIN-based (read
+      ~176, write ~146, balanced-min ~97 vs the 204.8 LPDDR5 peak) -- re-derive (D).
+    - reductions (bw_read, psum) -- section F. Stream-count: rung 7 FALSIFIED a per-
+      stream law (4/5-input fused adds match the 1-input rate); plain mul/add ~15-25%
+      slow (unexplained). The R+W penalty mechanism needs aiu-smi (see bw note).
     """
 
-    fill_ns: float = 20_000.0
-    bw_hbm_gbps: float = 111.0
+    fill_ns: float = 0.0  # golden kernel has ~no fixed term (section A: intercept ~0)
+    bw_hbm_gbps: float = 102.0  # balanced 1R+1W KERNEL BW (profiler section A)
     # Reductions (INITIAL, unverified — see rung 11). Read-dominated, so the full
     # input read uses the read-only rate, not the balanced blend. The cross-core
     # ring combine (when the reduced axis is split across k cores) is (k-1) hops,
     # each touching every output element -- mirrors the matmul PSUM term
     # (_PSUM_PER_ELEM_US=1.4e-4 us/elem in work_division.py). Both to be calibrated.
-    bw_read_gbps: float = 176.0  # rung-8 read-only asymptote
+    bw_read_gbps: float = 176.0  # MIN-based (rung-8); re-anchor on kernel time (D/F)
     psum_per_elem_ns: float = 0.14  # 1.4e-4 us/elem/hop, from the matmul model
 
 
@@ -174,7 +175,13 @@ def explain(ops: list, params: CostParams | None = None) -> str:
         )
         for a in o.args:
             bc = " broadcast (cached: ~free)" if a.broadcast else ""
-            lines.append(f"      {a.role:<6} {a.mem:<3} {a.elems} elems{bc}")
+            counted = 0 if (a.mem != "hbm" or a.broadcast) else a.elems * o.dtype_bytes
+            shape = a.dims if a.dims else [a.elems]
+            lines.append(
+                f"      {a.role:<6} {shape} in {a.mem} = {a.elems} elems x "
+                f"{o.dtype_bytes}B = {a.elems * o.dtype_bytes} B"
+                f" (hbm counted: {counted} B){bc}"
+            )
     t = predict_ops(ops, p)
     lines.append(
         f"  => T = {t / 1000:.2f} us  (fill {p.fill_ns / 1000:.0f}us; pointwise "
