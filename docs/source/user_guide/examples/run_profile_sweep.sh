@@ -52,11 +52,11 @@ run() {  # run <op> <cols> -> append the IO device-layout breakdown + SUMMARY li
         python "$PROFILE_OPS" 2>/dev/null | grep -E '^(IO |SUMMARY)')
   echo "${out:-SUMMARY op=$1 cols=$2 FAILED}" | tee -a "$LOG"
 }
-runc() {  # runc <cores> <op> <cols> -> like run() but pin SENCORES (core-count sweep)
+rung() {  # rung <rows> <op> <cols> -> pin cores=32, override ROWS (broadcast reload probe)
   local out
-  out=$(SENCORES="$1" BENCH_OP="$2" BENCH_ROWS="$ROWS" BENCH_COLS="$3" \
+  out=$(SENCORES=32 BENCH_OP="$2" BENCH_ROWS="$1" BENCH_COLS="$3" \
         python "$PROFILE_OPS" 2>/dev/null | grep -E '^(IO |SUMMARY)')
-  echo "${out:-SUMMARY op=$2 cores=$1 cols=$3 FAILED}" | tee -a "$LOG"
+  echo "${out:-SUMMARY op=$2 rows=$1 cols=$3 FAILED}" | tee -a "$LOG"
 }
 has() { [[ " $SECTIONS " == *" $1 "* ]]; }
 
@@ -95,21 +95,23 @@ has E && { echo "## E broadcast (row + col)" | tee -a "$LOG"
 has F && { echo "## F reductions" | tee -a "$LOG"
   for n in 1024 4096; do run sumrow "$n"; done
   for op in sumcol amax mean sumall; do run "$op" 2048; done; }
-# G) per-core broadcast RELOAD probe: does a broadcast operand constant along the split
-#    axis get re-loaded once per core? Both ops have one big tensor b[1,C] (cols=65536)
-#    + tiny a[32,1]/output and identical relu(a+b) compute; only the reduced axis differs.
-#      redbcast     (reduce dim=-1, out[32] split by ROW)  -> b constant along rows ->
-#                   RELOAD candidate: if true, kernel time rises ~linearly with cores.
-#      redbcast_col (reduce dim=0,  out[C] split by COL)   -> b PARTITIONED -> control,
-#                   stays flat with cores.
-#    Sweep SENCORES; a rising redbcast vs flat redbcast_col == per-core reload confirmed
-#    (compute is identical in both, so it can't be the cause). cores=1 is the only point
-#    where R*C compute may not be free -> read the 4..32 trend, not the 1-core value.
-has G && { echo "## G per-core broadcast reload (SENCORES sweep, cols=65536)" \
-  | tee -a "$LOG"
-  for c in 1 2 4 8 16 32; do
-    runc "$c" redbcast 65536
-    runc "$c" redbcast_col 65536
+# G) broadcast-operand RELOAD probe -- PURE POINTWISE (one kernel, no materialized
+#    intermediate; reductions are unusable here: Spyre spills the pre-reduction op to
+#    HBM, an 8MB round-trip that drowns the signal). Fix cores=32 and SHRINK ROWS so the
+#    per-core reload cores*C of b[1,C] is a visible fraction of the 2*R*C output traffic.
+#    gap = kernel(bcast) - kernel(bcastcol) isolates b's residency (both are 2-pass; only
+#    which axis b spans differs):
+#      gap ~CONSTANT across R (= cores*C) -> loaded ONCE PER CORE  (model needs xcores)
+#      gap grows ~R          (= R*C)      -> loaded once PER ROW   (no caching)
+#      gap ~0                (= C)        -> loaded once GLOBALLY   (count-once is right)
+#    add (full 2R+1W = 3-pass) is the reference; whichever broadcast op approaches add has
+#    its operand reloaded (and reveals which axis work-division split). Small R (64/128)
+#    carry the signal; R=256 mainly confirms the constant-vs-growing trend.
+has G && { echo "## G broadcast reload (cores=32, vary ROWS, cols=16384)" | tee -a "$LOG"
+  for r in 64 128 256; do
+    rung "$r" bcast 16384
+    rung "$r" bcastcol 16384
+    rung "$r" add 16384
   done; }
 
 echo "==== DONE -> forward $LOG ====" | tee -a "$LOG"
