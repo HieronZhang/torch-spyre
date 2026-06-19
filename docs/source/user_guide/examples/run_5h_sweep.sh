@@ -53,8 +53,8 @@ echo "git: $(git rev-parse --short HEAD 2>/dev/null)  rows: $ROWS  sections: $SE
   | tee -a "$LOG"
 
 has() { [[ " $SECTIONS " == *" $1 "* ]]; }
-_emit() {  # read profile_ops stdout on stdin, keep IO breakdown + SUMMARY, tee to log
-  local out; out=$(grep -E '^(IO |SUMMARY)')
+_emit() {  # read profile_ops stdout on stdin; keep IO + MODEL estimate + SUMMARY; tee
+  local out; out=$(grep -E '^(IO |MODEL |SUMMARY)')
   echo "${out:-SUMMARY $1 FAILED}" | tee -a "$LOG"
 }
 run() {  # run <op> <cols>          pointwise, rows=$ROWS

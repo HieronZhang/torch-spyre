@@ -52,7 +52,7 @@ import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 from torch.profiler import ProfilerActivity, profile  # noqa: E402
 
-from torch_spyre._inductor import dump_cost_model  # noqa: E402
+from torch_spyre._inductor import cost_model, dump_cost_model  # noqa: E402
 
 DEVICE = torch.device("spyre")
 OP = os.environ.get("BENCH_OP", "gelu")
@@ -164,13 +164,45 @@ def _print_io(io: dict) -> None:
         print(f"IO   op {o['name']}{red}")
         for a in o["args"]:
             bc = " broadcast (loaded once)" if a["broadcast"] else ""
+            lf = a.get("loop_factor", 1)
+            xl = f" xL={lf}" if lf > 1 else ""
             print(
                 f"IO     {a['role']:<6} {a['dims']} in {a['mem']} = "
                 f"{a['elems']} elems x 2B = {a['bytes']} B"
-                f"  (hbm counted: {a['hbm_counted']} B){bc}"
+                f"  (hbm counted: {a['hbm_counted']} B){xl}{bc}"
             )
     print(f"IO   => HBM I/O total = {io.get('hbm_bytes', 0)} B  "
           f"(lx {io.get('lx_bytes', 0)} B, ~free)")
+
+
+def _print_model(feats: list) -> float:
+    """Print the cost model's ESTIMATED kernel time + rough calc, after the I/O dump.
+
+    Lines are prefixed ``MODEL `` so the sweep greps them. Returns the predicted us so
+    the SUMMARY can carry it next to the measured kernel_us.
+    """
+    if not feats:
+        print("MODEL (no features extracted)")
+        return 0.0
+    p = cost_model.CostParams()
+    r = sum(o.read_bytes() for o in feats)
+    w = sum(o.write_bytes() for o in feats)
+    lp = max((o.loop_trip for o in feats), default=1)
+    base = (r + w) / p.bw_peak_gbps
+    turn = p.rw_turnaround_ns_per_byte * min(r, w)
+    t = cost_model.predict_ops(feats, p)
+    print(f"MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W)"
+          f"{' + c_loop*L' if lp > 1 else ''} --")
+    print(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
+    print(f"MODEL   base = (R+W)/BW_PEAK = ({r}+{w})/{p.bw_peak_gbps:.0f} "
+          f"= {base / 1000:.2f} us")
+    print(f"MODEL   turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(r, w)} "
+          f"= {turn / 1000:.2f} us")
+    if lp > 1:
+        loop = p.c_loop_ns * lp
+        print(f"MODEL   loop = c_loop*L = {p.c_loop_ns}*{lp} = {loop / 1000:.2f} us")
+    print(f"MODEL   => T_model = {t / 1000:.2f} us")
+    return t / 1000
 
 
 def main():
@@ -178,6 +210,7 @@ def main():
     for _ in range(WARMUP):  # compile (-> cost-model dump fires) + warm the kernel
         compiled(*args).cpu()
     io = dict(dump_cost_model.LAST_IO)  # device-layout I/O the model computed
+    feats = list(dump_cost_model.LAST_FEATS)  # raw OpFeatures for predict_ops()
     io_hbm_bytes = io.get("hbm_bytes", 0)
 
     with profile(
@@ -191,6 +224,7 @@ def main():
     ka = prof.key_averages()
     print(ka.table(sort_by="cuda_time_total", row_limit=20).replace("CUDA", "AIU"))
     _print_io(io)
+    pred_us = _print_model(feats)  # cost-model estimate + rough calc (after I/O dump)
 
     # Parseable one-liner for a size sweep -> re-fit fill + BW on the GOLDEN kernel
     # time, and track the (non-deterministic) Memset overhead separately.
@@ -209,10 +243,12 @@ def main():
             other += us
     # Effective BW from the GOLDEN kernel time and the model's device-layout I/O.
     bw = io_hbm_bytes / (kernel * 1000) if kernel > 0 else 0.0
+    err = (pred_us - kernel) / kernel * 100.0 if kernel > 0 else 0.0
     print(
         f"SUMMARY op={OP} rows={ROWS} cols={COLS} cores={SENCORES or '-'} "
         f"tiles={TILES} lx={LX} io_hbm_bytes={io_hbm_bytes} "
-        f"kernel_us={kernel:.3f} bw_gbps={bw:.1f} memset_us={memset:.3f} "
+        f"kernel_us={kernel:.3f} pred_us={pred_us:.3f} err_pct={err:+.1f} "
+        f"bw_gbps={bw:.1f} memset_us={memset:.3f} "
         f"other_dev_us={other:.3f} total_dev_us={kernel + memset + other:.3f}"
     )
 

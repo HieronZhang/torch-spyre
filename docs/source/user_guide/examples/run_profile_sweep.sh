@@ -49,13 +49,13 @@ echo "git: $(git rev-parse --short HEAD 2>/dev/null)  rows: $ROWS  sections: $SE
 run() {  # run <op> <cols> -> append the IO device-layout breakdown + SUMMARY line
   local out
   out=$(BENCH_OP="$1" BENCH_ROWS="$ROWS" BENCH_COLS="$2" \
-        python "$PROFILE_OPS" 2>/dev/null | grep -E '^(IO |SUMMARY)')
+        python "$PROFILE_OPS" 2>/dev/null | grep -E '^(IO |MODEL |SUMMARY)')
   echo "${out:-SUMMARY op=$1 cols=$2 FAILED}" | tee -a "$LOG"
 }
 rung() {  # rung <rows> <op> <cols> -> pin cores=32, override ROWS (broadcast reload probe)
   local out
   out=$(SENCORES=32 BENCH_OP="$2" BENCH_ROWS="$1" BENCH_COLS="$3" \
-        python "$PROFILE_OPS" 2>/dev/null | grep -E '^(IO |SUMMARY)')
+        python "$PROFILE_OPS" 2>/dev/null | grep -E '^(IO |MODEL |SUMMARY)')
   echo "${out:-SUMMARY op=$2 rows=$1 cols=$3 FAILED}" | tee -a "$LOG"
 }
 has() { [[ " $SECTIONS " == *" $1 "* ]]; }

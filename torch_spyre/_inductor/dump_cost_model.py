@@ -260,11 +260,15 @@ def extract_features(operations: list) -> list:
 # Totals + per-arg detail from the most recent extraction, using the DEVICE-layout
 # byte accounting. Tools (e.g. examples/profile_ops.py) read this to get the model's
 # I/O size and verify BW = hbm_bytes / kernel_time, without re-parsing the printed dump.
+# LAST_FEATS holds the raw OpFeatures so a tool can call cost_model.predict_ops() to get
+# the model's estimated kernel time.
 LAST_IO: dict = {}
+LAST_FEATS: list = []
 
 
 def _record_last_io(feats: list) -> None:
-    global LAST_IO
+    global LAST_IO, LAST_FEATS
+    LAST_FEATS = list(feats)
     ops = []
     for o in feats:
         args = []
