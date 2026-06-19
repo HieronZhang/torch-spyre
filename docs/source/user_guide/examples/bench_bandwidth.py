@@ -95,7 +95,10 @@ WARMUP = int(os.environ.get("BENCH_WARMUP", "20"))
 SUSTAIN_S = float(os.environ.get("BENCH_BW_SUSTAIN_S", "0"))
 
 DT = 2  # fp16 bytes
-FILL_NS = 20_000.0  # calibrated per-kernel fixed term (cost_model.py)
+# Overhead subtracted from the SPYRE_PROFILE_SYNC-min measurement this probe uses: the
+# non-deterministic Memset/host-setup bucket, NOT the cost-model fill (now 0). The
+# golden kernel time has no fixed term; only this min-based probe still sees the bucket.
+FILL_NS = 20_000.0
 PEAK_GBPS = 204.8  # _HBM_BW_GBS: LPDDR5 aggregate peak (work_division.py)
 
 # op -> (fn, hbm_passes). passes = the dominant HBM memory passes for the BW est:

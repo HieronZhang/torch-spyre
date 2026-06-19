@@ -15,25 +15,30 @@ edits/lint here; hand precise commands to the run machine and paste results back
 - **Goal:** a high-level, *relative* performance model that predicts Spyre kernel device
   latency from the **"LoopLevel IR — AFTER pre-scheduling passes"** graph, to guide
   higher-level compiler optimization. **Not a cycle-accurate simulator.**
-- **Measurement is solved.** We can measure deterministic per-kernel **device** latency via
-  `SPYRE_PROFILE_SYNC=1` (uses the merge's new `torch_spyre._C.synchronize()`).
-- **Model RE-ANCHORED on the golden profiler kernel time** (`run_profile_sweep.sh`, §5.3):
-  `T_kernel = hbm_bytes/BW_HBM` with **`fill≈0, BW_HBM≈102 GB/s`** (balanced 1R+1W; R²≈1.0).
-  The old `fixed≈20µs` was non-deterministic Memset/host **overhead** (size-scaling), NOT kernel
-  cost — now excluded. **LX traffic ~free.** read/write split + reductions pending sweep §B–F.
-- **Verified:** arithmetic-free (pointwise memory-bound); HBM BW shared, core-independent
-  ≥2 cores; LX ~29× HBM (so ~free); **broadcast AND scalar inputs are cached → ~free**
-  (Rung 6, encoded). **First round = pointwise only**; reductions deferred.
-- **Bandwidth — the ~111 cap EXPLAINED (Rung 8):** read-only ~**176** GB/s (86% of the 204.8
-  LPDDR5 peak), write-only ~**146**, but a **balanced 1R+1W op ~97** — *below either pure
-  direction*. Mixing reads+writes ~halves throughput; every pointwise op writes its output, so
-  it caps near ~100. **Mechanism OPEN** (read/write turnaround? half-duplex? shared bus upstream
-  of DRAM?) — Rung 9 shows shared-bus saturation at ~4 cores (not per-core burst); `aiu-smi`
-  bus-utilization is the decider. (Replaces the old "~half peak" guess.)
-- **Stream-count BW idea FALSIFIED (Rung 7):** rate is non-monotonic in operand count (gelu 116,
-  mul 88, add3 118, add4 124) — 4/5-input fused adds (intermediates staged in LX) match the
-  1-input rate. Only plain 2-input `mul`/`add` is anomalously ~15-25% slow (unexplained). Do
-  **not** encode a `{2:111,3:80}` table.
+- **Measurement is solved.** The GOLDEN measurement is the **torch.profiler "Self SPYRE"
+  per-kernel device time** (`sdsc_fused_*`). Our old `SPYRE_PROFILE_SYNC` min measured
+  kernel + a non-deterministic, size-scaling Memset/host-setup bucket (tracked separately).
+- **Model = TURNAROUND** (`run_profile_sweep.sh` §B–F, encoded in `cost_model.py`):
+  **`T = fill + (R+W)/BW_PEAK + α·min(R,W)`**, R/W = HBM read/write bytes. Calibrated:
+  **`fill≈0, BW_PEAK≈150 GB/s, α≈0.0057 ns/byte`**. One *peak* bandwidth (one-directional)
+  minus a **read/write turnaround penalty on the overlap `min(R,W)`** → reproduces the
+  V-shaped effective BW. **LX traffic ~free.** Validated on the B–F sweep: **~2% error on
+  core pointwise + reductions, ~7% overall** (vs ~11% for an additive two-rate).
+- **Verified:** arithmetic-free (gelu/exp == neg on kernel time); HBM BW shared,
+  core-independent ≥2 cores; LX ~29× HBM (so ~free); **broadcast operand loaded ONCE at its
+  own small device size — NOT zeroed, NOT per-core** (rung-G probe: bcast ≈ bcastcol ≪ add).
+- **Bandwidth V-shape (the old ~111 cap EXPLAINED + now MODELED):** effective BW is highest
+  one-directional — read-only ~**150**, write-only ~**125–140** — and dips to ~**105** at a
+  balanced 1R+1W, *below either pure direction*. The `α·min(R,W)` term captures this dip with
+  one constant. The deep mechanism (half-duplex / turnaround / shared bus) still wants
+  `aiu-smi` confirmation, but the cost **effect** is now in the model.
+- **Stream-count "anomaly" RESOLVED (was Rung 7):** mul/add are **not** anomalous — effective
+  BW simply rises with read fraction. The turnaround model fits `mul` (2R1W) at 116 GB/s to
+  0.2%, and `add3`/`add4` to ~8% (LX intermediates not *perfectly* free). Do **not** encode a
+  per-stream BW table.
+- **Known residual biases (B–F):** broadcast pointwise ~**17% faster** than the model (off the
+  V-curve; cause OPEN — the most interesting open thread); write-only ~16%; fan-in
+  `add3/add4` ~8%; `sumcol` (reducing the outer/partitioned axis) ~19%.
 - **Lesson logged** (memory `claim-discipline-perf-modeling`): don't make mechanism claims a
   single data point can't support; name the controlled experiment instead.
 
@@ -74,52 +79,57 @@ to read an op.
 
 ## 3. The model
 
-Per kernel/bundle (one fixed term):
+Per kernel/bundle:
 
 ```
-T = fixed + hbm_bytes / BW_HBM          (LX-resident traffic treated as ~free)
+T = fill + (R + W) / BW_PEAK + α · min(R, W)     (LX-resident traffic treated as ~free)
 ```
 
-- `fixed` (≈**20 µs**) — the **lumped fixed per-kernel overhead**: it is *not* purely
-  "pipeline fill." It bundles (a) device pipeline fill+drain, (b) per-kernel device setup
-  (program load, DMA/core config), and (c) **~7 µs host residue** in our measurement (async
-  dispatch + sync-return latency that `SPYRE_PROFILE_SYNC` brackets). **One per kernel**, not
-  per op. **It MUST be op-independent** — relu/gelu/exp/sigmoid (all 2-stream) measured the
-  same ⇒ same `fixed`. If a fit ever needs a different `fixed` per op, the **model is wrong**
-  (mis-counted traffic / a missing structural term), not "fixed is op-specific." Any
-  refinement must be a *principled* function of structure (e.g. stream count — same for any
-  3-stream op), never an arbitrary per-op fudge.
-- `BW_HBM` — effective **aggregate** HBM bandwidth in GB/s (numerically == bytes/ns,
-  since 1 GB/s = 1 byte/ns). "Aggregate" = the shared-HBM assumption; the SENCORES sweep
-  (§8 rung 5) verifies core count doesn't change it.
-- **LX traffic is treated as ~free (no `BW_LX` term).** Rung 4 showed the per-op LX cost
-  (~1 µs) sits *below* the run-to-run measurement noise (~5 µs), so a precise `BW_LX` can't be
-  resolved; LX-resident tensors barely affect latency (LX is ~29× HBM). `lx_bytes` is still
-  computed for inspection but contributes 0 to `T`. (Revisit only if an LX-heavy case
-  misranks — would need a larger-tile LX sweep to lift the signal above the noise.)
-- `hbm_bytes` / `lx_bytes` — sum over every tensor-arg (each input AND the output) of its
-  bytes, attributed to HBM or LX by **allocation propagation** (an op's input memory = its
-  producer's output allocation). **LX-placed tensors don't count toward HBM.**
+where `R` = HBM bytes READ (inputs), `W` = HBM bytes WRITTEN (outputs).
+
+- `fill` (≈**0**) — the golden **kernel** has *no* fixed term (section-A intercepts ~0). The
+  old `fixed≈20µs` was a **separate, non-deterministic, size-scaling Memset/host-setup bucket**
+  (the profiler's "Memset (Device)" event), which our old `SPYRE_PROFILE_SYNC` min folded into
+  the kernel — it is NOT kernel cost and is tracked separately, not modeled.
+- `BW_PEAK` (≈**150 GB/s** == bytes/ns) — the **one-directional peak** HBM bandwidth, reached
+  by read-only or write-only traffic. "Aggregate / shared-HBM" assumption (SENCORES rung 5:
+  core-independent ≥2 cores).
+- `α · min(R, W)` (≈**0.0057 ns/byte**) — the **read/write turnaround penalty.** HBM is a
+  shared bus that must switch between read and write; the cost falls on the **overlap**
+  `min(R,W)` — 0 for one-directional traffic, maximal at a balanced 1R+1W. This carves the
+  measured **V-shaped** effective BW (≈150 read-only → ≈105 balanced → ≈125–140 write-only)
+  with **one constant** instead of a second bandwidth. `α` is solved from the balanced neg
+  (eff 105): `2/105 = 2/BW_PEAK + α`. (An additive two-rate `R/150 + W/81` fits the common ops
+  too but mispredicts pure writes by ~55%, because it taxes writes even with nothing to overlap
+  — the turnaround form taxes only *concurrent* R+W, which is physically right.)
+- **LX traffic is treated as ~free (no `BW_LX` term).** Rung 4's per-op LX cost (~1 µs) sits
+  below the noise; LX is ~29× HBM. `lx_bytes` is computed for inspection but contributes 0.
+  (The `add3`/`add4` ~8% under-prediction hints LX isn't *perfectly* free — a future refinement.)
+- `R` / `W` / `lx_bytes` — `R` sums input args, `W` the output, each attributed to HBM or LX by
+  **allocation propagation** (an op's input memory = its producer's output allocation).
+  LX-placed tensors don't count toward HBM. R and W are summed over the **whole bundle** before
+  the turnaround term (a fused kernel interleaves all its reads/writes on one bus).
 - **Sizes come from the DEVICE layout (sticks), not the torch logical shape.** Each arg's bytes
   use `FixedTiledLayout.device_layout.device_size` (stick-padded: a row of N fp16 rounds up to
-  `ceil(N/64)*64`), available post-`finalize_layouts` where the cost dump runs. Each read is
-  sized by ITS OWN buffer's device layout — so a reduction's reduced input is **naturally
-  full-sized** (no separate `reduction_size` scaling), and a `[1,N]` broadcast carries its real
-  one-row device size (it's excluded anyway). This avoids miscounting e.g. a broadcast operand
-  expanded into `[1,N,64]` stick groups.
-- **Broadcast/scalar inputs are CACHED → ~free** (Rung 6, VERIFIED). An input whose index
-  references fewer loop vars than the output rank — **including 0 vars (a scalar like the `1.0`
-  in `x+1.0`)** — is loaded once and reused, so it adds ~no HBM traffic. Excluded from
-  `hbm_bytes` (encoded in `cost_model.py`; the dump flags it via `n_index_vars < n_out_vars`).
+  `ceil(N/64)*64`), available post-`finalize_layouts` where the cost dump runs. A reduction's
+  reduced input is **naturally full-sized**, and a `[1,N]` broadcast carries its real one-row
+  device size.
+- **Broadcast/scalar inputs are loaded ONCE — counted, NOT zeroed, NOT per-core.** An input
+  whose index references fewer loop vars than the output rank (**including 0 vars** — a scalar
+  like the `1.0` in `x+1.0`) is loaded once and reused across the broadcast dim. It is counted
+  at its **own small one-row/-col device size** — not scaled to the output, and not dropped to
+  zero (the earlier "excluded → free" was wrong). **rung-G verified once, not per core**: at
+  cores=32/R=64, `bcast (b[1,C]) ≈ bcastcol (b[R,1]) ≪ add` — a per-core reload would have
+  pushed `bcast` up to `add`; it didn't. (A scalar with no resolvable buffer falls back to ~1
+  element, not the output size.) Flagged via `n_index_vars < n_out_vars` in the dump.
 - **Bulk-load / contiguous assumption.** The model assumes the **default contiguous layout**:
   each core's tile is contiguous and stages in one **bulk DMA read** (not many scattered
   per-stick reads). Spyre's memory requests are limited, so contiguous layout is *required* for
   full bandwidth (`tensors_and_layouts.md`). A strided/scattered layout would move less BW and is
-  **NOT modeled** (would need an access-pattern term).
-- **`BW_HBM≈111` is a read+write BLEND, not a peak.** It is the balanced-1R+1W rate. Read-heavy
-  ops (reductions) stream at ~**176** GB/s and write-heavy at ~**146** (§5.2 Rung 8), so a
-  read/write-aware BW is a future refinement; for typical balanced pointwise the single 111 is
-  well-calibrated.
+  **NOT modeled** (would need an access-pattern term — see the `sumcol` ~19% miss).
+- **Reductions need no special bandwidth.** A reduction is just a kernel with a tiny `W` (the
+  small output), so `min(R,W)≈0` → `T ≈ R/BW_PEAK`, the read-only rate, automatically.
+  `is_reduction` survives only to add a cross-core ring-combine term (`psum_per_elem_ns`).
 
 **Per-op vs fused:** model a single op as its own kernel; a fused bundle = sum of its ops'
 traffic with **one** fill, and intermediates that stay in LX don't hit HBM. (Our examples run
@@ -133,10 +143,11 @@ intermediates become per-tile on-chip scratch.)
 - **Tile fusion** (coarse tiling): inner-loop fusion making intermediates per-tile on-chip;
   needs hints. NOT active in our runs.
 
-**Calibrated values (fp16, fitted from `run_cost_model_plan.sh`):** `fixed≈20µs`,
-`BW_HBM≈111 GB/s` (rung 1 slope; 2-stream r/w, ≥2 cores, shared & saturated). **LX traffic
-is treated as ~free** (no `BW_LX` term — rung 4 signal was below noise). Single-input
-pointwise predicted to ~3% across a 16× size range. See §5 for the data.
+**Calibrated values (fp16, B–F profiler sweep, encoded in `cost_model.py`):** `fill≈0`,
+`BW_PEAK≈150 GB/s`, `α≈0.0057 ns/byte`, `psum_per_elem_ns≈0.14`. **LX traffic ~free** (no
+`BW_LX` term — rung 4 signal below noise). Accuracy: **~2% on core pointwise + reductions,
+~7% overall**; residual biases (broadcast +17%, write-only, fan-in, sumcol) listed in §0/§11.
+See §5 for the data.
 
 ---
 
@@ -265,10 +276,11 @@ benefit vanishes once per-core `sub` tile (`total/cores × 2 B`) outgrows ~1.6 M
   output (not a shared load), so they aren't clean 1R:NW; do not use. `aiu-smi` is the proper way
   to vary the read/write mix — see `bandwidth_turnaround_experiment.md`.
 
-**`mul`/`add` anomaly (open):** the plain 2-input binary runs ~15-25% slower per byte than gelu
-or the n-ary fused adds. Not stream-count (add3/add4 are fast), not arithmetic (Rung 2). The
-n-ary adds stage their intermediate in LX while `mul` writes straight to HBM — but why that
-single difference costs ~20% is unresolved. Flagged, not modeled.
+**`mul`/`add` "anomaly" RESOLVED (turnaround model):** the plain 2-input binary is not
+anomalous — it's a 2R+1W kernel (read fraction 0.67), and effective BW simply rises with read
+fraction. The turnaround model fits `mul` (2R1W) at 116 GB/s to **0.2%**. The earlier "~15-25%
+slow" framing compared it against the wrong baseline (the balanced 1R+1W rate); against its own
+read:write mix it is exactly on-model.
 
 ### 5.3 GOLDEN re-anchor on profiler kernel time (`run_profile_sweep.sh`, 2026-06-18, section A)
 
@@ -283,9 +295,14 @@ the old SPYRE_PROFILE_SYNC fit (whose ~20 µs "fixed" was non-deterministic over
   gelu `25.9 µs + 0.0244 ns/elem` (fixed part noisy/non-deterministic; the per-elem scaling is
   real, ~60% of the kernel slope). So the old "20 µs" was just the fixed component at small sizes.
 
-`cost_model.py` updated: `fill_ns=0`, `bw_hbm_gbps=102`. **Pending** (sweep sections B–F not yet
-run): re-anchor read/write BW + the R+W penalty (D), reductions `bw_read`/`psum` (F) — those
-constants are still MIN-based and flagged in `CostParams`.
+**B–F sweep (2026-06-18, `profile_sweep_20260618_210419.log`) → TURNAROUND model.** Effective
+BW is set by the read:write mix, not op/size: read-only ~**150**, balanced ~**105**, write-only
+~**125–140**, multi-read (`mul`) ~**116**. Fit `T = (R+W)/BW_PEAK + α·min(R,W)` with
+**`BW_PEAK=150, α=0.0057`** (α from the balanced neg). Validated: **~2% on core ops, ~7%
+overall** (vs ~11% for an additive two-rate, which mispredicts pure writes ~55%). `cost_model.py`
+now encodes `fill_ns=0`, `bw_peak_gbps=150`, `rw_turnaround_ns_per_byte=0.0057`. Residual biases:
+broadcast **+17%** (off the V-curve, OPEN), write-only ~16%, fan-in `add3/add4` ~8%, `sumcol`
+~19%. The reload probe (rung-G) confirmed the broadcast operand is loaded **once, not per core**.
 
 ---
 
@@ -303,13 +320,16 @@ constants are still MIN-based and flagged in `CostParams`.
   before/after for LoopLevel).
 
 **Cost model (this round):**
-- `torch_spyre/_inductor/cost_model.py` — PURE model: `OpFeatures`, `ArgTraffic`, `CostParams`
-  (**calibrated `fill_ns=20000, bw_hbm_gbps=111`; LX free; broadcast/scalar args excluded from
-  `hbm_bytes`**), `predict_ops`, `predict_op`, `explain`. No torch deps ⇒ path-loadable/testable.
+- `torch_spyre/_inductor/cost_model.py` — PURE model: `OpFeatures` (with `read_bytes()` /
+  `write_bytes()`), `ArgTraffic`, `CostParams` (**turnaround: `fill_ns=0`, `bw_peak_gbps=150`,
+  `rw_turnaround_ns_per_byte=0.0057`, `psum_per_elem_ns=0.14`; LX free; broadcast args counted
+  ONCE at their own size**), `predict_ops`, `predict_op`, `explain`. No torch deps ⇒
+  path-loadable/testable.
 - `torch_spyre/_inductor/dump_cost_model.py` — `extract_features(operations)` over live IR
   (cores from `op_it_space_splits`; per-arg bytes + LX/HBM via allocation propagation). Broadcast
-  flag = `n_index_vars < n_out_vars` (**includes 0-var scalars** — fixes counting `x+1.0`'s `1.0`
-  as a full read). Hook wired after the AFTER LoopLevel dump; `SPYRE_DUMP_COST=1` prints both.
+  flag = `n_index_vars < n_out_vars` (**includes 0-var scalars**); a broadcast operand is counted
+  once at its own small device size (an unresolved scalar falls back to ~1 elem, not the output).
+  Hook wired after the AFTER LoopLevel dump; `SPYRE_DUMP_COST=1` prints both.
 - `examples/bench_bandwidth.py` — DRAM bandwidth probe: `BENCH_BW_OP=neg|copy|read|write|w2|w3`,
   `BENCH_BW_SUSTAIN_S=N` (saturate for `aiu-smi` sampling). Computes effective BW vs the 204.8
   peak. Companion: `notes/bandwidth_turnaround_experiment.md`.
@@ -381,38 +401,41 @@ mechanism capture is a separate two-terminal run — see `bandwidth_turnaround_e
 
 ## 9. Verification checklist (earn the right to stay simple)
 
-- [x] effective `BW_HBM` constant across shapes (size-sweep linearity) — rung 1 ✓ (~111 GB/s)
-- [x] `fixed` is a real op-independent intercept — rung 1 ✓ (~20 µs; rung 2 confirms op-indep)
+- [x] kernel time linear in I/O, fill ≈ 0 — section A ✓ (intercepts ~0; old ~20µs was overhead)
 - [x] BW shared vs per-core — rung 5 ✓ (SHARED; flat ≥2 cores; cores not a direct term)
-- [x] traffic = Σ inputs + output — rung 3: holds for 1-in; **plain 2-in `mul`/`add` ~20% over,
-  UNEXPLAINED** (rung 7 ruled out a stream-count law; n-ary fused adds are NOT slow)
-- [x] arithmetic free for pointwise (relu == gelu?) — rung 2 ✓
-- [x] **broadcast** reuse: cached vs re-fetched — rung 6 ✓ (**CACHED/~free**, incl. scalars; encoded)
-- [x] **LX cost** from chain-depth — rung 4 → per-op LX cost below noise ⇒ **LX treated as ~free** (term dropped)
+- [x] traffic = Σ inputs + output — ✓; the plain 2-in `mul`/`add` is **on-model** under the
+  read/write split (2R1W → ~116, not anomalous)
+- [x] arithmetic free for pointwise — ✓ (gelu/exp == neg on kernel time)
+- [x] **broadcast** reuse — rung 6/G ✓ (**loaded ONCE at own size, NOT per core**; counted, encoded)
+- [x] **LX cost** from chain-depth — rung 4 → below noise ⇒ **LX ~free** (term dropped; `add3/4`
+  hint it's not *perfectly* free)
 - [x] cost-model `extract_features` matches the IR — confirmed (`SPYRE_DUMP_COST` op counts/bytes)
-- [x] **stream count → BW?** — rung 7 ✓ **FALSIFIED** (non-monotonic; do not encode a per-stream table)
-- [x] **read vs write vs balanced BW** — rung 8 ✓ (read ~176, write ~146, 1R+1W ~97)
-- [ ] **mechanism of the read+write penalty** (turnaround / half-duplex / shared bus) — needs `aiu-smi`
+- [x] **stream count → BW?** — rung 7 ✓ **FALSIFIED** (it's the read:write mix, not operand count)
+- [x] **read vs write vs balanced BW** — section D ✓ (read ~150, write ~125–140, 1R+1W ~105 on
+  KERNEL time) → **TURNAROUND model** `(R+W)/150 + α·min(R,W)`, ~7% overall
+- [ ] **mechanism of the read+write penalty** (turnaround / half-duplex / shared bus) — EFFECT now
+  modeled (α·min(R,W)); the physical cause still wants `aiu-smi`
+- [ ] **broadcast pointwise +17% faster than model** (off the V-curve) — cause OPEN
 
 ---
 
 ## 10. Plan / next steps
 
-1. ~~Rungs 1–10~~ DONE — `fixed≈20µs`, `BW_HBM≈111` (balanced R+W); arithmetic-free, shared-BW,
-   LX-free, **broadcast/scalar cached (encoded)**, stream-count law **falsified**, and the
-   bandwidth picture (read 176 / write 146 / 1R+1W 97) all verified.
-2. **`aiu-smi` capture** (copy/read/write/neg) → resolve the **mechanism** of the read+write
-   penalty (turnaround vs half-duplex vs shared-bus) and quantify it. See
-   `bandwidth_turnaround_experiment.md`. THE open experimental item.
-3. Decide whether to go **read/write-aware** in the model (reads ~176, writes ~146) — only worth
-   it if a balanced-blend (111) misranks read-heavy ops; reductions are the first such case.
-4. Run down the **`mul`/`add` ~20% anomaly** (plain 2-input binary) — or accept it as a residual.
-5. **Reductions — INITIAL model BUILT** (`cost_model.py` + `dump_cost_model.py`): read the FULL
-   input (`out_elems × reduction_size`, from `Reduction.get_reduction_size()`) at the read rate
-   (~176), write the small output, **+ a `(k−1)·out_elems·psum` ring-combine** when the reduced
-   axis is split across `k` cores (mirrors the matmul PSUM, `_PSUM_PER_ELEM_US=1.4e-4 µs/elem`).
-   Predicts `sum(dim=-1)[512×16384]` at ~115 µs vs measured ~118 (~2%). **Rung 11 calibrates** it
-   (arithmetic-free, read-BW, combine). Then re-validate on `mean`/softmax.
+1. ~~Rungs 1–G + sweep A–F~~ DONE — **TURNAROUND model** encoded (`fill=0`, `BW_PEAK=150`,
+   `α=0.0057`); arithmetic-free, shared-BW, LX-free, broadcast loaded-once (counted, not
+   per-core), read/write split (read ~150 / write ~125–140 / balanced ~105) all on KERNEL time.
+2. **Broadcast pointwise +17% (THE interesting open thread):** `bcast`/`bcastcol` run faster than
+   the V-curve predicts — cause unknown. Design a probe (vary read fraction with/without a cached
+   operand) to see whether broadcast reads dodge the turnaround penalty.
+3. **`aiu-smi` capture** (copy/read/write/neg) → confirm the physical *mechanism* of the
+   turnaround penalty (the cost EFFECT is already modeled). See `bandwidth_turnaround_experiment.md`.
+4. **Pin the write peak & fan-in:** the model treats writes at `BW_PEAK` (write-only ~16% off);
+   `add3`/`add4` ~8% (LX not perfectly free). Both want a dedicated size sweep before refining.
+5. **Reductions — done for the common cases** (read-only rate falls out of the turnaround model;
+   `sumrow`/`amax`/`mean`/`sumall` ~2-4%). OPEN: `sumcol` (reducing the outer/partitioned axis)
+   ~19% slow — looks like an access-pattern penalty, not the ring-combine; needs its own probe.
+   Also noted: Spyre does **NOT** fuse pointwise→reduction (the pre-reduction op spills its
+   `[R,C]` to HBM — an extra round-trip the extraction already captures via real buffers).
 6. Later: tile-fusion regime (hinted examples), matmul (`pt` unit / compute-bound), the LX
    capacity cliff as a hard constraint, and an access-pattern term if non-contiguous layouts matter.
 
@@ -420,28 +443,29 @@ mechanism capture is a separate two-terminal run — see `bandwidth_turnaround_e
 
 ## 11. Open questions
 
-RESOLVED: shared-vs-per-core HBM BW (rung 5 → SHARED); LX is **~free** (rung 4; term dropped,
-~29× HBM); arithmetic-free (rung 2); **broadcast/scalar inputs CACHED → ~free** (rung 6, encoded);
-**stream-count BW law FALSIFIED** (rung 7 — non-monotonic; no per-stream table); and the
-**`~111` cap is a read+write blend** (rung 8: read ~176 ≈ 86% of the 204.8 LPDDR5 peak, write
-~146, balanced 1R+1W ~97 — mixing reads+writes ~halves throughput, NOT a mysterious "half-peak").
+RESOLVED: shared-vs-per-core HBM BW (rung 5 → SHARED); LX is **~free** (rung 4; ~29× HBM);
+arithmetic-free (gelu/exp == neg); **broadcast operand loaded ONCE, not per core** (rung-G —
+counted at its own size, not zeroed); **stream-count law FALSIFIED** (rung 7 — it's the read:write
+mix); the **read/write split** (section D: read ~150, write ~125–140, balanced ~105 on kernel
+time) → the **TURNAROUND model** `(R+W)/150 + α·min(R,W)`; and the **`mul`/`add` "anomaly"**
+(it's a 2R1W kernel, on-model at ~116).
 
 Still open:
-- **Mechanism of the read+write penalty** — *why* does 1R+1W (~97) run at half of read-only
-  (~176)? Candidates: DRAM read/write **turnaround**; **half-duplex** link; **shared bus**
-  saturation upstream of DRAM (rung 9: copy saturates at ~4 cores, NOT per-core burst — bigger
-  tiles don't help). DECIDER: `aiu-smi` DDR bandwidth + bus-utilization during copy/read/write
-  (idle bus ⇒ turnaround; busy-but-slow ⇒ controller limit). See
-  `bandwidth_turnaround_experiment.md`. **THE open item.**
-- **`mul`/`add` ~20% anomaly** — plain 2-input binary slower per byte than gelu / n-ary fused
-  adds; mechanism unknown (only structural diff: it writes to HBM vs the adds' LX intermediate).
-- **Read/write-aware BW?** — reductions read at ~176, not the 111 blend; only refine if the blend
-  misranks them.
-- **Reduction model calibration (rung 11):** an INITIAL reduction model is built (read full input
-  @ read rate + ring combine). Open: confirm arithmetic-free for reductions; fit the reduction
-  read rate (is it the ~176 read asymptote?); calibrate the ring-combine `psum_per_elem` (1.4e-4
-  µs/elem is the matmul starting guess) — expected negligible vs HBM I/O until compute-bound. Also
-  the `reduction_cores` (k) extraction is a heuristic (`out_elems < cores`) — refine if it matters.
+- **Broadcast pointwise +17%** — `bcast`/`bcastcol` run faster than the V-curve. The cached
+  operand seems to dodge the turnaround penalty; mechanism unknown. **The most interesting thread.**
+- **Mechanism of the read+write penalty** — the cost EFFECT is modeled (`α·min(R,W)`), but *why*
+  balanced (~105) runs below read-only (~150) is unconfirmed: DRAM turnaround / half-duplex /
+  shared-bus. DECIDER: `aiu-smi` DDR bandwidth + bus-utilization. See
+  `bandwidth_turnaround_experiment.md`.
+- **Write peak & fan-in** — `BW_PEAK` over-predicts pure-write speed (~16%); `add3/add4` ~8%
+  (LX intermediates not perfectly free). Both need a dedicated sweep.
+- **`sumcol` ~19%** — reducing the outer/partitioned axis is slower than the read rate; looks
+  like an access-pattern penalty, not the ring-combine.
+- **Reduction model — calibrated (section F):** reductions need no special bandwidth — a tiny
+  `W` makes `min(R,W)≈0`, so the turnaround model gives them the read rate (~150) automatically;
+  `sumrow`/`amax`/`mean`/`sumall` land at ~2-4%, and the ring-combine is negligible at these sizes
+  (`sumall ≈ sumrow`). Still open: the `sumcol` access-pattern penalty (above), and the
+  `reduction_cores` (k) extraction heuristic (`out_elems < cores`) — refine only if it matters.
 - LX precise BW unresolvable here (signal < noise) — revisit only with a larger-tile LX sweep.
 - **Access-pattern / bulk-load:** does a strided (non-contiguous) layout drop BW vs the modeled
   contiguous case? (Exp A in the bandwidth note; gated on confirming the compiled path honors a
