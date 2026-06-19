@@ -60,6 +60,8 @@ ROWS = int(os.environ.get("BENCH_ROWS", "512"))
 COLS = int(os.environ.get("BENCH_COLS", "16384"))
 WARMUP = int(os.environ.get("BENCH_WARMUP", "5"))
 SENCORES = os.environ.get("SENCORES", "")  # core count (read only to tag the SUMMARY)
+TILES = int(os.environ.get("BENCH_TILES", "0"))  # coarse-tile dim0 into K (>=2 on)
+LX = os.environ.get("LX_PLANNING", "1")  # scratchpad planning on(1)/off(0); SUMMARY tag
 
 torch.manual_seed(0xAFFE)
 
@@ -95,6 +97,34 @@ _REDUCE = {  # read-dominated; sumall reduces to a scalar -> ring combine
     "mean": lambda x: x.mean(dim=-1),
 }
 _BCAST = {"bcast": lambda a, b: a + b, "mulbcast": lambda a, b: a * b}  # b = [1, COLS]
+# Coarse-tiled dim0 reductions (mirror coarse_tile/run_{sum,amax,amin}_dim0_tiled.py):
+# reduce a [B=ROWS, D=COLS] tensor over B, tiling B into BENCH_TILES chunks. With
+# BENCH_TILES>=2 a spyre_hint wraps it in a K-iteration loop (fill + K x reduce/combine)
+# BENCH_TILES<=1 is the plain untiled baseline. Run each under LX_PLANNING=0/1.
+_CT_REDUCE = {"ctsum": "sum", "ctamax": "amax", "ctamin": "amin"}
+
+
+def _ct_workload(rtype: str):
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch_spyre._inductor import spyre_hint
+
+    b, d = ROWS, COLS
+    pnd.declare_tensor_dim("B", b)
+    pnd.declare_tensor_dim("D", d)
+
+    def reduce_fn(x):
+        return getattr(x, rtype)(dim=0)
+
+    if TILES >= 2:
+
+        def fn(x):
+            pnd.name_tensor_dims(x, ["B", "D"])
+            with spyre_hint(num_tiles_per_dim={"B": TILES}):
+                return reduce_fn(x)
+
+    else:
+        fn = reduce_fn
+    return torch.compile(fn), (_rand(b, d),)
 
 
 def make_workload():
@@ -113,9 +143,11 @@ def make_workload():
         return torch.compile(lambda a, b: a + b), (_rand(ROWS, COLS), _rand(ROWS, 1))
     if OP == "write":  # write-only: both inputs broadcast -> cached
         return torch.compile(lambda b, c: b + c), (_rand(1, COLS), _rand(ROWS, 1))
+    if OP in _CT_REDUCE:  # coarse-tiled dim0 reduction (BENCH_TILES, LX_PLANNING)
+        return _ct_workload(_CT_REDUCE[OP])
     known = (
         list(_UNARY) + list(_BINARY) + list(_NARY) + list(_REDUCE) + list(_BCAST)
-        + ["bcastcol", "write"]
+        + ["bcastcol", "write"] + list(_CT_REDUCE)
     )
     raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
 
@@ -179,7 +211,7 @@ def main():
     bw = io_hbm_bytes / (kernel * 1000) if kernel > 0 else 0.0
     print(
         f"SUMMARY op={OP} rows={ROWS} cols={COLS} cores={SENCORES or '-'} "
-        f"io_hbm_bytes={io_hbm_bytes} "
+        f"tiles={TILES} lx={LX} io_hbm_bytes={io_hbm_bytes} "
         f"kernel_us={kernel:.3f} bw_gbps={bw:.1f} memset_us={memset:.3f} "
         f"other_dev_us={other:.3f} total_dev_us={kernel + memset + other:.3f}"
     )

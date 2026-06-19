@@ -126,10 +126,33 @@ def _input_traffic(name: str):
     return None, None, None
 
 
+def _loop_features(op):
+    """(loop_trip, tiles_reduction_dim) from the coarse-tiling ``loop_info`` on the op
+    (loop_info.py / coarse_tile.py). ``loop_trip`` = product of ``loop_count`` (1 if not
+    tiled). ``tiles_reduction_dim`` = ``loop_tiled_reduction_dims`` is non-empty. NOTE
+    the fill/combine ops carry the same ``loop_info`` (so they also report a tiled
+    reduction dim) -- only the REDUCTION op's input actually advances, so the caller
+    ANDs this with ``is_reduction``. SCOPE: reduction-dim tiling (sum/amax/amin); output
+    (pointwise) tiling would need per-arg advancing detection."""
+    li = getattr(op, "loop_info", None)
+    if li is None:
+        return 1, False
+    trip = 1
+    for c in getattr(li, "loop_count", None) or []:
+        trip *= _int(c, 1)
+    red_dims = getattr(li, "loop_tiled_reduction_dims", None) or []
+    return max(1, trip), any(bool(level) for level in red_dims)
+
+
 def extract_op_features(op) -> OpFeatures:
     """Build OpFeatures for one ComputedBuffer op (best-effort)."""
     data = getattr(op, "data", None)
     is_reduction = getattr(data, "reduction_type", None) is not None
+    loop_trip, tiles_red_dim = _loop_features(op)
+    # Only a REDUCTION op that tiles a reduction dim has an advancing (read-once) input;
+    # the fill/combine ops share the loop_info but their accumulators are re-read each
+    # iteration (factor L). So AND the loop flag with is_reduction.
+    is_tiled_red = is_reduction and tiles_red_dim
     dtype_bytes = _int(getattr(op.get_dtype(), "itemsize", 2), 2)
     out_size = list(op.get_size())
     # TRUE I/O sizes come from the committed DEVICE layout (sticks), not the torch
@@ -148,7 +171,8 @@ def extract_op_features(op) -> OpFeatures:
         reduction_cores = max(1, cores // max(1, out_elems))
 
     args: list = []
-    # Output arg (device-sized).
+    # Output arg (device-sized). In a coarse-tiling loop the output (a per-tile partial
+    # or an accumulator) is re-written every iteration at a fixed address -> factor = L.
     args.append(
         ArgTraffic(
             name=op.get_operation_name(),
@@ -156,6 +180,7 @@ def extract_op_features(op) -> OpFeatures:
             mem=_mem_of_layout(op.get_layout()),
             elems=out_elems,
             dims=list(out_dims),
+            loop_factor=loop_trip,
         )
     )
     # Input args, from the op's reads. Each read is sized by ITS OWN buffer's device
@@ -191,6 +216,11 @@ def extract_op_features(op) -> OpFeatures:
                 mem, dims, in_elems = "hbm", [1], 1
             else:
                 mem, dims, in_elems = "hbm", list(out_dims), out_elems
+        # Loop scaling: the reduced input of a tiled REDUCTION advances (walks the full
+        # tensor once across tiles) -> factor 1, its full device_size already covers all
+        # tiles. Every other looped input (a combine's accumulator / partial, re-read
+        # each iteration at a fixed address) -> factor L. Non-tiled ops: L = 1.
+        in_loop_factor = 1 if is_tiled_red else loop_trip
         args.append(
             ArgTraffic(
                 name=name,
@@ -199,6 +229,7 @@ def extract_op_features(op) -> OpFeatures:
                 elems=in_elems,
                 broadcast=broadcast,
                 dims=list(dims),
+                loop_factor=in_loop_factor,
             )
         )
 
@@ -210,6 +241,7 @@ def extract_op_features(op) -> OpFeatures:
         dtype_bytes=dtype_bytes,
         args=args,
         reduction_cores=reduction_cores,
+        loop_trip=loop_trip,
     )
 
 
@@ -238,16 +270,17 @@ def _record_last_io(feats: list) -> None:
         args = []
         for a in o.args:
             bs = a.elems * o.dtype_bytes
-            # Every HBM arg counts once at its own size; broadcast operands carry their
-            # small one-load device size, so they are counted (not zeroed) -- consistent
-            # with OpFeatures.hbm_bytes().
-            counted = bs if a.mem == "hbm" else 0
+            # Every HBM arg counts at its own size x loop_factor (L for a per-tile
+            # accumulator re-accessed each loop iteration, 1 otherwise); broadcast
+            # operands carry their small one-load size (counted, not zeroed). LX ~free.
+            counted = bs * a.loop_factor if a.mem == "hbm" else 0
             args.append(
                 {
                     "role": a.role,
                     "mem": a.mem,
                     "dims": list(a.dims) if a.dims else [a.elems],
                     "elems": a.elems,
+                    "loop_factor": a.loop_factor,
                     "bytes": bs,
                     "hbm_counted": counted,
                     "broadcast": a.broadcast,

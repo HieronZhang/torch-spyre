@@ -88,6 +88,12 @@ class ArgTraffic:
     broadcast: bool = False  # loaded once & reused across the broadcast dim
     # DEVICE (stick) shape, e.g. [4, 512, 64]
     dims: list = dataclasses.field(default_factory=list)
+    # Coarse-tiling loop multiplier on this arg's bytes. 1 for a normal arg or an
+    # ADVANCING tiled arg (it walks the full tensor once across the loop, so its full
+    # device_size already covers all tiles). L (= loop trip count) for a FIXED arg held
+    # at one address across the loop (a per-tile accumulator re-read/written each
+    # iteration). LX-resident args are ~free regardless (excluded from read/write).
+    loop_factor: int = 1
 
 
 @dataclasses.dataclass
@@ -101,21 +107,31 @@ class OpFeatures:
     dtype_bytes: int
     args: list  # list[ArgTraffic]
     reduction_cores: int = 1  # cores splitting the REDUCED axis (1 = none → no combine)
+    loop_trip: int = 1  # coarse-tiling loop trip count for this op (prod of loop_count)
 
     def read_bytes(self) -> int:
-        """HBM bytes READ (input args). Each HBM arg is counted ONCE at its own device
-        size; a broadcast operand carries its real (one-row/-col) ``elems`` -- loaded
-        once and reused across the broadcast dim, NOT scaled to the output, NOT zeroed.
+        """HBM bytes READ (input args). Each HBM arg is counted at its own device size,
+        scaled by ``loop_factor`` (L for a per-tile accumulator re-read every iteration,
+        1 for an advancing tiled arg or a normal arg). A broadcast operand carries its
+        real (one-row/-col) ``elems`` -- loaded once, NOT scaled to the output.
         """
         return (
-            sum(a.elems for a in self.args if a.mem == "hbm" and a.role == "input")
+            sum(
+                a.elems * a.loop_factor
+                for a in self.args
+                if a.mem == "hbm" and a.role == "input"
+            )
             * self.dtype_bytes
         )
 
     def write_bytes(self) -> int:
-        """HBM bytes WRITTEN (output args)."""
+        """HBM bytes WRITTEN (output args), scaled by ``loop_factor``."""
         return (
-            sum(a.elems for a in self.args if a.mem == "hbm" and a.role == "output")
+            sum(
+                a.elems * a.loop_factor
+                for a in self.args
+                if a.mem == "hbm" and a.role == "output"
+            )
             * self.dtype_bytes
         )
 
@@ -156,16 +172,22 @@ class CostParams:
     # mirrors the matmul PSUM term (_PSUM_PER_ELEM_US in work_division.py). Weak (pinned
     # by sumall; sumcol's ~19% miss looks like an access-pattern effect, not this).
     psum_per_elem_ns: float = 0.14
+    # Coarse-tiling per-iteration loop overhead (ns/iteration). With unroll_loops=True
+    # the loop unrolls into L body copies in one bundle; this is any fixed cost a copy
+    # adds beyond its memory traffic. GUESS = 0 (strong memory-bound prior); the H1
+    # K-sweep calibrates it (slope of kernel time vs tiles, minus combine traffic).
+    c_loop_ns: float = 0.0
 
 
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
     """Predicted device latency (ns) for a bundle of ops (one fused kernel).
 
-    ``T = fill + (R+W)/BW_PEAK + alpha*min(R,W)`` where R/W are the bundle's total HBM
-    read/write bytes (LX traffic ~free). R and W are summed over the whole bundle before
-    the turnaround term, since a fused kernel interleaves all its reads and writes on a
-    shared bus. Reductions add a cross-core ring-combine term; they need no special
-    bandwidth -- a tiny W gives min(R,W)~0, so T ~= R/BW_PEAK (the read-only rate).
+    ``T = fill + (R+W)/BW_PEAK + alpha*min(R,W) + c_loop*L`` where R/W are the bundle's
+    total HBM read/write bytes (LX ~free), already loop-scaled per arg (see
+    ArgTraffic.loop_factor), and ``L`` is the tiling trip count (1 when not tiled).
+    R and W are summed over the whole bundle before the turnaround term, since a fused
+    kernel interleaves all its reads and writes on a shared bus. Reductions add a
+    cross-core ring-combine term, charged once PER TILE (x loop_trip).
     """
     p = params or CostParams()
     r = sum(o.read_bytes() for o in ops)
@@ -173,7 +195,14 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     t = p.fill_ns + (r + w) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(r, w)
     for o in ops:
         if o.is_reduction:
-            t += max(0, o.reduction_cores - 1) * o.out_elems * p.psum_per_elem_ns
+            combine = max(0, o.reduction_cores - 1) * o.out_elems * p.psum_per_elem_ns
+            t += combine * o.loop_trip
+    # Coarse-tiling loop overhead: L body dispatches for the bundle's tiled loop (0 when
+    # nothing is tiled). L = max op trip count; looped ops agree, the fill op (trip=1)
+    # does not raise it.
+    loop_trip = max((o.loop_trip for o in ops), default=1)
+    if loop_trip > 1:
+        t += p.c_loop_ns * loop_trip
     return t
 
 
@@ -193,25 +222,30 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             red = f" [reduction: combine {combine:.0f}ns (k={o.reduction_cores})]"
         else:
             red = ""
+        loop = f" loop_trip={o.loop_trip}" if o.loop_trip > 1 else ""
         lines.append(
-            f"  {o.name:<12} read={r}B write={w}B lx={lx}B{red}"
+            f"  {o.name:<12} read={r}B write={w}B lx={lx}B{loop}{red}"
         )
         for a in o.args:
             bc = " broadcast (loaded once)" if a.broadcast else ""
-            counted = a.elems * o.dtype_bytes if a.mem == "hbm" else 0
+            lf = f" xL={a.loop_factor}" if a.loop_factor > 1 else ""
+            counted = a.elems * a.loop_factor * o.dtype_bytes if a.mem == "hbm" else 0
             shape = a.dims if a.dims else [a.elems]
             lines.append(
                 f"      {a.role:<6} {shape} in {a.mem} = {a.elems} elems x "
                 f"{o.dtype_bytes}B = {a.elems * o.dtype_bytes} B"
-                f" (hbm counted: {counted} B){bc}"
+                f" (hbm counted: {counted} B){lf}{bc}"
             )
     R = sum(o.read_bytes() for o in ops)
     W = sum(o.write_bytes() for o in ops)
     base = (R + W) / p.bw_peak_gbps
     turn = p.rw_turnaround_ns_per_byte * min(R, W)
+    loop_trip = max((o.loop_trip for o in ops), default=1)
+    loop_us = (p.c_loop_ns * loop_trip / 1000) if loop_trip > 1 else 0.0
     t = predict_ops(ops, p)
+    extra = f" + loop {loop_us:.2f}us (c_loop*{loop_trip})" if loop_trip > 1 else ""
     lines.append(
         f"  => R={R}B W={W}B: ({R}+{W})/{p.bw_peak_gbps:.0f} = {base / 1000:.2f}us "
-        f"+ turnaround {turn / 1000:.2f}us (a*min(R,W)) => T = {t / 1000:.2f} us"
+        f"+ turnaround {turn / 1000:.2f}us (a*min(R,W)){extra} => T = {t / 1000:.2f} us"
     )
     return "\n".join(lines)
