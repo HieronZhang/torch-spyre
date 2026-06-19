@@ -173,10 +173,14 @@ class CostParams:
     # by sumall; sumcol's ~19% miss looks like an access-pattern effect, not this).
     psum_per_elem_ns: float = 0.14
     # Coarse-tiling per-iteration loop overhead (ns/iteration). With unroll_loops=True
-    # the loop unrolls into L body copies in one bundle; this is any fixed cost a copy
-    # adds beyond its memory traffic. GUESS = 0 (strong memory-bound prior); the H1
-    # K-sweep calibrates it (slope of kernel time vs tiles, minus combine traffic).
-    c_loop_ns: float = 0.0
+    # the loop unrolls into L body copies in one bundle; each adds a fixed cost beyond
+    # its memory traffic. CALIBRATED ~860 ns/tile from the P2a K-sweep (ctsum B=2048
+    # D=512, tiles 2..16): unmodeled = (kernel - pred) fits 1.88us + 0.864*K, so the
+    # K-slope is the loop overhead (the 1.88us intercept is the dim0-reduction access
+    # penalty -- a separate sumcol-like bias, NOT loop cost; the D-sweep gives the same
+    # K-slope, so it is data-independent). Tiling a STANDALONE reduction is thus slower
+    # (no LX win); the payoff is fused chains keeping intermediates in LX (not scoped).
+    c_loop_ns: float = 860.0
 
 
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
