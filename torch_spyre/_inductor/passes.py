@@ -42,7 +42,6 @@ from .temp_passes import (
     bmm_unflatten_pass,
     mark_direct_unit_bmm_pass,
     mm_to_bmm_pass,
-    convert_constant_with_graph_node,
 )
 from .coarse_tile import hints_to_coarse_tile_groups
 from . import config
@@ -75,6 +74,10 @@ from .deadcode_elimination import deadcode_elimination
 from .dedup_constants import dedup_and_promote_constants
 from .chunk_large_tensors import chunk_large_tensors
 from .coarse_tile import coarse_tile
+from .dump_fx_graph import dump_fx_graph
+from .dump_loop_ir import dump_loop_ir
+from .dump_cost_model import dump_cost_model
+from .split_multi_ops import split_multi_ops, validate_ops
 
 
 logger = get_inductor_logger("passes")
@@ -204,14 +207,17 @@ class CustomPostPasses(_SpyreGraphPassPipeline):
     post-grad FX graph late in the sequence defined in `post_grad.post_grad_passes`.
     """
 
+    """
+    The list of custom passes to run
+    """
     def __init__(self):
         super().__init__(
             [
                 recover_spyre_hints,
-                convert_constant_with_graph_node,
                 mm_to_bmm_pass.apply,
                 mark_direct_unit_bmm_pass,
                 bmm_unflatten_pass.apply,
+                dump_fx_graph,
             ]
         )
 
@@ -317,7 +323,9 @@ class CustomPreSchedulingPasses:
             deadcode_elimination,
             #
             # Tensor Layout (Stickification)
+            split_multi_ops,
             propagate_spyre_tensor_layouts,
+            validate_ops,
             optimize_restickify_locations,
             finalize_layouts,
             insert_restickify,
@@ -347,14 +355,15 @@ class CustomPreSchedulingPasses:
             logger.info(
                 "BEFORE PRE-SCHEDULING\n%s", _format_operations(graph.operations)
             )
+        dump_loop_ir(graph.operations, "LoopLevel IR - BEFORE pre-scheduling passes")
 
         for pass_fn in self.passes:
             pass_fn(graph)
 
         if logger.isEnabledFor(logging.INFO):
-            logger.info(
-                "AFTER PRE-SCHEDULING\n%s", _format_operations(graph.operations)
-            )
+            logger.info("AFTER PRE-SCHEDULING\n%s", _format_operations(graph.operations))
+        dump_loop_ir(graph.operations, "LoopLevel IR - AFTER pre-scheduling passes")
+        dump_cost_model(graph.operations)
 
     def uuid(self) -> Any | None:
         return _uuid(self.passes)
