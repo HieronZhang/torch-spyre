@@ -106,8 +106,14 @@ _CT_REDUCE = {"ctsum": "sum", "ctamax": "amax", "ctamin": "amin"}
 
 def _ct_workload(rtype: str):
     import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
     from torch_spyre._inductor import spyre_hint
 
+    # spyre_hint increments a module-global _hint_counter per scope and needs a clean
+    # trace; mirror coarse_tile/utils.py _compile_and_run, which resets the dynamo/Fx
+    # caches before compiling so the hint IDs do not desync across runs.
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
     b, d = ROWS, COLS
     pnd.declare_tensor_dim("B", b)
     pnd.declare_tensor_dim("D", d)
@@ -205,7 +211,7 @@ def _print_model(feats: list) -> float:
     return t / 1000
 
 
-def main():
+def _run():
     compiled, args = make_workload()
     for _ in range(WARMUP):  # compile (-> cost-model dump fires) + warm the kernel
         compiled(*args).cpu()
@@ -251,6 +257,22 @@ def main():
         f"bw_gbps={bw:.1f} memset_us={memset:.3f} "
         f"other_dev_us={other:.3f} total_dev_us={kernel + memset + other:.3f}"
     )
+
+
+def main():
+    # Self-report failures: print the full traceback (stderr) AND a parseable FAILED
+    # SUMMARY (stdout) carrying the reason, so a sweep that greps SUMMARY still records
+    # WHY a run died instead of a bare "FAILED".
+    try:
+        _run()
+    except Exception as exc:  # noqa: BLE001 - diagnostic wrapper
+        import traceback
+
+        traceback.print_exc()
+        print(
+            f"SUMMARY op={OP} rows={ROWS} cols={COLS} tiles={TILES} lx={LX} "
+            f"FAILED reason={type(exc).__name__}: {str(exc)[:140]}"
+        )
 
 
 if __name__ == "__main__":
