@@ -88,6 +88,9 @@ class ArgTraffic:
     broadcast: bool = False  # loaded once & reused across the broadcast dim
     # DEVICE (stick) shape, e.g. [4, 512, 64]
     dims: list = dataclasses.field(default_factory=list)
+    # LOGICAL torch shape, e.g. [512, 1024] -- shown next to dims so the stickification
+    # (a row of N rounds up to ceil(N/64)*64 sticks) is visible per tensor.
+    logical: list = dataclasses.field(default_factory=list)
     # Coarse-tiling loop multiplier on this arg's bytes. 1 for a normal arg or an
     # ADVANCING tiled arg (it walks the full tensor once across the loop, so its full
     # device_size already covers all tiles). L (= loop trip count) for a FIXED arg held
@@ -234,22 +237,34 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             bc = " broadcast (loaded once)" if a.broadcast else ""
             lf = f" xL={a.loop_factor}" if a.loop_factor > 1 else ""
             counted = a.elems * a.loop_factor * o.dtype_bytes if a.mem == "hbm" else 0
-            shape = a.dims if a.dims else [a.elems]
+            dev = a.dims if a.dims else [a.elems]
+            log = f"torch {a.logical} -> " if a.logical else ""
+            # One line per DEVICE-LAYOUT tensor: name, role, logical->device dims,
+            # residency, byte calc, the HBM bytes the model counts, and the loop factor.
             lines.append(
-                f"      {a.role:<6} {shape} in {a.mem} = {a.elems} elems x "
-                f"{o.dtype_bytes}B = {a.elems * o.dtype_bytes} B"
+                f"      {a.role:<6} {a.name:<22} {log}device {dev} in {a.mem.upper()}"
+                f"  | {a.elems} elems x {o.dtype_bytes}B = {a.elems * o.dtype_bytes} B"
                 f" (hbm counted: {counted} B){lf}{bc}"
             )
+    # Prediction with the rough calculation spelled out, so SPYRE_DUMP_COST shows the
+    # same step-by-step "T = base + turnaround (+ loop)" the experiment script prints.
     R = sum(o.read_bytes() for o in ops)
     W = sum(o.write_bytes() for o in ops)
     base = (R + W) / p.bw_peak_gbps
     turn = p.rw_turnaround_ns_per_byte * min(R, W)
     loop_trip = max((o.loop_trip for o in ops), default=1)
-    loop_us = (p.c_loop_ns * loop_trip / 1000) if loop_trip > 1 else 0.0
     t = predict_ops(ops, p)
-    extra = f" + loop {loop_us:.2f}us (c_loop*{loop_trip})" if loop_trip > 1 else ""
-    lines.append(
-        f"  => R={R}B W={W}B: ({R}+{W})/{p.bw_peak_gbps:.0f} = {base / 1000:.2f}us "
-        f"+ turnaround {turn / 1000:.2f}us (a*min(R,W)){extra} => T = {t / 1000:.2f} us"
-    )
+    head = " + c_loop*L --" if loop_trip > 1 else " --"
+    lvar = f"  loop_trip L={loop_trip}" if loop_trip > 1 else ""
+    lines.append(f"  -- prediction (turnaround): T = (R+W)/BW_PEAK + a*min(R,W){head}")
+    lines.append(f"     R={R}B (read)   W={W}B (write){lvar}")
+    lines.append(f"     base = (R+W)/BW_PEAK = ({R}+{W})/{p.bw_peak_gbps:.0f} "
+                 f"= {base / 1000:.2f} us")
+    lines.append(f"     turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(R, W)} "
+                 f"= {turn / 1000:.2f} us")
+    if loop_trip > 1:
+        loop_us = p.c_loop_ns * loop_trip / 1000
+        lines.append(f"     loop = c_loop*L = {p.c_loop_ns:.0f}*{loop_trip} "
+                     f"= {loop_us:.2f} us")
+    lines.append(f"     => T_model = {t / 1000:.2f} us")
     return "\n".join(lines)

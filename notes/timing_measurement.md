@@ -1,30 +1,48 @@
 # How we measure per-op device time
-We measure the **host wall-clock time** between two host↔device
-synchronizations, run the op a fixed number of times in between, and divide by that count —
-giving the per-execution device latency (the syncs guarantee the device actually finished the
-timed work). We updated this method after the 06/10 merge, which exposed a device-sync
-primitive (`_C.synchronize()`): it lets us sync **per launch without a D2H copy**, so we can
-read clean **per-op** device latency that the old end-to-end `.cpu()` approach could not
-resolve.
 
-The **current** per-kernel
-device-sync method, and the **old** `.cpu()` end-to-end method it replaced. (Companion to
-`cost_model_design.md`.)
+Three methods, in order of fidelity. The **GOLDEN** one is the **PyTorch profiler**'s
+per-kernel device time (`sdsc_fused_*` "Self SPYRE"), which *isolates* the kernel from a
+separate, non-deterministic "Memset (Device)" host/setup overhead. The two earlier ones
+are a custom per-launch device-sync (`SPYRE_PROFILE_SYNC`, which bundled kernel + that
+overhead together) and an end-to-end `.cpu()` drain. (Companion to `cost_model_design.md`.)
 
 ## At a glance
 
-| | Current — `measure_device` | Old — `measure_latency` |
-|---|---|---|
-| sync point | `_C.synchronize()` **per launch** | `.cpu()` (D2H copy) per sample |
-| what is timed | one kernel (device-inclusive) | whole compiled call (host + device + D2H) |
-| **executions / measurement** | **1** | **`inner` (=400)**, then ÷ inner |
-| granularity | per SDSC bundle (= per op) | end-to-end |
-| enabled by | `SPYRE_PROFILE_SYNC=1` | always (only option pre-merge) |
+| | **Golden** — `torch.profiler` | Custom sync — `measure_device` | Old — `measure_latency` |
+|---|---|---|---|
+| what is timed | per-kernel **device** time, Memset separated | one kernel + ~7µs host residue | whole compiled call (host+device+D2H) |
+| sync point | profiler (kineto-spyre) | `_C.synchronize()` per launch | `.cpu()` (D2H copy) per sample |
+| granularity | per `sdsc_fused_*` kernel | per SDSC bundle (= per op) | end-to-end |
+| enabled by | `ProfilerActivity.PrivateUse1` | `SPYRE_PROFILE_SYNC=1` | always (pre-merge) |
 
-Both report the **min over many samples**: Spyre is static-dataflow ⇒ device latency is
-deterministic; host/OS jitter only *adds* time, so the minimum is the true latency.
+All report the **min over many samples**: Spyre is static-dataflow ⇒ device latency is
+deterministic; host/OS jitter only *adds* time, so the minimum is the true latency. The
+custom `SPYRE_PROFILE_SYNC` min measured *kernel + the Memset bucket together* (its
+~20µs "fixed" term was that overhead, NOT kernel cost) — which is why we re-anchored the
+cost model on the profiler's clean per-kernel time.
 
-## Current method — per-kernel device sync
+## Golden method — PyTorch profiler (`sdsc_fused` kernel time)
+
+`torch.profiler` with `ProfilerActivity.PrivateUse1` (kineto-spyre wheel; see
+[../docs/source/user_guide/profiling/pytorch_profiler.md](../docs/source/user_guide/profiling/pytorch_profiler.md))
+reports a **"Self SPYRE"** device time per event. The per-kernel `sdsc_fused_*` rows are
+the true kernel latency; the separate **"Memset (Device)"** row is the host/setup
+overhead and is NOT kernel cost. `examples/profile_ops.py` and `profile_test.py` sum the
+`sdsc_fused_*` Self-SPYRE times into `kernel_us` and report Memset separately:
+
+```python
+with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
+    compiled(*args).cpu()
+for ev in prof.key_averages():
+    if "sdsc_fused" in ev.key: kernel += ev.self_device_time_total  # golden kernel time
+    elif "Memset" in ev.key:   memset += ev.self_device_time_total  # host/setup overhead
+```
+
+## Earlier custom method — per-kernel device sync (`SPYRE_PROFILE_SYNC`)
+
+> Superseded by the profiler for cost-model calibration: this min bundles the kernel with
+> the non-deterministic Memset/host-setup overhead. Still handy without the kineto-spyre
+> wheel, and for the at-exit per-kernel report.
 
 A `perf_counter_ns()` timer brackets the device launch inside `SpyreSDSCKernelRunner.run`
 ([kernel_runner.py:44](../torch_spyre/execution/kernel_runner.py#L44)); with

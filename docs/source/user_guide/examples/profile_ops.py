@@ -192,8 +192,10 @@ def _print_io(io: dict) -> None:
             bc = " broadcast (loaded once)" if a["broadcast"] else ""
             lf = a.get("loop_factor", 1)
             xl = f" xL={lf}" if lf > 1 else ""
+            log = f"torch {a['logical']} -> " if a.get("logical") else ""
             print(
-                f"IO     {a['role']:<6} {a['dims']} in {a['mem']} = "
+                f"IO     {a['role']:<6} {a.get('name', '?'):<22} "
+                f"{log}device {a['dims']} in {a['mem'].upper()} = "
                 f"{a['elems']} elems x 2B = {a['bytes']} B"
                 f"  (hbm counted: {a['hbm_counted']} B){xl}{bc}"
             )

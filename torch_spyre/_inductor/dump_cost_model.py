@@ -107,10 +107,11 @@ def _device_dims(layout):
 
 
 def _input_traffic(name: str):
-    """(mem, dims, elems) for a read buffer -- ``dims`` is the device (stick) shape,
-    ``elems`` its product (logical fallback if the device layout isn't committed). So a
-    reduction's reduced input is naturally full-sized, with no reduction_size scaling.
-    Returns (None, None, None) if the buffer can't be resolved (caller falls back)."""
+    """(mem, dims, elems, logical) for a read buffer -- ``dims`` is the device (stick)
+    shape, ``logical`` the torch shape, ``elems`` the device product (logical fallback
+    if the device layout isn't committed). So a reduction's reduced input is naturally
+    full-sized, with no reduction_size scaling. Returns (None, None, None, None) if the
+    buffer can't be resolved (caller falls back)."""
     try:
         from torch._inductor.virtualized import V
 
@@ -118,12 +119,12 @@ def _input_traffic(name: str):
         if buf is not None:
             layout = buf.get_layout()
             dims = _device_dims(layout)
-            logical = list(buf.get_size())
+            logical = [_int(x, 1) for x in buf.get_size()]
             elems = _prod_ints(dims) if dims else _prod_ints(logical)
-            return _mem_of_layout(layout), (dims if dims else logical), elems
+            return _mem_of_layout(layout), (dims if dims else logical), elems, logical
     except Exception:  # noqa: BLE001 - graph inputs / unresolved
         pass
-    return None, None, None
+    return None, None, None, None
 
 
 def _loop_features(op):
@@ -180,6 +181,7 @@ def extract_op_features(op) -> OpFeatures:
             mem=_mem_of_layout(op.get_layout()),
             elems=out_elems,
             dims=list(out_dims),
+            logical=list(out_size),
             loop_factor=loop_trip,
         )
     )
@@ -206,16 +208,16 @@ def extract_op_features(op) -> OpFeatures:
             broadcast = n_index_vars < n_out_vars
         except Exception:  # noqa: BLE001
             broadcast = False
-        mem, dims, in_elems = _input_traffic(name)
+        mem, dims, in_elems, in_logical = _input_traffic(name)
         if in_elems is None:  # unresolved buffer -> fallback
             # A broadcast operand with no resolvable buffer (e.g. a scalar constant)
             # is loaded once and is at most ~1 element -- do NOT inflate it to the
             # output size. Only a NON-broadcast unresolved read is conservatively
             # sized at the full output.
             if broadcast:
-                mem, dims, in_elems = "hbm", [1], 1
+                mem, dims, in_elems, in_logical = "hbm", [1], 1, [1]
             else:
-                mem, dims, in_elems = "hbm", list(out_dims), out_elems
+                mem, dims, in_elems, in_logical = "hbm", list(out_dims), out_elems, []
         # Loop scaling: the reduced input of a tiled REDUCTION advances (walks the full
         # tensor once across tiles) -> factor 1, its full device_size already covers all
         # tiles. Every other looped input (a combine's accumulator / partial, re-read
@@ -229,6 +231,7 @@ def extract_op_features(op) -> OpFeatures:
                 elems=in_elems,
                 broadcast=broadcast,
                 dims=list(dims),
+                logical=list(in_logical) if in_logical else [],
                 loop_factor=in_loop_factor,
             )
         )
@@ -280,9 +283,11 @@ def _record_last_io(feats: list) -> None:
             counted = bs * a.loop_factor if a.mem == "hbm" else 0
             args.append(
                 {
+                    "name": a.name,
                     "role": a.role,
                     "mem": a.mem,
                     "dims": list(a.dims) if a.dims else [a.elems],
+                    "logical": list(a.logical),
                     "elems": a.elems,
                     "loop_factor": a.loop_factor,
                     "bytes": bs,
