@@ -30,10 +30,14 @@ Model (per fused bundle / single-op kernel):
 - memory traffic counts each tensor-arg's bytes once, attributed to HBM or LX by
   its allocation. LX-placed tensors don't touch HBM, and their LX traffic is treated
   as ~free (the measured per-pass LX cost is below run-to-run noise). Broadcast inputs
-  are cached on-chip (loaded once, reused across the broadcast dim) and so add ~no HBM
-  traffic -- verified by the rung-6 bcast/mulbcast runs, which land on the 2-pass
-  latency. They are flagged (``broadcast`` in :class:`ArgTraffic`) and excluded from
-  ``hbm_bytes``.
+  are loaded ONCE and reused across the broadcast dim, so they are counted at their own
+  (one-row/-col) DEVICE size -- NOT scaled up to the output size (the rung-6 runs proved
+  a core does not re-read the operand per output element), but NOT dropped to zero
+  either (it is still a real one-time load). That one load is tiny vs the output, so the
+  bcast/mulbcast runs still land ~on the 2-pass latency. They are flagged (``broadcast``
+  in :class:`ArgTraffic`) for visibility. (Refinement: with row/col work-splitting the
+  operand may be reloaded once per core; counting it a single time is the floor --
+  unverified, see open items.)
 
 Byte counts use each arg's DEVICE layout (stick-padded ``device_size``), not the
 torch logical shape -- so a reduction's reduced input is naturally full-sized and
@@ -65,8 +69,8 @@ class ArgTraffic:
     name: str
     role: str  # "input" | "output"
     mem: str  # "lx" | "hbm"
-    elems: int  # device element count = prod(dims) (pre-broadcast-discount)
-    broadcast: bool = False  # cached on-chip -> excluded from hbm_bytes()
+    elems: int  # device element count = prod(dims) (its own one-load size)
+    broadcast: bool = False  # loaded once & reused across the broadcast dim
     # DEVICE (stick) shape, e.g. [4, 512, 64]
     dims: list = dataclasses.field(default_factory=list)
 
@@ -84,14 +88,13 @@ class OpFeatures:
     reduction_cores: int = 1  # cores splitting the REDUCED axis (1 = none → no combine)
 
     def hbm_bytes(self) -> int:
-        # Broadcast inputs are cached on-chip (loaded once, reused across the
-        # broadcast dim), so they add ~no HBM traffic. Verified on device: the
-        # rung-6 bcast/mulbcast runs land on the 2-pass (no-broadcast) latency,
-        # i.e. the [1,N] operand is effectively free. So exclude broadcast args.
-        return (
-            sum(a.elems for a in self.args if a.mem == "hbm" and not a.broadcast)
-            * self.dtype_bytes
-        )
+        # Every HBM-resident arg is counted ONCE at its OWN device size. A broadcast
+        # operand already carries its real (one-row/-col) device size in ``elems``, so
+        # it is counted a single time -- loaded once and reused across the broadcast
+        # dim -- NOT scaled up to the output size, and NOT dropped to zero. Its size is
+        # tiny vs the output, so a bcast still lands ~on the 2-pass latency (matching
+        # the rung-6 runs), but the one real load is no longer ignored.
+        return sum(a.elems for a in self.args if a.mem == "hbm") * self.dtype_bytes
 
     def lx_bytes(self) -> int:
         return sum(a.elems for a in self.args if a.mem == "lx") * self.dtype_bytes
@@ -111,7 +114,8 @@ class CostParams:
     - BW_HBM ~102 GB/s -- balanced 1R+1W kernel slope (neg 104, gelu 100; R^2 ~ 1.0).
       Kernel time is essentially bytes/BW, linear in I/O size.
     LX traffic ~FREE (rung-4 LX cost below noise; ~29x HBM). Verified: arithmetic-free
-    (gelu==neg on kernel time); broadcast/scalar inputs cached/free (rung 6); HBM BW
+    (gelu==neg on kernel time); broadcast/scalar inputs are loaded ONCE at their own
+    small device size (rung 6: not re-read per output, but not free either); HBM BW
     shared, core-independent >=2 cores (rung 5).
     PENDING re-anchor on kernel time (sweep sections B-F not yet run):
     - read/write split & the R+W penalty: bw_read/bw_write below are MIN-based (read
@@ -174,8 +178,8 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             f"  {o.name:<12} out={o.out_elems} cores={o.cores} hbm={hbm}B lx={lx}B{red}"
         )
         for a in o.args:
-            bc = " broadcast (cached: ~free)" if a.broadcast else ""
-            counted = 0 if (a.mem != "hbm" or a.broadcast) else a.elems * o.dtype_bytes
+            bc = " broadcast (loaded once)" if a.broadcast else ""
+            counted = a.elems * o.dtype_bytes if a.mem == "hbm" else 0
             shape = a.dims if a.dims else [a.elems]
             lines.append(
                 f"      {a.role:<6} {shape} in {a.mem} = {a.elems} elems x "

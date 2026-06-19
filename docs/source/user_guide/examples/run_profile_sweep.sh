@@ -38,7 +38,7 @@ PROFILE_OPS="$SCRIPT_DIR/profile_ops.py"
 cd "$ROOT" || exit 1
 mkdir -p haoyang_logs
 LOG="haoyang_logs/profile_sweep_$(date +%Y%m%d_%H%M%S).log"
-SECTIONS="${SECTIONS:-A B C D E F}"
+SECTIONS="${SECTIONS:-A B C D E F G}"
 ROWS="${ROWS:-2048}"   # bigger than 512 so each of 32 cores gets many rows (>=64/core)
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1   # recompile each run
 
@@ -51,6 +51,12 @@ run() {  # run <op> <cols> -> append the IO device-layout breakdown + SUMMARY li
   out=$(BENCH_OP="$1" BENCH_ROWS="$ROWS" BENCH_COLS="$2" \
         python "$PROFILE_OPS" 2>/dev/null | grep -E '^(IO |SUMMARY)')
   echo "${out:-SUMMARY op=$1 cols=$2 FAILED}" | tee -a "$LOG"
+}
+runc() {  # runc <cores> <op> <cols> -> like run() but pin SENCORES (core-count sweep)
+  local out
+  out=$(SENCORES="$1" BENCH_OP="$2" BENCH_ROWS="$ROWS" BENCH_COLS="$3" \
+        python "$PROFILE_OPS" 2>/dev/null | grep -E '^(IO |SUMMARY)')
+  echo "${out:-SUMMARY op=$2 cores=$1 cols=$3 FAILED}" | tee -a "$LOG"
 }
 has() { [[ " $SECTIONS " == *" $1 "* ]]; }
 
@@ -89,5 +95,21 @@ has E && { echo "## E broadcast (row + col)" | tee -a "$LOG"
 has F && { echo "## F reductions" | tee -a "$LOG"
   for n in 1024 4096; do run sumrow "$n"; done
   for op in sumcol amax mean sumall; do run "$op" 2048; done; }
+# G) per-core broadcast RELOAD probe: does a broadcast operand constant along the split
+#    axis get re-loaded once per core? Both ops have one big tensor b[1,C] (cols=65536)
+#    + tiny a[32,1]/output and identical relu(a+b) compute; only the reduced axis differs.
+#      redbcast     (reduce dim=-1, out[32] split by ROW)  -> b constant along rows ->
+#                   RELOAD candidate: if true, kernel time rises ~linearly with cores.
+#      redbcast_col (reduce dim=0,  out[C] split by COL)   -> b PARTITIONED -> control,
+#                   stays flat with cores.
+#    Sweep SENCORES; a rising redbcast vs flat redbcast_col == per-core reload confirmed
+#    (compute is identical in both, so it can't be the cause). cores=1 is the only point
+#    where R*C compute may not be free -> read the 4..32 trend, not the 1-core value.
+has G && { echo "## G per-core broadcast reload (SENCORES sweep, cols=65536)" \
+  | tee -a "$LOG"
+  for c in 1 2 4 8 16 32; do
+    runc "$c" redbcast 65536
+    runc "$c" redbcast_col 65536
+  done; }
 
 echo "==== DONE -> forward $LOG ====" | tee -a "$LOG"

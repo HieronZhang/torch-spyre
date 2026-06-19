@@ -169,11 +169,12 @@ def extract_op_features(op) -> OpFeatures:
     for dep in reads:
         name = getattr(dep, "name", "?")
         index = getattr(dep, "index", None)
-        # Broadcast heuristic: the read index references fewer loop variables
-        # than the output rank -> it is loaded once and cached (~free), like the
-        # rung-6 broadcasts. This INCLUDES scalars/constants (0 loop vars, e.g. the
-        # `1.0` in `x + 1.0`): a scalar is the maximally-broadcast input, not a full
-        # HBM read. (The old `0 < n_index_vars` wrongly counted scalars as full.)
+        # Broadcast heuristic: the read index references fewer loop variables than
+        # the output rank -> it is loaded ONCE and reused across the broadcast dim, so
+        # it is counted at its own (small) device size, not the output size. This
+        # INCLUDES scalars/constants (0 loop vars, e.g. the `1.0` in `x + 1.0`): a
+        # scalar is the maximally-broadcast input -- its one-load size is ~1 stick, so
+        # it costs ~nothing, but it is no longer forced to exactly zero.
         broadcast = False
         try:
             n_index_vars = len(getattr(index, "free_symbols", []) or [])
@@ -181,8 +182,15 @@ def extract_op_features(op) -> OpFeatures:
         except Exception:  # noqa: BLE001
             broadcast = False
         mem, dims, in_elems = _input_traffic(name)
-        if in_elems is None:  # unresolved buffer -> conservative fallback
-            mem, dims, in_elems = "hbm", list(out_dims), out_elems
+        if in_elems is None:  # unresolved buffer -> fallback
+            # A broadcast operand with no resolvable buffer (e.g. a scalar constant)
+            # is loaded once and is at most ~1 element -- do NOT inflate it to the
+            # output size. Only a NON-broadcast unresolved read is conservatively
+            # sized at the full output.
+            if broadcast:
+                mem, dims, in_elems = "hbm", [1], 1
+            else:
+                mem, dims, in_elems = "hbm", list(out_dims), out_elems
         args.append(
             ArgTraffic(
                 name=name,
@@ -230,7 +238,10 @@ def _record_last_io(feats: list) -> None:
         args = []
         for a in o.args:
             bs = a.elems * o.dtype_bytes
-            counted = 0 if (a.mem != "hbm" or a.broadcast) else bs
+            # Every HBM arg counts once at its own size; broadcast operands carry their
+            # small one-load device size, so they are counted (not zeroed) -- consistent
+            # with OpFeatures.hbm_bytes().
+            counted = bs if a.mem == "hbm" else 0
             args.append(
                 {
                     "role": a.role,

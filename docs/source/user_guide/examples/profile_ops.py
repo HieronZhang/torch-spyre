@@ -59,6 +59,10 @@ OP = os.environ.get("BENCH_OP", "gelu")
 ROWS = int(os.environ.get("BENCH_ROWS", "512"))
 COLS = int(os.environ.get("BENCH_COLS", "16384"))
 WARMUP = int(os.environ.get("BENCH_WARMUP", "5"))
+SENCORES = os.environ.get("SENCORES", "")  # core count (read only to tag the SUMMARY)
+# Fixed small output-row count for the broadcast-reload probe (>= the max core count),
+# so the R*C compute stays tiny and the broadcast operand b[1,C] dominates HBM traffic.
+RED_ROWS = 32
 
 torch.manual_seed(0xAFFE)
 
@@ -112,9 +116,27 @@ def make_workload():
         return torch.compile(lambda a, b: a + b), (_rand(ROWS, COLS), _rand(ROWS, 1))
     if OP == "write":  # write-only: both inputs broadcast -> cached
         return torch.compile(lambda b, c: b + c), (_rand(1, COLS), _rand(ROWS, 1))
+    if OP in ("redbcast", "redbcast_col"):
+        # Per-core broadcast-RELOAD probe. The only large tensor is b[1,C] (use a big
+        # COLS); a[RED_ROWS,1] and the output are tiny. relu(a+b) is NON-separable, so
+        # the reduction can't fold to a closed form that reads b once (a plain a+b/a*b
+        # WOULD factor out -> defeating the test). Sweep SENCORES:
+        #   redbcast     reduces dim=-1 -> out[RED_ROWS], split across cores by ROW.
+        #                b[1,C] is constant along rows -> each core needs ALL of b ->
+        #                if reloaded per core, HBM b-traffic = cores * C -> kernel time
+        #                rises ~linearly with cores.
+        #   redbcast_col reduces dim=0  -> out[C], split by COLUMN. Now b[1,C] is
+        #                PARTITIONED across cores (control) -> b loaded once -> flat.
+        # Same inputs + same R*C compute in both, so a row-vs-col gap isolates the
+        # reload (it can't be compute or fixed overhead).
+        dim = -1 if OP == "redbcast" else 0
+        return (
+            torch.compile(lambda a, b: torch.relu(a + b).sum(dim=dim)),
+            (_rand(RED_ROWS, 1), _rand(1, COLS)),
+        )
     known = (
         list(_UNARY) + list(_BINARY) + list(_NARY) + list(_REDUCE) + list(_BCAST)
-        + ["bcastcol", "write"]
+        + ["bcastcol", "write", "redbcast", "redbcast_col"]
     )
     raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
 
@@ -130,7 +152,7 @@ def _print_io(io: dict) -> None:
         red = " [reduction]" if o.get("is_reduction") else ""
         print(f"IO   op {o['name']}{red}")
         for a in o["args"]:
-            bc = " broadcast->cached (0 counted)" if a["broadcast"] else ""
+            bc = " broadcast (loaded once)" if a["broadcast"] else ""
             print(
                 f"IO     {a['role']:<6} {a['dims']} in {a['mem']} = "
                 f"{a['elems']} elems x 2B = {a['bytes']} B"
@@ -177,7 +199,8 @@ def main():
     # Effective BW from the GOLDEN kernel time and the model's device-layout I/O.
     bw = io_hbm_bytes / (kernel * 1000) if kernel > 0 else 0.0
     print(
-        f"SUMMARY op={OP} rows={ROWS} cols={COLS} io_hbm_bytes={io_hbm_bytes} "
+        f"SUMMARY op={OP} rows={ROWS} cols={COLS} cores={SENCORES or '-'} "
+        f"io_hbm_bytes={io_hbm_bytes} "
         f"kernel_us={kernel:.3f} bw_gbps={bw:.1f} memset_us={memset:.3f} "
         f"other_dev_us={other:.3f} total_dev_us={kernel + memset + other:.3f}"
     )
