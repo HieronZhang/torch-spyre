@@ -104,19 +104,32 @@ _BCAST = {"bcast": lambda a, b: a + b, "mulbcast": lambda a, b: a * b}  # b = [1
 _CT_REDUCE = {"ctsum": "sum", "ctamax": "amax", "ctamin": "amin"}
 
 
+# Per-call setup hook: the coarse-tile path sets this to re-declare its named dims
+# before every traced invocation (the example declares once + compiles once; this
+# profiling harness traces repeatedly). None for all non-tiled ops.
+_PREPARE = None
+
+
 def _ct_workload(rtype: str):
+    """Coarse-tiled dim0 reduction, mirroring coarse_tile/run_*_dim0_tiled.py + utils.py
+    ``_compile_and_run``: a CPU input (sum scaled 0.1 as the example does), eager
+    ``declare_tensor_dim``, ``name_tensor_dims`` + ``spyre_hint`` inside fn, an eager
+    reference call of fn, then a dynamo/Fx cache reset right before compile.
+    """
     import torch_spyre._inductor.propagate_named_dims as pnd
     from torch._inductor.codecache import FxGraphCache
     from torch_spyre._inductor import spyre_hint
 
-    # spyre_hint increments a module-global _hint_counter per scope and needs a clean
-    # trace; mirror coarse_tile/utils.py _compile_and_run, which resets the dynamo/Fx
-    # caches before compiling so the hint IDs do not desync across runs.
-    torch._dynamo.reset_code_caches()
-    FxGraphCache.clear()
+    global _PREPARE
     b, d = ROWS, COLS
-    pnd.declare_tensor_dim("B", b)
-    pnd.declare_tensor_dim("D", d)
+    scale = 0.1 if rtype == "sum" else 1.0  # example scales sum to avoid fp16 growth
+    x_cpu = torch.randn(b, d, dtype=torch.float16) * scale
+
+    def _declare():
+        pnd.declare_tensor_dim("B", b)
+        pnd.declare_tensor_dim("D", d)
+
+    _declare()  # eager, as the example does in main() before compiling
 
     def reduce_fn(x):
         return getattr(x, rtype)(dim=0)
@@ -128,9 +141,16 @@ def _ct_workload(rtype: str):
             with spyre_hint(num_tiles_per_dim={"B": TILES}):
                 return reduce_fn(x)
 
+        # Re-declare EAGERLY (not inside fn -> no trace perturbation) before each traced
+        # call so propagate_named_dims always resolves the named-dim sizes.
+        _PREPARE = _declare
     else:
         fn = reduce_fn
-    return torch.compile(fn), (_rand(b, d),)
+
+    fn(x_cpu)  # eager reference call (mirror compare_with_cpu's cpu_result = fn(...))
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (x_cpu.to(DEVICE),)
 
 
 def make_workload():
@@ -214,6 +234,8 @@ def _print_model(feats: list) -> float:
 def _run():
     compiled, args = make_workload()
     for _ in range(WARMUP):  # compile (-> cost-model dump fires) + warm the kernel
+        if _PREPARE is not None:  # coarse-tile: re-declare named dims before each trace
+            _PREPARE()
         compiled(*args).cpu()
     io = dict(dump_cost_model.LAST_IO)  # device-layout I/O the model computed
     feats = list(dump_cost_model.LAST_FEATS)  # raw OpFeatures for predict_ops()
@@ -224,6 +246,8 @@ def _run():
         record_shapes=True,
         profile_memory=True,
     ) as prof:
+        if _PREPARE is not None:  # coarse-tile: re-declare before the profiled trace
+            _PREPARE()
         compiled(*args).cpu()
 
     print(f"== {OP}[{ROWS}x{COLS}] -- profiler kernel time vs cost-model I/O ==")
