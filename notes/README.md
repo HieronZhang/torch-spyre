@@ -118,7 +118,7 @@ Both commands read the **same full input**; only the write differs. `read` write
 an almost-empty output, so its traffic is **one-directional** and the `bw_gbps` in
 its `SUMMARY` lands near the ~150 GB/s peak. `neg` writes a full output, so reads
 and writes must **interleave on the shared HBM bus**, which keeps turning around
-between the two directions — its `bw_gbps` collapses well below the peak, *below*
+between the two directions — its `bw_gbps` collapses well below the peak (to around 105GB/s), *below*
 either pure direction. Same input, same compute, but the **write half of the
 access pattern costs a read/write turnaround penalty** that nearly halves the
 effective DRAM bandwidth. (This is the `α·min(R,W)` term in §3: the read/write
