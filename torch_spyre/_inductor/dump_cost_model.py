@@ -128,31 +128,39 @@ def _input_traffic(name: str):
 
 
 def _loop_features(op):
-    """(loop_trip, tiles_reduction_dim) from the coarse-tiling ``loop_info`` on the op
-    (loop_info.py / coarse_tile.py). ``loop_trip`` = product of ``loop_count`` (1 if not
-    tiled). ``tiles_reduction_dim`` = ``loop_tiled_reduction_dims`` is non-empty. NOTE
-    the fill/combine ops carry the same ``loop_info`` (so they also report a tiled
-    reduction dim) -- only the REDUCTION op's input actually advances, so the caller
-    ANDs this with ``is_reduction``. SCOPE: reduction-dim tiling (sum/amax/amin); output
-    (pointwise) tiling would need per-arg advancing detection."""
+    """(loop_trip, tiles_reduction_dim, tiles_output_dim) from the coarse-tiling
+    ``loop_info`` (loop_info.py / coarse_tile.py). ``loop_trip`` = product of
+    loop_count (1 if not tiled). tiles_reduction_dim = loop_tiled_reduction_dims is
+    non-empty (reduction-dim tiling); tiles_output_dim = loop_tiled_dims is non-empty
+    (output / pointwise-dim tiling). NOTE the fill/combine ops carry the same loop_info
+    but tile NEITHER (both lists empty), so their accumulators stay fixed (factor L); a
+    genuinely tiled op's args advance (factor 1)."""
     li = getattr(op, "loop_info", None)
     if li is None:
-        return 1, False
+        return 1, False, False
     trip = 1
     for c in getattr(li, "loop_count", None) or []:
         trip *= _int(c, 1)
     red_dims = getattr(li, "loop_tiled_reduction_dims", None) or []
-    return max(1, trip), any(bool(level) for level in red_dims)
+    out_dims = getattr(li, "loop_tiled_dims", None) or []
+    return (
+        max(1, trip),
+        any(bool(level) for level in red_dims),
+        any(bool(level) for level in out_dims),
+    )
 
 
 def extract_op_features(op) -> OpFeatures:
     """Build OpFeatures for one ComputedBuffer op (best-effort)."""
     data = getattr(op, "data", None)
     is_reduction = getattr(data, "reduction_type", None) is not None
-    loop_trip, tiles_red_dim = _loop_features(op)
-    # Only a REDUCTION op that tiles a reduction dim has an advancing (read-once) input;
-    # the fill/combine ops share the loop_info but their accumulators are re-read each
-    # iteration (factor L). So AND the loop flag with is_reduction.
+    loop_trip, tiles_red_dim, tiles_out_dim = _loop_features(op)
+    # An arg ADVANCES (factor 1, walks the full tensor once across tiles) when this op
+    # tiles a dim the arg traverses: an OUTPUT (pointwise) dim -> all args advance; a
+    # REDUCTION dim -> only the reduced input advances. An arg is FIXED (factor L,
+    # re-accessed each iteration) when this op tiles neither but shares the loop -- a
+    # combine's accumulator / a per-tile partial. (fill/combine: loop_tiled_dims and
+    # loop_tiled_reduction_dims are both empty, so out/red are False -> factor L.)
     is_tiled_red = is_reduction and tiles_red_dim
     dtype_bytes = _int(getattr(op.get_dtype(), "itemsize", 2), 2)
     out_size = list(op.get_size())
@@ -171,9 +179,16 @@ def extract_op_features(op) -> OpFeatures:
     if is_reduction and out_elems < cores:
         reduction_cores = max(1, cores // max(1, out_elems))
 
+    # Output advances (factor 1) when this op tiles an output dim (pointwise tiling
+    # writes the result tile by tile); fixed (factor L) for a reduction's per-tile
+    # partial or a combine's accumulator (re-written at one address each iteration).
+    out_factor = 1 if tiles_out_dim else loop_trip
+    # Inputs advance (factor 1) when the op tiles an output dim (all pointwise inputs)
+    # or a reduction dim (the reduced input); else fixed accumulators (factor L).
+    in_factor = 1 if (tiles_out_dim or is_tiled_red) else loop_trip
+
     args: list = []
-    # Output arg (device-sized). In a coarse-tiling loop the output (a per-tile partial
-    # or an accumulator) is re-written every iteration at a fixed address -> factor = L.
+    # Output arg (device-sized).
     args.append(
         ArgTraffic(
             name=op.get_operation_name(),
@@ -182,7 +197,7 @@ def extract_op_features(op) -> OpFeatures:
             elems=out_elems,
             dims=list(out_dims),
             logical=list(out_size),
-            loop_factor=loop_trip,
+            loop_factor=out_factor,
         )
     )
     # Input args, from the op's reads. Each read is sized by ITS OWN buffer's device
@@ -218,11 +233,6 @@ def extract_op_features(op) -> OpFeatures:
                 mem, dims, in_elems, in_logical = "hbm", [1], 1, [1]
             else:
                 mem, dims, in_elems, in_logical = "hbm", list(out_dims), out_elems, []
-        # Loop scaling: the reduced input of a tiled REDUCTION advances (walks the full
-        # tensor once across tiles) -> factor 1, its full device_size already covers all
-        # tiles. Every other looped input (a combine's accumulator / partial, re-read
-        # each iteration at a fixed address) -> factor L. Non-tiled ops: L = 1.
-        in_loop_factor = 1 if is_tiled_red else loop_trip
         args.append(
             ArgTraffic(
                 name=name,
@@ -232,7 +242,7 @@ def extract_op_features(op) -> OpFeatures:
                 broadcast=broadcast,
                 dims=list(dims),
                 logical=list(in_logical) if in_logical else [],
-                loop_factor=in_loop_factor,
+                loop_factor=in_factor,  # 1 if advancing, L if a fixed accumulator
             )
         )
 

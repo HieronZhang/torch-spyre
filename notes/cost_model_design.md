@@ -19,11 +19,17 @@ edits/lint here; hand precise commands to the run machine and paste results back
   per-kernel device time** (`sdsc_fused_*`). Our old `SPYRE_PROFILE_SYNC` min measured
   kernel + a non-deterministic, size-scaling Memset/host-setup bucket (tracked separately).
 - **Model = TURNAROUND** (`run_profile_sweep.sh` §B–F, encoded in `cost_model.py`):
-  **`T = fill + (R+W)/BW_PEAK + α·min(R,W)`**, R/W = HBM read/write bytes. Calibrated:
-  **`fill≈0, BW_PEAK≈150 GB/s, α≈0.0057 ns/byte`**. One *peak* bandwidth (one-directional)
-  minus a **read/write turnaround penalty on the overlap `min(R,W)`** → reproduces the
-  V-shaped effective BW. **LX traffic ~free.** Validated on the B–F sweep: **~2% error on
-  core pointwise + reductions, ~7% overall** (vs ~11% for an additive two-rate).
+  **`T = fill + (R+W)/BW_PEAK + α·min(R,W) + c_loop·L`**, R/W = HBM read/write bytes, L = tile
+  count. Calibrated: **`fill≈0, BW_PEAK≈150 GB/s, α≈0.0057 ns/byte, c_loop≈860 ns/tile`**. One
+  *peak* bandwidth (one-directional) minus a **read/write turnaround penalty on the overlap
+  `min(R,W)`** → reproduces the V-shaped effective BW. **LX traffic ~free.** Validated: **~2%
+  error on core pointwise + reductions, ~7% overall** (vs ~11% for an additive two-rate).
+- **Coarse tiling now modeled (Part 2, §5.4).** Loop-aware bytes (per-arg `loop_factor`: the
+  advancing reduced input counts once, the per-tile accumulator counts ×L, LX scratch free) +
+  a calibrated per-tile loop overhead **`c_loop≈860 ns/tile`** (the K-sweep slope). So tiling a
+  *standalone* reduction is **slower** (~+0.86 µs/tile, no input-traffic saving); LX on/off makes
+  no difference for it (partial too small); sum/amax/amin identical. After `c_loop`, tiled
+  reductions hit ~6–7% (was −52% at K=16).
 - **Verified:** arithmetic-free (gelu/exp == neg on kernel time); HBM BW shared,
   core-independent ≥2 cores; LX ~29× HBM (so ~free); **broadcast operand loaded ONCE at its
   own small device size — NOT zeroed, NOT per-core** (rung-G probe: bcast ≈ bcastcol ≪ add).
@@ -82,10 +88,12 @@ to read an op.
 Per kernel/bundle:
 
 ```
-T = fill + (R + W) / BW_PEAK + α · min(R, W)     (LX-resident traffic treated as ~free)
+T = fill + (R + W) / BW_PEAK + α · min(R, W) + c_loop · L     (LX traffic ~free)
 ```
 
-where `R` = HBM bytes READ (inputs), `W` = HBM bytes WRITTEN (outputs).
+where `R` = HBM bytes READ (inputs), `W` = HBM bytes WRITTEN (outputs), and `L` = the
+coarse-tiling loop trip count (1 when not tiled, so the last term vanishes for the common
+case). `R`/`W` are **loop-aware** when tiled — see the coarse-tiling bullet below.
 
 - `fill` (≈**0**) — the golden **kernel** has *no* fixed term (section-A intercepts ~0). The
   old `fixed≈20µs` was a **separate, non-deterministic, size-scaling Memset/host-setup bucket**
@@ -130,6 +138,22 @@ where `R` = HBM bytes READ (inputs), `W` = HBM bytes WRITTEN (outputs).
 - **Reductions need no special bandwidth.** A reduction is just a kernel with a tiny `W` (the
   small output), so `min(R,W)≈0` → `T ≈ R/BW_PEAK`, the read-only rate, automatically.
   `is_reduction` survives only to add a cross-core ring-combine term (`psum_per_elem_ns`).
+- **Coarse tiling — loop-aware traffic + a per-tile loop cost.** A `spyre_hint` splits a
+  reduction's reduced axis into `K` tiles; the pass emits `fill + K×(tiled-reduce, combine)`
+  inside one unrolled bundle, and stamps `loop_info`/`dim_hints` on each op. Two effects, both
+  read from the IR:
+  - **Loop-aware bytes (per-arg `loop_factor`).** An arg's bytes scale by its loop factor:
+    **1** for an *advancing* arg (the reduced input walks the full tensor once across the `K`
+    tiles, so its full `device_size` already covers all of it) or a normal arg; **`L`** for a
+    *fixed* arg held at one address across the loop (a per-tile **accumulator** re-read/written
+    every iteration). LX scratch is ~free regardless. So a tiled reduction adds only the
+    accumulator round-trips `~2·K·D` over the untiled version — it does **not** reduce the input
+    read.
+  - **Per-tile loop overhead `c_loop·L`.** With `unroll_loops=True` the loop unrolls into `L`
+    body copies; each dispatch adds a fixed cost beyond its memory traffic. **CALIBRATED
+    `c_loop ≈ 860 ns/tile`** (§5.4). So tiling a *standalone* reduction is **slower** (more
+    tiles ⇒ more overhead, no input-traffic saving) — the payoff is fused chains that keep
+    intermediates in LX, which is out of this round's scope.
 
 **Per-op vs fused:** model a single op as its own kernel; a fused bundle = sum of its ops'
 traffic with **one** fill, and intermediates that stay in LX don't hit HBM. (Our examples run
@@ -140,13 +164,16 @@ intermediates become per-tile on-chip scratch.)
 **Why two "fusions" — do not conflate:**
 - **SDSC bundle fusion** (`spyre_fuse_nodes`): groups ops into one kernel (`sdsc_fused_*`);
   intermediates still live in memory (HBM/LX). ACTIVE in our runs.
-- **Tile fusion** (coarse tiling): inner-loop fusion making intermediates per-tile on-chip;
-  needs hints. NOT active in our runs.
+- **Tile fusion** (coarse tiling): a `spyre_hint` loop with per-tile scratch. NOW EXERCISED by
+  the P2 reduction-tiling runs (ctsum/ctamax/ctamin) and handled by the loop-aware bullet above;
+  the LX-residency win for fused *pointwise* chains is still out of scope.
 
-**Calibrated values (fp16, B–F profiler sweep, encoded in `cost_model.py`):** `fill≈0`,
-`BW_PEAK≈150 GB/s`, `α≈0.0057 ns/byte`, `psum_per_elem_ns≈0.14`. **LX traffic ~free** (no
-`BW_LX` term — rung 4 signal below noise). Accuracy: **~2% on core pointwise + reductions,
-~7% overall**; residual biases (broadcast +17%, write-only, fan-in, sumcol) listed in §0/§11.
+**Calibrated values (fp16, B–F + Part-2 profiler sweeps, encoded in `cost_model.py`):**
+`fill≈0`, `BW_PEAK≈150 GB/s`, `α≈0.0057 ns/byte`, `psum_per_elem_ns≈0.14`,
+**`c_loop≈860 ns/tile`** (§5.4). **LX traffic ~free** (no `BW_LX` term — rung 4 below noise;
+P2 confirmed LX-on/off makes no difference for standalone tiled reductions). Accuracy: **~2% on
+core pointwise + reductions, ~7% overall**; tiled reductions ~6–7% after `c_loop` (was −52% at
+K=16). Residual biases (broadcast +17%, write-only, fan-in, sumcol/dim0) listed in §0/§11.
 See §5 for the data.
 
 ---
@@ -304,6 +331,27 @@ now encodes `fill_ns=0`, `bw_peak_gbps=150`, `rw_turnaround_ns_per_byte=0.0057`.
 broadcast **+17%** (off the V-curve, OPEN), write-only ~16%, fan-in `add3/add4` ~8%, `sumcol`
 ~19%. The reload probe (rung-G) confirmed the broadcast operand is loaded **once, not per core**.
 
+### 5.4 Coarse-tiling reduction (`run_5h_sweep.sh` Part 2, 2026-06-19, fp16)
+
+`ctsum`/`ctamax`/`ctamin` = `spyre_hint(num_tiles_per_dim={"B":K})` over a `[2048, D]` dim-0
+reduction, run NORMAL (`LX_PLANNING=0`, partial in HBM) and LX-ON, sweeping `K` and `D`
+(`grand_sweep_20260619_151132.log`). Three findings:
+
+- **The coarse-tiling loop is NOT free — `c_loop ≈ 860 ns/tile`.** K-sweep (D=512, K∈{2,4,8,16}):
+  `unmodeled = kernel − pred` fits **`1.88 µs + 0.864·K`**. The K-slope is the per-tile loop
+  overhead → set `c_loop≈860 ns`; the `1.88 µs` intercept is the dim-0 access penalty (below).
+  Data-independent: the D-sweep gives the same slope. With `c_loop=860`, the tiled-reduction
+  error drops from **−52% → −7%** at K=16. So tiling a standalone reduction is *slower*, scaling
+  ~`+0.86 µs/tile`.
+- **LX on/off makes no difference** for standalone tiled reductions (±0.6 µs, no consistent
+  sign): the per-tile partial is tiny, so scratchpad residency saves nothing. Confirms LX ~free,
+  and that the LX payoff is fused chains (not lone reductions).
+- **sum/amax/amin are identical** (22.3/22.8/23.0 µs at K=8) — the combine operator
+  (`add`/`maximum`/`minimum`) is free, as assumed.
+- **Residual ≈ the dim-0 access penalty.** The untiled dim-0 reduction is already ~15% slow vs
+  the read rate (same `sumcol`-style bias) — this is the `1.88 µs` intercept, *not* loop cost,
+  and the model's remaining ~7% on tiled reductions.
+
 ---
 
 ## 6. What's built (files)
@@ -413,9 +461,17 @@ mechanism capture is a separate two-terminal run — see `bandwidth_turnaround_e
 - [x] **stream count → BW?** — rung 7 ✓ **FALSIFIED** (it's the read:write mix, not operand count)
 - [x] **read vs write vs balanced BW** — section D ✓ (read ~150, write ~125–140, 1R+1W ~105 on
   KERNEL time) → **TURNAROUND model** `(R+W)/150 + α·min(R,W)`, ~7% overall
+- [x] **coarse-tiling reduction (flat-K)** — Part 2 ✓ loop-aware bytes + `c_loop≈860 ns/tile`
+  (K-sweep slope); LX on/off no-diff for standalone reductions; sum/amax/amin identical
 - [ ] **mechanism of the read+write penalty** (turnaround / half-duplex / shared bus) — EFFECT now
   modeled (α·min(R,W)); the physical cause still wants `aiu-smi`
 - [ ] **broadcast pointwise +17% faster than model** (off the V-curve) — cause OPEN
+- [~] **output-dim (pointwise) tiling** — `loop_factor` generalized (an op tiling an output dim
+  → all args advance; reduction → reduced input; combine → accumulator fixed). Per-arg index
+  analysis (broadcast-in-tiled-pointwise) still TODO.
+- [ ] **coarse-tiling LX-residency WIN** (fused chain `z=(a+b)*c`, `y` in LX) — `BENCH_OP=chain`
+  + sweep Part 3 WIRED, model predicts tiled ≪ untiled (547 vs 864 µs); RUN to confirm + find
+  the crossover where the LX saving beats `K·c_loop`
 
 ---
 
@@ -432,12 +488,30 @@ mechanism capture is a separate two-terminal run — see `bandwidth_turnaround_e
 4. **Pin the write peak & fan-in:** the model treats writes at `BW_PEAK` (write-only ~16% off);
    `add3`/`add4` ~8% (LX not perfectly free). Both want a dedicated size sweep before refining.
 5. **Reductions — done for the common cases** (read-only rate falls out of the turnaround model;
-   `sumrow`/`amax`/`mean`/`sumall` ~2-4%). OPEN: `sumcol` (reducing the outer/partitioned axis)
-   ~19% slow — looks like an access-pattern penalty, not the ring-combine; needs its own probe.
+   `sumrow`/`amax`/`mean`/`sumall` ~2-4%). OPEN: `sumcol`/dim-0 (reducing the outer/partitioned
+   axis) ~15–19% slow — an access-pattern penalty, not the ring-combine; needs its own probe.
    Also noted: Spyre does **NOT** fuse pointwise→reduction (the pre-reduction op spills its
    `[R,C]` to HBM — an extra round-trip the extraction already captures via real buffers).
-6. Later: tile-fusion regime (hinted examples), matmul (`pt` unit / compute-bound), the LX
-   capacity cliff as a hard constraint, and an access-pattern term if non-contiguous layouts matter.
+6. **Coarse tiling — the LX-residency WIN (Part-3, model done, run pending).** Flat-K reduction
+   tiling is modeled (`c_loop≈860`, §5.4), but for a *standalone* reduction tiling only adds
+   overhead. The payoff — and the decision a tiling cost model exists to make — is a fused
+   **pointwise** chain (`z=(a+b)*c`) tiled so `y=a+b` stays in LX instead of round-tripping HBM.
+   - **[DONE] `loop_factor` generalized to OUTPUT-dim (pointwise) tiling.** `_loop_features` now
+     reads `loop_tiled_dims` too: an op that tiles an output dim → all its args advance
+     (factor 1); a tiled reduction → only the reduced input advances; a combine/fill (tiles
+     neither) → its accumulator stays fixed (factor L). So the chain's `a,b,c,z` count once and
+     `y` is LX-free when tiled / HBM-counted when not — the model predicts tiled ≪ untiled
+     (e.g. 547 vs 864 µs at K=4, [2048,4096]).
+   - **[WIRED] `BENCH_OP=chain` + sweep Part 3.** 4 minimal runs (untiled vs tiled K=8 at two
+     sizes) — RUN to validate the model **ranks tile-vs-not** and locate the crossover where the
+     LX saving overtakes `K·c_loop`.
+   - **[TODO] per-arg advancing** (not just per-op): a broadcast operand in a tiled pointwise op
+     may not traverse the tiled dim; the principled rule checks each arg's index free-symbols
+     against the tiled loop vars.
+   - **[TODO] Nested tiling** (outer output + inner reduction — the two-buffer LX accumulator,
+     bmm-like) and **generalize `c_loop`** (D=64 ran high — check for a fixed + size component).
+7. Later: matmul (`pt` unit / compute-bound), the LX capacity cliff as a hard constraint, and an
+   access-pattern term if non-contiguous layouts matter.
 
 ---
 
@@ -447,10 +521,17 @@ RESOLVED: shared-vs-per-core HBM BW (rung 5 → SHARED); LX is **~free** (rung 4
 arithmetic-free (gelu/exp == neg); **broadcast operand loaded ONCE, not per core** (rung-G —
 counted at its own size, not zeroed); **stream-count law FALSIFIED** (rung 7 — it's the read:write
 mix); the **read/write split** (section D: read ~150, write ~125–140, balanced ~105 on kernel
-time) → the **TURNAROUND model** `(R+W)/150 + α·min(R,W)`; and the **`mul`/`add` "anomaly"**
-(it's a 2R1W kernel, on-model at ~116).
+time) → the **TURNAROUND model** `(R+W)/150 + α·min(R,W)`; the **`mul`/`add` "anomaly"** (it's a
+2R1W kernel, on-model at ~116); and **coarse-tiling flat-K reductions** (Part 2 — loop-aware
+bytes + `c_loop≈860 ns/tile`; LX on/off no-diff for standalone reductions).
 
 Still open:
+- **Coarse-tiling LX-residency WIN (THE next step)** — for a *standalone* reduction tiling only
+  costs `K·c_loop`; the payoff is a fused **pointwise** chain (`y=a+b; z=y*c`) tiled so `y` stays
+  in LX vs round-tripping HBM. Measure tiled-vs-untiled for that chain and confirm the model ranks
+  tile-vs-not (incl. the crossover). Then: OUTPUT-dim (pointwise) `loop_factor` via per-arg
+  advancing detection; nested (outer-output + inner-reduction) tiling; check `c_loop` is one
+  constant (D=64 ran high). See §10.6.
 - **Broadcast pointwise +17%** — `bcast`/`bcastcol` run faster than the V-curve. The cached
   operand seems to dodge the turnaround penalty; mechanism unknown. **The most interesting thread.**
 - **Mechanism of the read+write penalty** — the cost EFFECT is modeled (`α·min(R,W)`), but *why*

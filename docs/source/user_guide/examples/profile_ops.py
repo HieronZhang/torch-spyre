@@ -153,6 +153,54 @@ def _ct_workload(rtype: str):
     return torch.compile(fn), (x_cpu.to(DEVICE),)
 
 
+def _chain_workload():
+    """Fused pointwise chain ``z = (a + b) * c`` over [A=ROWS, B=COLS] -- the Part-3
+    LX-residency probe (mirrors the scratchpad example in coarse_tiling_loops.md).
+    BENCH_TILES>=2 tiles the A (row) dim so the intermediate ``y = a + b`` stays in LX
+    instead of round-tripping HBM; ``allow_all_ops_in_lx_planning`` makes y LX-eligible.
+    Untiled (BENCH_TILES<=1) is the baseline where y is a full HBM buffer. Toggle
+    LX_PLANNING to compare. The IO dump shows y in lx (free, tiled) vs hbm (counted)."""
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import config, spyre_hint
+
+    global _PREPARE
+    a_n, b_n = ROWS, COLS
+    config.allow_all_ops_in_lx_planning = True  # let the intermediate y be LX-placed
+    xa = torch.randn(a_n, b_n, dtype=torch.float16)
+    xb = torch.randn(a_n, b_n, dtype=torch.float16)
+    xc = torch.randn(a_n, b_n, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("A", a_n)
+        pnd.declare_tensor_dim("B", b_n)
+
+    _declare()
+
+    def _name(a, b, c):
+        pnd.name_tensor_dims(a, ["A", "B"])
+        pnd.name_tensor_dims(b, ["A", "B"])
+        pnd.name_tensor_dims(c, ["A", "B"])
+
+    if TILES >= 2:
+
+        def fn(a, b, c):
+            _name(a, b, c)
+            with spyre_hint(num_tiles_per_dim={"A": TILES}):
+                return (a + b) * c
+
+        _PREPARE = _declare
+    else:
+
+        def fn(a, b, c):
+            return (a + b) * c
+
+    fn(xa, xb, xc)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (xa.to(DEVICE), xb.to(DEVICE), xc.to(DEVICE))
+
+
 def make_workload():
     if OP in _UNARY:
         return torch.compile(_UNARY[OP]), (_rand(ROWS, COLS),)
@@ -171,9 +219,11 @@ def make_workload():
         return torch.compile(lambda b, c: b + c), (_rand(1, COLS), _rand(ROWS, 1))
     if OP in _CT_REDUCE:  # coarse-tiled dim0 reduction (BENCH_TILES, LX_PLANNING)
         return _ct_workload(_CT_REDUCE[OP])
+    if OP == "chain":  # fused pointwise chain z=(a+b)*c, tiled -> y in LX (BENCH_TILES)
+        return _chain_workload()
     known = (
         list(_UNARY) + list(_BINARY) + list(_NARY) + list(_REDUCE) + list(_BCAST)
-        + ["bcastcol", "write"] + list(_CT_REDUCE)
+        + ["bcastcol", "write", "chain"] + list(_CT_REDUCE)
     )
     raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
 
