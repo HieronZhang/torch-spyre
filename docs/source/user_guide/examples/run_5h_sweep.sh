@@ -120,16 +120,16 @@ has P2c && { echo "## P2c coarse-tile D-sweep (ctsum K=8, LX off, B=2048)" | tee
 has P2d && { echo "## P2d untiled reduction baselines (B=2048 D=512)" | tee -a "$LOG"
   for op in ctsum ctamax ctamin; do runct 0 1 "$op" 2048 512; done; }
 
-# ============ PART 3: coarse-tiling LX-residency WIN (fused chain) ============
-# THE only un-collected experiment (P1/P2 numbers already in hand). z = (a+b)*c over
-# [A,B]: UNTILED the intermediate y=a+b is a full HBM buffer (written by add, read by mul
-# -> 2 round-trip passes); TILED on A with LX_PLANNING=1, y stays per-tile in LX -> those
-# 2 passes are saved, paid for with K*c_loop. This is where tiling PAYS OFF and what the
-# model must rank. Check the IO dump: y shows `in lx` (counted 0) tiled vs `in hbm`
-# untiled. 4 minimal runs at two sizes show the crossover (small may not beat K*c_loop;
-# the larger size should make tiling win).
-has P3 && { echo "## P3 chain LX-residency: untiled vs tiled K=8 (LX on)" | tee -a "$LOG"
-  runct 1 1 chain 2048 4096; runct 1 8 chain 2048 4096
-  runct 1 1 chain 4096 8192; runct 1 8 chain 4096 8192; }
+# ============ PART 3: pointwise-chain tiling overhead (c_loop_chain) ============
+# The first 2 runs (2026-06-25, [2048,4096]) overturned the premise: the compiler ALREADY
+# places the intermediate y=a+b in LX UNTILED (it fits per-core), so tiling wins nothing
+# here -- it only ADDS overhead, and a lot: K=1 -> 584us, K=8 -> 780us (~28us/tile, ~30x
+# the reduction c_loop=860ns). The model (single c_loop) under-predicts this badly
+# (tiled err -29.5%). The [4096,8192] untiled run (y EXCEEDS LX) HUNG -- skip it.
+# So: pin the POINTWISE-chain c_loop with a clean K-sweep at [2048,4096] (y in LX every
+# run, only the loop count varies). We already have K=1 and K=8; fill in K=2,4,16.
+has P3 && { echo "## P3 chain c_loop K-sweep ([2048,4096], LX on; have K=1,8)" \
+  | tee -a "$LOG"
+  for k in 2 4 16; do runct 1 "$k" chain 2048 4096; done; }
 
 echo "==== DONE -> forward $LOG ====" | tee -a "$LOG"
