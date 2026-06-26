@@ -273,17 +273,35 @@ def _print_model(feats: list) -> float:
     lp = max((o.loop_trip for o in feats), default=1)
     base = (r + w) / p.bw_peak_gbps
     turn = p.rw_turnaround_ns_per_byte * min(r, w)
+    # Underfill derate (output-dim tiling): smallest per-core tile governs.
+    eff, eff_rows = 1.0, 0.0
+    for o in feats:
+        if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
+            e = cost_model.underfill_eff(o.tile_rows_per_core, p)
+            if e < eff:
+                eff, eff_rows = e, o.tile_rows_per_core
+    red_trip = max((o.loop_trip for o in feats if not o.tiles_output_dim), default=1)
     t = cost_model.predict_ops(feats, p)
-    print(f"MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W)"
-          f"{' + c_loop*L' if lp > 1 else ''} --")
+    parts = "(R+W)/BW_PEAK + a*min(R,W)"
+    if eff < 1.0:
+        parts = f"[{parts}] / eff_underfill"
+    if red_trip > 1:
+        parts += " + c_loop*L_red"
+    print(f"MODEL -- estimate (turnaround): T = {parts} --")
     print(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
     print(f"MODEL   base = (R+W)/BW_PEAK = ({r}+{w})/{p.bw_peak_gbps:.0f} "
           f"= {base / 1000:.2f} us")
     print(f"MODEL   turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(r, w)} "
           f"= {turn / 1000:.2f} us")
-    if lp > 1:
-        loop = p.c_loop_ns * lp
-        print(f"MODEL   loop = c_loop*L = {p.c_loop_ns}*{lp} = {loop / 1000:.2f} us")
+    if eff < 1.0:
+        rf = p.underfill_pass_rows * p.underfill_target_passes_pointwise
+        print(f"MODEL   eff_underfill = min(1,({eff_rows:.1f}/{rf:.0f})"
+              f"**{p.underfill_exponent}) = {eff:.3f} "
+              f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us")
+    if red_trip > 1:
+        loop = p.c_loop_ns * red_trip
+        print(f"MODEL   loop = c_loop*L_red = {p.c_loop_ns}*{red_trip} "
+              f"= {loop / 1000:.2f} us")
     print(f"MODEL   => T_model = {t / 1000:.2f} us")
     return t / 1000
 

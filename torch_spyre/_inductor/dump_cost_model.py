@@ -179,6 +179,21 @@ def extract_op_features(op) -> OpFeatures:
     if is_reduction and out_elems < cores:
         reduction_cores = max(1, cores // max(1, out_elems))
 
+    out_mem = _mem_of_layout(op.get_layout())
+
+    # Per-core per-tile pass-row height for the UNDERFILL derate -- only for OUTPUT-dim
+    # (pointwise) tiling (a reduction's tiny output has no pass-row height). The "rows"
+    # is the partition device dim (out_dims[-2]); an HBM full-buffer output reports the
+    # UNTILED height, so divide by loop_trip to recover the per-tile slice, whereas an
+    # LX intermediate is already allocated per-tile. Then / cores. 0.0 when N/A -> the
+    # model applies no derate. (Best-effort: assumes all cores split the partition dim.)
+    tile_rows_per_core = 0.0
+    if tiles_out_dim and loop_trip > 1 and cores > 0 and len(out_dims) >= 2:
+        rows = out_dims[-2]
+        if out_mem != "lx":  # full-buffer alloc: per-tile slice is rows / loop_trip
+            rows = rows / loop_trip
+        tile_rows_per_core = rows / cores
+
     # Output advances (factor 1) when this op tiles an output dim (pointwise tiling
     # writes the result tile by tile); fixed (factor L) for a reduction's per-tile
     # partial or a combine's accumulator (re-written at one address each iteration).
@@ -193,7 +208,7 @@ def extract_op_features(op) -> OpFeatures:
         ArgTraffic(
             name=op.get_operation_name(),
             role="output",
-            mem=_mem_of_layout(op.get_layout()),
+            mem=out_mem,
             elems=out_elems,
             dims=list(out_dims),
             logical=list(out_size),
@@ -255,6 +270,8 @@ def extract_op_features(op) -> OpFeatures:
         args=args,
         reduction_cores=reduction_cores,
         loop_trip=loop_trip,
+        tiles_output_dim=tiles_out_dim,
+        tile_rows_per_core=tile_rows_per_core,
     )
 
 
