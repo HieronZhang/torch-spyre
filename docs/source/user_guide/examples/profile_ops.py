@@ -62,6 +62,7 @@ WARMUP = int(os.environ.get("BENCH_WARMUP", "5"))
 SENCORES = os.environ.get("SENCORES", "")  # core count (read only to tag the SUMMARY)
 TILES = int(os.environ.get("BENCH_TILES", "0"))  # coarse-tile dim0 into K (>=2 on)
 LX = os.environ.get("LX_PLANNING", "1")  # scratchpad planning on(1)/off(0); SUMMARY tag
+NCOLS = int(os.environ.get("BENCH_N", str(COLS)))  # matmul N dim (M=ROWS, K=COLS, N)
 
 torch.manual_seed(0xAFFE)
 
@@ -221,9 +222,13 @@ def make_workload():
         return _ct_workload(_CT_REDUCE[OP])
     if OP == "chain":  # fused pointwise chain z=(a+b)*c, tiled -> y in LX (BENCH_TILES)
         return _chain_workload()
+    if OP == "mm":  # matmul [M=ROWS, K=COLS] @ [K=COLS, N=BENCH_N]: a Reduction over K
+        # -> work-division Pass 2 (cost_model_matmul_division) picks the (m,n,k) split.
+        mm = lambda a, b: a @ b  # noqa: E731
+        return torch.compile(mm), (_rand(ROWS, COLS), _rand(COLS, NCOLS))
     known = (
         list(_UNARY) + list(_BINARY) + list(_NARY) + list(_REDUCE) + list(_BCAST)
-        + ["bcastcol", "write", "chain"] + list(_CT_REDUCE)
+        + ["bcastcol", "write", "chain", "mm"] + list(_CT_REDUCE)
     )
     raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
 
