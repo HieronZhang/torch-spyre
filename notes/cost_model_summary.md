@@ -23,15 +23,15 @@ this one), see
 |---|---|---|
 | Pointwise (unary / binary / n-ary fused) | ✅ validated | — |
 | Reductions (sum / amax / mean, dim-0 / dim-1) | ✅ validated | ring `combine` |
-| Coarse-tiled reduction (tile the reduced dim) | ✅ validated | `c_loop · L_red` |
-| Coarse-tiled pointwise chain (intermediate in LX) | ✅ (new) | `eff_underfill` derate |
+| Coarse-tiled reduction (tile the reduced dim) | ✅ validated | `c_loop · L` |
+| Coarse-tiled pointwise chain (intermediate in LX) | ✅ (new) | `eff_underfill` + `c_loop · L` |
 | Matmul / bmm | 🚧 in progress | additive `compute` term (form validated) |
 
 ## The model today
 
 ```text
 T = fill + [ (R + W) / BW_PEAK + α · min(R, W) ] / eff_underfill
-        + combine + c_loop · L_red
+        + combine + c_loop · L
 ```
 
 `R` / `W` are the kernel's total HBM bytes **read** / **written** (each tensor
@@ -48,18 +48,24 @@ broadcast operands are loaded once, not per core).
    (pointwise) coarse-tiling** that shrinks each core's per-tile height. A tile
    shorter than `pass_rows · target_passes` underfills the streaming pipeline:
    `eff = min(1, (rows_per_core / r_full)^exp)`. Same FORM as the matmul
-   `pt_eff`; the 8-row pass is a shared hardware constant. **Replaces** the old
-   constant `c_loop·L` for pointwise tiling — the chain K-sweep is flat to ~16
-   rows/core then cliffs (8 rows/core ≈ +34%), which a constant per-tile term
-   cannot fit. (`r_full ≈ 16`, `exp ≈ 0.5` are PROVISIONAL, pending the
-   untiled-small-ROWS confirm runs.)
+   `pt_eff`; the 8-row pass is a shared hardware constant. This is a **per-tile-
+   SIZE** effect, **distinct from** (and added on top of) the per-iteration
+   `c_loop·L` below. The chain K-sweep is flat to ~16 rows/core then cliffs (8
+   rows/core ≈ +34%) — a flat-then-cliff shape a *linear* `c_loop·L` cannot
+   produce, so underfill is the **dominant** pointwise-tiling term while
+   `c_loop·L` stays the small loop-dispatch cost. (`r_full ≈ 16`, `exp ≈ 0.5` are
+   PROVISIONAL; in this sweep `L` and `rows/core` are confounded — the
+   untiled-small-ROWS confirm runs isolate the underfill.)
 3. **`combine`** — cross-core ring reduction, `(k−1)·out_elems·psum_per_elem`,
    when the reduced axis is split across `k` cores (`psum_per_elem ≈ 0.14 ns`;
    the same constant the matmul PSUM term uses).
-4. **`c_loop · L_red`** — per-iteration loop overhead for **reduction-dim**
-   coarse-tiling only (`c_loop ≈ 860 ns/tile`, `L_red` = trip count). A tiled
-   standalone reduction's tiny output has no pass-row height, so the underfill
-   derate can't model it — this calibrated term covers it.
+4. **`c_loop · L`** — per-**iteration** coarse-tiling loop-dispatch overhead, for
+   **any** tiled loop (`c_loop ≈ 860 ns/tile`, `L` = trip count). A *different*
+   mechanism from the underfill derate (fixed cost per iteration vs throughput
+   loss per short tile). It dominates the tiling cost for a standalone reduction
+   (whose tiny output doesn't underfill) and is the small term for a pointwise
+   chain. (860 ns is calibrated from the reduction K-sweep; the pointwise value
+   is confounded with underfill until the confirm runs separate them.)
 
 **Parameters** (`CostParams`): `BW_PEAK=150`, `α=0.00574`, `psum_per_elem=0.14`,
 `c_loop=860`, underfill `pass_rows=8 / target_passes=2 / exp=0.5`.
@@ -116,11 +122,13 @@ two op-dependent saturation points.
 
 **Status / open:**
 
-- *Implementing now:* the `compute` term in `cost_model.py` (params
+- *Implemented:* the `compute` term in `cost_model.py` (params
   `mac_peak_per_core_ns=1536`, `underfill_target_passes_matmul=8`) and the
   extraction of `MACs` / `m` / `k` from `op_it_space_splits` in
-  `dump_cost_model.py`, so `mm` runs get a real prediction (today they show only
-  the bandwidth-only estimate).
+  `dump_cost_model.py`, so `mm` runs now get a real prediction (no longer just the
+  bandwidth-only estimate). Reproduces the K-sweep to ~1% (−7% at K=512); a forced
+  K-split correctly adds the PSUM term. Still needs an on-device re-run to confirm
+  the extraction path (`m`/`k` from `op_it_space_splits`) on hardware.
 - *Open — small-kernel overhead:* `K=512` is +7% above additive (a fixed ~10 µs
   startup is a larger fraction of a small kernel); to be pinned later.
 - *Open — cohort penalty:* every K-sweep run had `max(m,n)/8 = 1`, so the

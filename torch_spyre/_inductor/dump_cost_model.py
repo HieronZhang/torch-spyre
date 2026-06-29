@@ -29,6 +29,7 @@ import os
 
 from torch._inductor.ir import ComputedBuffer
 
+from .constants import BATCH_MATMUL_OP
 from .cost_model import ArgTraffic, OpFeatures, explain
 from .pass_utils import apply_splits_from_index_coeff, iteration_space_from_op
 
@@ -150,6 +151,50 @@ def _loop_features(op):
     )
 
 
+def _matmul_features(op, out_elems: int):
+    """(macs, rows_per_core, k_split) for a batchmatmul op (best-effort).
+
+    ``macs`` = device(M*N) * K = total multiply-accumulates. ``rows_per_core`` = M/m
+    (per-core M tile, drives pt_eff). ``k_split`` = the K-dim core split (PSUM ring).
+    M/N/K and their splits are recovered from the iteration space + op_it_space_splits
+    the way ``_cores`` decodes it: reduction vars have coeff 0 in the write index;
+    among output vars M is the one with the largest write-index coeff (the row/outer
+    dim), N the stick (inner) dim. Returns (macs, 0.0, 1) on any failure -> the model
+    falls back to pt_eff=1 (no derate), k=1 (no PSUM), correct for the validated regime.
+    """
+    data = getattr(op, "data", None)
+    k_size = _prod_ints(getattr(data, "reduction_ranges", None) or [])
+    macs = out_elems * k_size
+    rows_per_core, k_split = 0.0, 1
+    try:
+        splits = getattr(op, "op_it_space_splits", None)
+        if splits:
+            rw = op.get_read_writes()
+            write_index = next(iter(rw.writes)).index
+            read_index = next((d.index for d in rw.reads), write_index)
+            it_space = iteration_space_from_op(op)
+            readable = apply_splits_from_index_coeff(
+                splits, write_index, read_index, it_space
+            )
+            out_vars = []
+            for s in it_space:
+                wc = write_index.coeff(s)
+                if wc != 0:
+                    out_vars.append((abs(int(wc)), s))
+                else:  # reduction (K) dim -> contributes to the K-split
+                    k_split *= max(1, int(readable.get(s, 1)))
+            if out_vars:
+                out_vars.sort(key=lambda t: t[0])  # largest coeff = M (row/outer dim)
+                m_sym = out_vars[-1][1]
+                m_size = _int(it_space[m_sym], 1)
+                m_split = max(1, int(readable.get(m_sym, 1)))
+                if m_size > 1:
+                    rows_per_core = m_size / m_split
+    except Exception:  # noqa: BLE001 - best-effort feature extraction
+        rows_per_core, k_split = 0.0, 1
+    return macs, rows_per_core, k_split
+
+
 def extract_op_features(op) -> OpFeatures:
     """Build OpFeatures for one ComputedBuffer op (best-effort)."""
     data = getattr(op, "data", None)
@@ -180,6 +225,16 @@ def extract_op_features(op) -> OpFeatures:
         reduction_cores = max(1, cores // max(1, out_elems))
 
     out_mem = _mem_of_layout(op.get_layout())
+
+    # Matmul (batchmatmul reduction): compute-bound -> extra additive compute term. Pull
+    # MACs (M*N*K), the per-core M tile (pt_eff), and the K-split k (-> reduction_cores,
+    # so the existing combine term becomes the PSUM ring). Non-matmul ops keep is_matmul
+    # False and the generic reduction_cores above.
+    is_matmul = getattr(data, "reduction_type", None) == BATCH_MATMUL_OP
+    matmul_macs, matmul_rows_per_core = 0, 0.0
+    if is_matmul:
+        matmul_macs, matmul_rows_per_core, k_split = _matmul_features(op, out_elems)
+        reduction_cores = k_split
 
     # Per-core per-tile pass-row height for the UNDERFILL derate -- only for OUTPUT-dim
     # (pointwise) tiling (a reduction's tiny output has no pass-row height). The "rows"
@@ -272,6 +327,9 @@ def extract_op_features(op) -> OpFeatures:
         loop_trip=loop_trip,
         tiles_output_dim=tiles_out_dim,
         tile_rows_per_core=tile_rows_per_core,
+        is_matmul=is_matmul,
+        matmul_macs=matmul_macs,
+        matmul_rows_per_core=matmul_rows_per_core,
     )
 
 

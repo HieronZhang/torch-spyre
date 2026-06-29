@@ -63,6 +63,9 @@ SENCORES = os.environ.get("SENCORES", "")  # core count (read only to tag the SU
 TILES = int(os.environ.get("BENCH_TILES", "0"))  # coarse-tile dim0 into K (>=2 on)
 LX = os.environ.get("LX_PLANNING", "1")  # scratchpad planning on(1)/off(0); SUMMARY tag
 NCOLS = int(os.environ.get("BENCH_N", str(COLS)))  # matmul N dim (M=ROWS, K=COLS, N)
+WD_M = os.environ.get("WD_M")  # forced matmul work-div split (spyre_hint work_div):
+WD_N = os.environ.get("WD_N")  # cores = WD_M*WD_N*WD_K. Unset dim -> stays 1 (the hint
+WD_K = os.environ.get("WD_K")  # is FINAL, not floor-filled). Used by the `mmwd` op.
 
 torch.manual_seed(0xAFFE)
 
@@ -202,6 +205,48 @@ def _chain_workload():
     return torch.compile(fn), (xa.to(DEVICE), xb.to(DEVICE), xc.to(DEVICE))
 
 
+def _mm_workload():
+    """Matmul ``a @ b`` with a FORCED work-division split (spyre_hint work_div), so the
+    (m, n, k) core split is controlled instead of planner-chosen -- for term isolation
+    (compute / hbm / psum). M=ROWS, K=COLS, N=BENCH_N; WD_M/WD_N/WD_K give the per-dim
+    split (cores = product, FINAL). Mirrors tests/inductor/test_work_division_hint.py:
+    eager declare_tensor_dim, name the inputs' dims, hint inside fn; the coarse-tile
+    _PREPARE hook re-declares before each traced call.
+    """
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    m, k, n = ROWS, COLS, NCOLS
+    wd = {
+        nm: int(os.environ[ev])
+        for nm, ev in (("M", "WD_M"), ("N", "WD_N"), ("K", "WD_K"))
+        if os.environ.get(ev)
+    }
+    xa = torch.rand(m, k, dtype=torch.float16)  # CPU; timing only, values irrelevant
+    yb = torch.rand(k, n, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("M", m)
+        pnd.declare_tensor_dim("K", k)
+        pnd.declare_tensor_dim("N", n)
+
+    _declare()
+
+    def fn(a, b):
+        pnd.name_tensor_dims(a, ["M", "K"])
+        pnd.name_tensor_dims(b, ["K", "N"])
+        with spyre_hint(work_div=wd):
+            return a @ b
+
+    _PREPARE = _declare
+    fn(xa, yb)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
+
+
 def make_workload():
     if OP in _UNARY:
         return torch.compile(_UNARY[OP]), (_rand(ROWS, COLS),)
@@ -226,9 +271,11 @@ def make_workload():
         # -> work-division Pass 2 (cost_model_matmul_division) picks the (m,n,k) split.
         mm = lambda a, b: a @ b  # noqa: E731
         return torch.compile(mm), (_rand(ROWS, COLS), _rand(COLS, NCOLS))
+    if OP == "mmwd":  # matmul with a FORCED (m,n,k) split via WD_M/WD_N/WD_K
+        return _mm_workload()
     known = (
         list(_UNARY) + list(_BINARY) + list(_NARY) + list(_REDUCE) + list(_BCAST)
-        + ["bcastcol", "write", "chain", "mm"] + list(_CT_REDUCE)
+        + ["bcastcol", "write", "chain", "mm", "mmwd"] + list(_CT_REDUCE)
     )
     raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
 
@@ -280,15 +327,33 @@ def _print_model(feats: list) -> float:
             e = cost_model.underfill_eff(o.tile_rows_per_core, p)
             if e < eff:
                 eff, eff_rows = e, o.tile_rows_per_core
-    red_trip = max((o.loop_trip for o in feats if not o.tiles_output_dim), default=1)
+    loop_trip = max((o.loop_trip for o in feats), default=1)
+    # Matmul compute term (additive).
+    mm_us, mm_lines = 0.0, []
+    for o in feats:
+        if getattr(o, "is_matmul", False) and o.matmul_macs > 0 and o.cores > 0:
+            pe = cost_model.underfill_eff(
+                o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
+            )
+            c_ns = o.matmul_macs / o.cores / (p.mac_peak_per_core_ns * pe)
+            mm_us += c_ns / 1000
+            mm_lines.append(
+                f"MODEL   compute = MACs/cores/(mac_peak*pt_eff) = {o.matmul_macs}/"
+                f"{o.cores}/({p.mac_peak_per_core_ns:.0f}*{pe:.3f}) = {c_ns / 1000:.2f}"
+                f" us  (M/m={o.matmul_rows_per_core:.0f}, pt_eff={pe:.3f})"
+            )
     t = cost_model.predict_ops(feats, p)
     parts = "(R+W)/BW_PEAK + a*min(R,W)"
     if eff < 1.0:
         parts = f"[{parts}] / eff_underfill"
-    if red_trip > 1:
-        parts += " + c_loop*L_red"
+    if mm_us > 0:
+        parts = f"compute + {parts}"
+    if loop_trip > 1:
+        parts += " + c_loop*L"
     print(f"MODEL -- estimate (turnaround): T = {parts} --")
     print(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
+    for ln in mm_lines:
+        print(ln)
     print(f"MODEL   base = (R+W)/BW_PEAK = ({r}+{w})/{p.bw_peak_gbps:.0f} "
           f"= {base / 1000:.2f} us")
     print(f"MODEL   turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(r, w)} "
@@ -298,9 +363,9 @@ def _print_model(feats: list) -> float:
         print(f"MODEL   eff_underfill = min(1,({eff_rows:.1f}/{rf:.0f})"
               f"**{p.underfill_exponent}) = {eff:.3f} "
               f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us")
-    if red_trip > 1:
-        loop = p.c_loop_ns * red_trip
-        print(f"MODEL   loop = c_loop*L_red = {p.c_loop_ns}*{red_trip} "
+    if loop_trip > 1:
+        loop = p.c_loop_ns * loop_trip
+        print(f"MODEL   loop = c_loop*L = {p.c_loop_ns}*{loop_trip} "
               f"= {loop / 1000:.2f} us")
     print(f"MODEL   => T_model = {t / 1000:.2f} us")
     return t / 1000
