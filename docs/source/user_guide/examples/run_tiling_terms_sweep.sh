@@ -96,17 +96,16 @@ has B && { echo "## B underfill [2048,4096] (rows/core=64/K, 64..1)" | tee -a "$
 
 # ===================== C: matmul compute / mac_peak ========================
 # Fix shape, vary cores (k=1, M/m>=64 so pt_eff=1): compute ~ MNK/cores. The first
-# two (m<->n swap) hold cores=32 -> compute should be IDENTICAL (m/n-invariant).
+# two (m<->n swap) hold cores=32 -> compute should be IDENTICAL (m/n-invariant). The
+# cores-scaling (32..4) spans compute 350..2800 us, so it pins mac_peak on its own --
+# no large square anchor needed (M=N=K=4096 forced-split HANGS at compile, ~6.9e10
+# MACs; keep forced (mmwd) shapes <= ~3.4e10, the largest that runs).
 has C && { echo "## C compute: M=4096 N=2048 K=2048, vary cores (k=1)" | tee -a "$LOG"
   runmmwd 4096 2048 2048 8 4 1   # cores 32
   runmmwd 4096 2048 2048 4 8 1   # cores 32 (m<->n swap)
   runmmwd 4096 2048 2048 8 2 1   # cores 16
   runmmwd 4096 2048 2048 4 2 1   # cores 8
-  runmmwd 4096 2048 2048 2 2 1   # cores 4
-  echo "## C peak anchor: M=N=K=4096 (compute-heavy), vary cores" | tee -a "$LOG"
-  runmmwd 4096 4096 4096 8 4 1   # cores 32
-  runmmwd 4096 4096 4096 4 4 1   # cores 16
-  runmmwd 4096 4096 4096 4 2 1; }  # cores 8
+  runmmwd 4096 2048 2048 2 2 1; }  # cores 4
 
 # ===================== D: matmul hbm (thin K) ==============================
 # Small K -> compute small, output M*N dominates -> WRITE-dominated; tests turnaround.
@@ -134,9 +133,9 @@ has F && { echo "## F pt_eff: M=512 N=4096 K=4096, force m (M/m=128,64,32,16)" \
 # ===================== G: matmul asymmetric large ==========================
 has G && { echo "## G asym large (M!=N, both >=2k; K=2048; planner split)" \
   | tee -a "$LOG"
-  runmm 4096 2048 2048; runmm 2048 2048 4096
-  runmm 8192 2048 2048; runmm 2048 2048 8192
-  runmm 4096 2048 4096; runmm 8192 2048 4096; }
+  runmm 4096 2048 2048; runmm 2048 2048 4096   # 1.7e10
+  runmm 8192 2048 2048; runmm 2048 2048 8192   # 3.4e10
+  runmm 4096 2048 4096; }                       # 3.4e10 (8192x4096 = 6.9e10 HANGS, drop)
 
 # ===================== H: matmul LX planning on/off ========================
 has H && { echo "## H LX on/off (plain mm, LX_PLANNING 0 vs 1)" | tee -a "$LOG"

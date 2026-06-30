@@ -414,8 +414,12 @@ def _run():
     # Effective BW from the GOLDEN kernel time and the model's device-layout I/O.
     bw = io_hbm_bytes / (kernel * 1000) if kernel > 0 else 0.0
     err = (pred_us - kernel) / kernel * 100.0 if kernel > 0 else 0.0
+    # ACTUAL cores from the model (split product), not the SENCORES budget tag -- a
+    # forced (mmwd) split uses cores = m*n*k, which may be < SENCORES.
+    mcores = max((getattr(o, "cores", 0) for o in feats), default=0)
+    cores_tag = mcores if mcores > 0 else (SENCORES or "-")
     print(
-        f"SUMMARY op={OP} rows={ROWS} cols={COLS} cores={SENCORES or '-'} "
+        f"SUMMARY op={OP} rows={ROWS} cols={COLS} cores={cores_tag} "
         f"tiles={TILES} lx={LX} io_hbm_bytes={io_hbm_bytes} "
         f"kernel_us={kernel:.3f} pred_us={pred_us:.3f} err_pct={err:+.1f} "
         f"bw_gbps={bw:.1f} memset_us={memset:.3f} "
