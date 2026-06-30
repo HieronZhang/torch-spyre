@@ -35,6 +35,9 @@
 #
 #   M3  PSUM, only trustworthy once M1+M2 hold. measured(k) - measured(k=1) at
 #       fixed shape+cores; plus K- and M*N-dependence (model says M*N only).
+#   E2E coarse-tile e2e examples (softmax row, matmul row, matmul K tiling) -- a
+#       SMOKE TEST that they RUN + FINISH on the new runtime (compare_with_cpu ->
+#       PASSED). Not a measurement; just pass/fail.
 #
 # Forced (m,n,k) splits via spyre_hint(work_div) -> cores = m*n*k (FINAL). Each
 # run logs op_it_space_splits (actual split), per-tensor IO, the model estimate,
@@ -52,7 +55,7 @@ PROFILE_OPS="$SCRIPT_DIR/profile_ops.py"
 cd "$ROOT" || exit 1
 mkdir -p haoyang_logs
 LOG="haoyang_logs/matmul_validate_$(date +%Y%m%d_%H%M%S).log"
-SECTIONS="${SECTIONS:-M1 M2 M3}"
+SECTIONS="${SECTIONS:-M1 M2 M3 E2E}"
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1   # force recompile so the dumps fire
 
 echo "==== matmul model-validation sweep $(date) ====" | tee "$LOG"
@@ -80,17 +83,20 @@ runmmwd() {  # runmmwd <M> <K> <N> <m> <n> <k>   FORCED split, cores = m*n*k
 # ============== M1: HBM, compute-free (pin hbm = f(R,W) from bytes) ==========
 # WRITE-dominated: thin K (K<=64 -> compute <10%; output M*N dominates traffic).
 # READ-dominated : thin M (M<=64 -> tiny output; operand reads dominate).
-# Planner split (plain mm); operands are tiny so there is NO re-read to confound.
+# FORCED split (operands tiny -> no re-read to confound; planner-independent).
 has M1 && { echo "## M1 HBM compute-free (write-dom thin-K + read-dom thin-M)" \
   | tee -a "$LOG"
-  echo "# M1a write-dom: M=N=2048, vary K (byte sweep; ~2-7% compute)" | tee -a "$LOG"
-  for kk in 16 32 64; do runmm 2048 "$kk" 2048; done
-  echo "# M1b write-dom: K=32, vary M=N (size sweep; hbm ~ bytes?)" | tee -a "$LOG"
-  runmm 4096 32 2048; runmm 4096 32 4096
-  echo "# M1c read-dom: K=N=4096, vary M (<=64 -> ~5-9% compute)" | tee -a "$LOG"
-  runmm 32 4096 4096; runmm 64 4096 4096
+  # FORCED splits (mmwd) -> data is planner-INDEPENDENT: the in-tree matmul cost model
+  # changed in the merge, so we fix (m,n,k) and trust the measurement, not its choice.
+  echo "# M1a write-dom: M=N=2048, vary K  (split m4 n8; ~2-7% compute)" | tee -a "$LOG"
+  for kk in 16 32 64; do runmmwd 2048 "$kk" 2048 4 8 1; done
+  echo "# M1b write-dom: K=32, vary M=N  (size sweep; hbm ~ bytes?)" | tee -a "$LOG"
+  runmmwd 4096 32 2048 4 8 1; runmmwd 4096 32 4096 4 8 1
+  echo "# M1c read-dom: K=N=4096, vary M (<=64 -> tiny output, big reads; split N)" \
+    | tee -a "$LOG"
+  runmmwd 32 4096 4096 1 32 1; runmmwd 64 4096 4096 1 32 1
   echo "# M1d read-dom: M=64, K=4096, vary N (R/W mix)" | tee -a "$LOG"
-  runmm 64 4096 2048; }
+  runmmwd 64 4096 2048 1 32 1; }
 
 # ============== M2: COMPUTE + re-read (compute-heavy, hbm pinned) ============
 # (measured - hbm_pinned) should be MNK/cores/peak. Low cores -> compute >=80%.
@@ -125,5 +131,24 @@ has M3 && { echo "## M3 psum (k-sweep; K- and M*N-dependence)" | tee -a "$LOG"
   runmmwd 2048 4096 2048 8 4 1; runmmwd 2048 4096 2048 4 2 4
   echo "# M3c M*N-dependence: M=N=4096 K=2048, k=1 vs 4" | tee -a "$LOG"
   runmmwd 4096 2048 4096 8 4 1; runmmwd 4096 2048 4096 4 2 4; }
+
+# ============== E2E: coarse-tile examples run + finish on the new runtime =====
+# Manager check: these three coarse-tile e2e examples should now RUN + FINISH. Each
+# runs compare_with_cpu and prints PASSED (or raises). `python coarse_tile/run_X.py`
+# puts coarse_tile/ on sys.path so its `from utils import ...` resolves. timeout
+# guards against a hang (reported as FAILED, not a stuck sweep).
+has E2E && { echo "## E2E coarse-tile examples (run + finish on new runtime)" \
+  | tee -a "$LOG"
+  for ex in run_softmax_row_tiling run_matmul_row_tiling run_matmul_k_tiled; do
+    echo "-- e2e: $ex" | tee -a "$LOG"
+    o="haoyang_logs/e2e_${ex}.out"
+    if timeout 900 python "$ROOT/coarse_tile/$ex.py" > "$o" 2>&1 \
+        && grep -q '^PASSED' "$o"; then
+      echo "E2E $ex PASSED" | tee -a "$LOG"
+    else
+      echo "E2E $ex FAILED (exit $?, see $o)" | tee -a "$LOG"
+      tail -8 "$o" | sed 's/^/    /' | tee -a "$LOG"
+    fi
+  done; }
 
 echo "==== DONE -> forward $LOG ====" | tee -a "$LOG"

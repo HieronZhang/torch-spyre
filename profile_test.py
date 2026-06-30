@@ -57,21 +57,28 @@ def main():
     ka = prof.key_averages()
     print(ka.table(sort_by="cuda_time_total", row_limit=20).replace("CUDA", "AIU"))
 
-    # GOLDEN kernel time = sum of the sdsc_fused_* "Self SPYRE" device times.
-    kernel = memset = 0.0
+    # GOLDEN kernel time = the "Self SPYRE" DEVICE time that is neither Memset nor
+    # Memcpy. Classify by EXCLUSION, not by name: older runtimes named the fused kernel
+    # sdsc_fused_*/inductor-spyre-*, but the new image leaves its event name BLANK, so a
+    # name match silently reports 0.
+    kernel = memset = other = 0.0
     for ev in ka:
         us = getattr(ev, "self_device_time_total", 0) or getattr(
             ev, "self_cuda_time_total", 0
         )
         if not us or us <= 0:
             continue
-        if "sdsc_fused" in ev.key:
-            kernel += us
-        elif "Memset" in ev.key:
+        key = ev.key or ""
+        if "Memset" in key:
             memset += us
+        elif "Memcpy" in key:
+            other += us
+        else:
+            kernel += us
     pred = cost_model.predict_ops(feats) / 1000 if feats else 0.0
-    print(f"\nKERNEL (sdsc_fused) device time = {kernel:8.3f} us  <- golden")
+    print(f"\nKERNEL device time              = {kernel:8.3f} us  <- golden")
     print(f"Memset / host-setup overhead    = {memset:8.3f} us  (non-deterministic)")
+    print(f"Memcpy (HtoD+DtoH) overhead     = {other:8.3f} us")
     print(f"cost-model prediction           = {pred:8.3f} us")
 
 

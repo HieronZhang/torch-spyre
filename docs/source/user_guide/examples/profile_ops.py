@@ -101,6 +101,17 @@ _REDUCE = {  # read-dominated; sumall reduces to a scalar -> ring combine
     "mean": lambda x: x.mean(dim=-1),
 }
 _BCAST = {"bcast": lambda a, b: a + b, "mulbcast": lambda a, b: a * b}  # b = [1, COLS]
+# Data-movement ("transport") ops -- a RESTICKIFY / copy that moves the SAME bytes as
+# neg/copy but reorganizes the stick layout (scattered access). Access patterns differ:
+#   transpose : [R,C]->[C,R], the stick dim MOVES (heavy intra-stick reshuffle)
+#   cat0/cat1 : concat 2 copies along rows (non-stick) / cols (stick dim)
+# Compare vs `neg` (contiguous 1R+1W) via effective BW to read the access-pattern cost.
+# (`transpose_outer` -- a 3D stick-PRESERVING outer-dim swap -- is a separate branch.)
+_TRANSPORT = {
+    "transpose": lambda x: x.transpose(0, 1).contiguous(),  # [R,C]->[C,R]: stick C->R
+    "cat0": lambda x: torch.cat([x, x], dim=0),  # append rows (non-stick dim)
+    "cat1": lambda x: torch.cat([x, x], dim=1),  # append cols (stick dim -> interleave)
+}
 # Coarse-tiled dim0 reductions (mirror coarse_tile/run_{sum,amax,amin}_dim0_tiled.py):
 # reduce a [B=ROWS, D=COLS] tensor over B, tiling B into BENCH_TILES chunks. With
 # BENCH_TILES>=2 a spyre_hint wraps it in a K-iteration loop (fill + K x reduce/combine)
@@ -259,6 +270,11 @@ def make_workload():
         return torch.compile(_REDUCE[OP]), (_rand(ROWS, COLS),)
     if OP in _BCAST:  # row-vector broadcast: a[R,C] + b[1,C] (b cached across rows)
         return torch.compile(_BCAST[OP]), (_rand(ROWS, COLS), _rand(1, COLS))
+    if OP in _TRANSPORT:  # data movement (restickify): same bytes as a copy, scattered
+        return torch.compile(_TRANSPORT[OP]), (_rand(ROWS, COLS),)
+    if OP == "transpose_outer":  # 3D [R,8,C]: swap OUTER dims, stick (last dim C) kept
+        tp = lambda x: x.transpose(0, 1).contiguous()  # noqa: E731
+        return torch.compile(tp), (_rand(ROWS, 8, COLS),)
     if OP == "bcastcol":  # col-vector broadcast: a[R,C] + b[R,1] (b cached across cols)
         return torch.compile(lambda a, b: a + b), (_rand(ROWS, COLS), _rand(ROWS, 1))
     if OP == "write":  # write-only: both inputs broadcast -> cached
@@ -275,7 +291,9 @@ def make_workload():
         return _mm_workload()
     known = (
         list(_UNARY) + list(_BINARY) + list(_NARY) + list(_REDUCE) + list(_BCAST)
-        + ["bcastcol", "write", "chain", "mm", "mmwd"] + list(_CT_REDUCE)
+        + list(_TRANSPORT)
+        + ["bcastcol", "write", "chain", "mm", "mmwd", "transpose_outer"]
+        + list(_CT_REDUCE)
     )
     raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
 
@@ -399,7 +417,11 @@ def _run():
     pred_us = _print_model(feats)  # cost-model estimate + rough calc (after I/O dump)
 
     # Parseable one-liner for a size sweep -> re-fit fill + BW on the GOLDEN kernel
-    # time, and track the (non-deterministic) Memset overhead separately.
+    # time, and track the (non-deterministic) Memset overhead separately. The fused
+    # compute kernel is the SPYRE device time that is neither a Memset nor a Memcpy
+    # (DtoH/HtoD copy). We classify by EXCLUSION, not by name: older runtimes named it
+    # sdsc_fused_*/inductor-spyre-*, but the new image leaves the kernel event name
+    # BLANK -- so a name match silently reports 0. Memcpy copies go to `other`.
     kernel = memset = other = 0.0
     for ev in ka:
         us = getattr(ev, "self_device_time_total", 0) or getattr(
@@ -407,12 +429,13 @@ def _run():
         )
         if not us or us <= 0:
             continue
-        if "sdsc_fused" in ev.key:
-            kernel += us
-        elif "Memset" in ev.key:
+        key = ev.key or ""
+        if "Memset" in key:
             memset += us
-        else:
+        elif "Memcpy" in key:
             other += us
+        else:
+            kernel += us  # fused compute kernel (sdsc_fused / inductor-spyre / BLANK)
     # Effective BW from the GOLDEN kernel time and the model's device-layout I/O.
     bw = io_hbm_bytes / (kernel * 1000) if kernel > 0 else 0.0
     err = (pred_us - kernel) / kernel * 100.0 if kernel > 0 else 0.0
