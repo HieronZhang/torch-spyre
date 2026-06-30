@@ -228,13 +228,12 @@ class CostParams:
     # (kernel - pred) fits 1.88us + 0.864*K, so the K-slope is the loop overhead (the
     # 1.88us intercept is the dim0-reduction access penalty -- a separate sumcol-like
     # bias, NOT loop cost; the D-sweep gives the same K-slope, so it is data-indep).
-    # This is the per-ITERATION loop-dispatch cost and applies to EVERY tiled loop
-    # (pointwise + reduction). It is a DIFFERENT mechanism from the underfill derate
-    # below (per-tile-SIZE); both can apply. For a tiled reduction c_loop*L is the main
-    # tiling term; for a pointwise chain it is the small term (underfill dominates). The
-    # 860 ns is calibrated from the reduction K-sweep; the pointwise value is confounded
-    # with underfill in current data (pending the untiled-small-ROWS confirm runs).
+    # Per-ITERATION loop-dispatch cost for REDUCTION-dim tiling (a DIFFERENT mechanism
+    # from the underfill derate below, which is per-tile-SIZE). 860 ns from the
+    # reduction K-sweep. The POINTWISE (output-dim) value is separate -- the Section-A
+    # chain sweep (eff=1, vary K) is FLAT, so pointwise loop overhead is ~0 (below).
     c_loop_ns: float = 860.0
+    c_loop_pointwise_ns: float = 0.0  # output-dim tiling: measured ~0 (Section A, flat)
     # Pipeline-fill (underfill) derate for OUTPUT-dim (pointwise) coarse-tiling:
     # eff = min(1, (rows_per_core / (pass_rows * target_passes)) ** exponent). Same FORM
     # as the matmul pt_eff (work_division.py); the 8-row pass is the shared hardware
@@ -243,7 +242,12 @@ class CostParams:
     # calibrated by the untiled-small-ROWS underfill-confirm runs.
     underfill_pass_rows: float = 8.0  # PT / stream pass granularity (matmul _PT_ROWS)
     underfill_target_passes_pointwise: float = 2.0  # pointwise full-fill ~2 pass (=16)
-    underfill_exponent: float = 0.5  # falloff (sqrt, as matmul pt_eff; chain data ~0.4)
+    # Falloff exponent. CALIBRATED 0.35 from the Section-B chain sweep (rc 16->2): eff
+    # rc8=0.72 rc4=0.63 rc2=0.50 (sqrt over-derated rc2 to 0.35). rc4/rc2 imply ~0.335;
+    # rc8 is slightly concave (~9% residual). rc1 is NOT underfill -- there the planner
+    # splits COLUMNS not rows, so row_split=1 -> full row tile (handled by the extractor
+    # keying tile_rows_per_core on the row-dim split, not total cores).
+    underfill_exponent: float = 0.35
     # MATMUL compute term (ADDITIVE with the bandwidth term -- no compute/HBM overlap).
     # T_matmul = compute + H_turnaround + psum, compute = MACs/cores/(mac_peak*pt_eff).
     # mac_peak = datasheet (98.304e12/2/32 MAC/us/core = 1536 MAC/ns/core) -- VALIDATED
@@ -316,15 +320,16 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         if o.is_reduction:
             combine = max(0, o.reduction_cores - 1) * o.out_elems * p.psum_per_elem_ns
             t += combine * o.loop_trip
-    # Coarse-tiling per-iteration LOOP overhead: each tiled-loop iteration pays a fixed
-    # dispatch/setup cost (calibrated c_loop, linear in the trip count L) -- a DIFFERENT
-    # mechanism from the underfill derate above (a per-tile-SIZE throughput derate), so
-    # both can apply. For a pointwise chain the underfill dominates and c_loop*L is the
-    # small term; for a tiled reduction underfill ~= 1 and c_loop*L is the main tiling
-    # term. L = max loop trip over the bundle.
-    loop_trip = max((o.loop_trip for o in ops), default=1)
-    if loop_trip > 1:
-        t += p.c_loop_ns * loop_trip
+    # Coarse-tiling per-iteration LOOP overhead (distinct from the per-tile-SIZE
+    # underfill derate above; both can apply). Op-structure dependent: REDUCTION-dim
+    # tiling pays c_loop_ns (calibrated 860); OUTPUT-dim (pointwise) tiling pays
+    # c_loop_pointwise_ns (measured ~0). L = max loop trip within each kind.
+    red_trip = max((o.loop_trip for o in ops if not o.tiles_output_dim), default=1)
+    pw_trip = max((o.loop_trip for o in ops if o.tiles_output_dim), default=1)
+    if red_trip > 1:
+        t += p.c_loop_ns * red_trip
+    if pw_trip > 1:
+        t += p.c_loop_pointwise_ns * pw_trip
     return t
 
 
@@ -375,7 +380,10 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             e = underfill_eff(o.tile_rows_per_core, p)
             if e < eff:
                 eff, eff_rows = e, o.tile_rows_per_core
-    loop_trip = max((o.loop_trip for o in ops), default=1)
+    red_trip = max((o.loop_trip for o in ops if not o.tiles_output_dim), default=1)
+    pw_trip = max((o.loop_trip for o in ops if o.tiles_output_dim), default=1)
+    loop_ns = (p.c_loop_ns * red_trip if red_trip > 1 else 0.0) + (
+        p.c_loop_pointwise_ns * pw_trip if pw_trip > 1 else 0.0)
     # Matmul compute (additive): sum the per-op compute term for any matmul ops.
     mm_us, mm_lines = 0.0, []
     for o in ops:
@@ -396,7 +404,7 @@ def explain(ops: list, params: CostParams | None = None) -> str:
         parts = f"[{parts}] / eff_underfill"
     if mm_us > 0:
         parts = f"compute + {parts}"
-    if loop_trip > 1:
+    if loop_ns > 0:
         parts += " + c_loop*L"
     lines.append(f"  -- prediction (turnaround): T = {parts} --")
     lines.append(f"     R={R}B (read)   W={W}B (write)")
@@ -410,9 +418,8 @@ def explain(ops: list, params: CostParams | None = None) -> str:
         lines.append(f"     eff_underfill = min(1,({eff_rows:.1f}/{rf:.0f})"
                      f"**{p.underfill_exponent}) = {eff:.3f}  "
                      f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us")
-    if loop_trip > 1:
-        loop_us = p.c_loop_ns * loop_trip / 1000
-        lines.append(f"     loop = c_loop*L = {p.c_loop_ns:.0f}*{loop_trip} "
-                     f"= {loop_us:.2f} us")
+    if loop_ns > 0:
+        lab = f"c_loop*{red_trip}" if red_trip > 1 else f"c_loop_pw*{pw_trip}"
+        lines.append(f"     loop = {lab} = {loop_ns / 1000:.2f} us")
     lines.append(f"     => T_model = {t / 1000:.2f} us")
     return "\n".join(lines)

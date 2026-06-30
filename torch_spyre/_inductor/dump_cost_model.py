@@ -151,6 +151,37 @@ def _loop_features(op):
     )
 
 
+def _row_split(op, default: int) -> int:
+    """Core split of the ROW (partition) device dim = the output var with the largest
+    write-index coefficient (the outer/row dim; the stick dim has the smallest). Used so
+    ``tile_rows_per_core`` divides by the cores actually on the rows, not total cores --
+    they differ once the planner splits columns instead (extreme tiling). ``default``
+    (usually total cores) on any failure -> the prior all-cores-on-rows behavior.
+    """
+    try:
+        splits = getattr(op, "op_it_space_splits", None)
+        if not splits:
+            return default
+        rw = op.get_read_writes()
+        write_index = next(iter(rw.writes)).index
+        read_index = next((d.index for d in rw.reads), write_index)
+        it_space = iteration_space_from_op(op)
+        readable = apply_splits_from_index_coeff(
+            splits, write_index, read_index, it_space
+        )
+        out_vars = [
+            (abs(int(write_index.coeff(s))), s)
+            for s in it_space
+            if write_index.coeff(s) != 0
+        ]
+        if not out_vars:
+            return default
+        out_vars.sort(key=lambda t: t[0])  # largest coeff = row (outer) dim
+        return max(1, int(readable.get(out_vars[-1][1], default)))
+    except Exception:  # noqa: BLE001 - best-effort feature extraction
+        return default
+
+
 def _matmul_features(op, out_elems: int):
     """(macs, rows_per_core, k_split) for a batchmatmul op (best-effort).
 
@@ -240,14 +271,16 @@ def extract_op_features(op) -> OpFeatures:
     # (pointwise) tiling (a reduction's tiny output has no pass-row height). The "rows"
     # is the partition device dim (out_dims[-2]); an HBM full-buffer output reports the
     # UNTILED height, so divide by loop_trip to recover the per-tile slice, whereas an
-    # LX intermediate is already allocated per-tile. Then / cores. 0.0 when N/A -> the
-    # model applies no derate. (Best-effort: assumes all cores split the partition dim.)
+    # LX intermediate is already allocated per-tile. Then divide by the ROW-dim core
+    # split -- NOT total cores: at extreme tiling the planner may split COLUMNS instead
+    # (rows/tile < col-sticks), leaving each core a full row tile (no underfill). 0.0 =
+    # N/A -> no derate.
     tile_rows_per_core = 0.0
     if tiles_out_dim and loop_trip > 1 and cores > 0 and len(out_dims) >= 2:
         rows = out_dims[-2]
         if out_mem != "lx":  # full-buffer alloc: per-tile slice is rows / loop_trip
             rows = rows / loop_trip
-        tile_rows_per_core = rows / cores
+        tile_rows_per_core = rows / _row_split(op, cores)
 
     # Output advances (factor 1) when this op tiles an output dim (pointwise tiling
     # writes the result tile by tile); fixed (factor L) for a reduction's per-tile

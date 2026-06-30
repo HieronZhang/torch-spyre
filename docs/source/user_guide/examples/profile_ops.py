@@ -327,7 +327,10 @@ def _print_model(feats: list) -> float:
             e = cost_model.underfill_eff(o.tile_rows_per_core, p)
             if e < eff:
                 eff, eff_rows = e, o.tile_rows_per_core
-    loop_trip = max((o.loop_trip for o in feats), default=1)
+    red_trip = max((o.loop_trip for o in feats if not o.tiles_output_dim), default=1)
+    pw_trip = max((o.loop_trip for o in feats if o.tiles_output_dim), default=1)
+    loop_ns = (p.c_loop_ns * red_trip if red_trip > 1 else 0.0) + (
+        p.c_loop_pointwise_ns * pw_trip if pw_trip > 1 else 0.0)
     # Matmul compute term (additive).
     mm_us, mm_lines = 0.0, []
     for o in feats:
@@ -348,7 +351,7 @@ def _print_model(feats: list) -> float:
         parts = f"[{parts}] / eff_underfill"
     if mm_us > 0:
         parts = f"compute + {parts}"
-    if loop_trip > 1:
+    if loop_ns > 0:
         parts += " + c_loop*L"
     print(f"MODEL -- estimate (turnaround): T = {parts} --")
     print(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
@@ -363,10 +366,9 @@ def _print_model(feats: list) -> float:
         print(f"MODEL   eff_underfill = min(1,({eff_rows:.1f}/{rf:.0f})"
               f"**{p.underfill_exponent}) = {eff:.3f} "
               f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us")
-    if loop_trip > 1:
-        loop = p.c_loop_ns * loop_trip
-        print(f"MODEL   loop = c_loop*L = {p.c_loop_ns}*{loop_trip} "
-              f"= {loop / 1000:.2f} us")
+    if loop_ns > 0:
+        lab = f"c_loop*{red_trip}" if red_trip > 1 else f"c_loop_pw*{pw_trip}"
+        print(f"MODEL   loop = {lab} = {loop_ns / 1000:.2f} us")
     print(f"MODEL   => T_model = {t / 1000:.2f} us")
     return t / 1000
 
