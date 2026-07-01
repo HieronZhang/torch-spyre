@@ -257,6 +257,11 @@ class CostParams:
     # underfill derate with target_passes=8 (matmul saturates ~64 rows/core).
     mac_peak_per_core_ns: float = 1536.0  # MAC/ns/core (datasheet; K-sweep checked)
     underfill_target_passes_matmul: float = 8.0  # matmul full-fill ~8 passes (=64 rows)
+    # Matmul HBM two-rate: reads (operand loads) run slower than writes (output store).
+    # CALIBRATED on the compute-free M1 sweep (thin-K write-dom / thin-M read-dom) + the
+    # balanced k=1 points, turnaround removed then re-added: fits all regimes to +/-4%.
+    mm_bw_read_gbps: float = 143.0
+    mm_bw_write_gbps: float = 156.0
 
 
 def underfill_eff(
@@ -299,7 +304,15 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     p = params or CostParams()
     r = sum(o.read_bytes() for o in ops)
     w = sum(o.write_bytes() for o in ops)
-    mem = (r + w) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(r, w)
+    # HBM. Matmul uses a TWO-RATE read/write model (reads run slower than writes:
+    # BW_read~138, BW_write~149 GB/s), calibrated on the compute-free M1 thin-K/thin-M
+    # sweep (fits +/-3%); the turnaround adds balanced-traffic contention. Pointwise/
+    # reduction/transport keep the single-BW turnaround model.
+    if any(getattr(o, "is_matmul", False) for o in ops):
+        mem = (r / p.mm_bw_read_gbps + w / p.mm_bw_write_gbps
+               + p.rw_turnaround_ns_per_byte * min(r, w))
+    else:
+        mem = (r + w) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(r, w)
     # OUTPUT-dim (pointwise) coarse-tiling underfill: a short per-core tile underfills
     # the streaming pipeline, derating the bandwidth term. The smallest tile in the
     # bundle governs (worst underfill). 1.0 (no derate) when nothing is output-tiled.
@@ -371,7 +384,9 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     # pointwise tiling or the c_loop term for reduction-dim tiling).
     R = sum(o.read_bytes() for o in ops)
     W = sum(o.write_bytes() for o in ops)
-    base = (R + W) / p.bw_peak_gbps
+    is_mm = any(getattr(o, "is_matmul", False) for o in ops)
+    base = (R / p.mm_bw_read_gbps + W / p.mm_bw_write_gbps) if is_mm \
+        else (R + W) / p.bw_peak_gbps
     turn = p.rw_turnaround_ns_per_byte * min(R, W)
     # Underfill derate (output-dim tiling): smallest per-core tile governs.
     eff, eff_rows = 1.0, 0.0
@@ -409,8 +424,11 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     lines.append(f"  -- prediction (turnaround): T = {parts} --")
     lines.append(f"     R={R}B (read)   W={W}B (write)")
     lines.extend(mm_lines)
-    lines.append(f"     base = (R+W)/BW_PEAK = ({R}+{W})/{p.bw_peak_gbps:.0f} "
-                 f"= {base / 1000:.2f} us")
+    if is_mm:
+        blab = (f"R/{p.mm_bw_read_gbps:.0f} + W/{p.mm_bw_write_gbps:.0f}")
+    else:
+        blab = f"(R+W)/{p.bw_peak_gbps:.0f}"
+    lines.append(f"     base = {blab} = {base / 1000:.2f} us")
     lines.append(f"     turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(R, W)} "
                  f"= {turn / 1000:.2f} us")
     if eff < 1.0:

@@ -336,7 +336,9 @@ def _print_model(feats: list) -> float:
     r = sum(o.read_bytes() for o in feats)
     w = sum(o.write_bytes() for o in feats)
     lp = max((o.loop_trip for o in feats), default=1)
-    base = (r + w) / p.bw_peak_gbps
+    is_mm = any(getattr(o, "is_matmul", False) for o in feats)
+    base = (r / p.mm_bw_read_gbps + w / p.mm_bw_write_gbps) if is_mm \
+        else (r + w) / p.bw_peak_gbps
     turn = p.rw_turnaround_ns_per_byte * min(r, w)
     # Underfill derate (output-dim tiling): smallest per-core tile governs.
     eff, eff_rows = 1.0, 0.0
@@ -375,8 +377,9 @@ def _print_model(feats: list) -> float:
     print(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
     for ln in mm_lines:
         print(ln)
-    print(f"MODEL   base = (R+W)/BW_PEAK = ({r}+{w})/{p.bw_peak_gbps:.0f} "
-          f"= {base / 1000:.2f} us")
+    blab = (f"R/{p.mm_bw_read_gbps:.0f}+W/{p.mm_bw_write_gbps:.0f}" if is_mm
+            else f"(R+W)/{p.bw_peak_gbps:.0f}")
+    print(f"MODEL   base = {blab} = {base / 1000:.2f} us")
     print(f"MODEL   turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(r, w)} "
           f"= {turn / 1000:.2f} us")
     if eff < 1.0:
