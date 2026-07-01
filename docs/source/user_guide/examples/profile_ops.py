@@ -216,6 +216,45 @@ def _chain_workload():
     return torch.compile(fn), (xa.to(DEVICE), xb.to(DEVICE), xc.to(DEVICE))
 
 
+def _softmax_row_tiling():
+    """Softmax over dim=-1, row-tiled over NROW (mirrors coarse_tile/run_softmax_row_
+    tiling.py + the new_coarse_tiling IR): the 5 softmax ops (max, sub, exp, sum, div)
+    fuse into ONE NROW-tiled loop with the intermediates LX-resident. BENCH_TILES>=2
+    tiles NROW into that many chunks; else untiled. Measured via the harness AIU
+    profiler (torch.profiler "Self SPYRE"), NOT the SPYRE_PROFILE host-launch path."""
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    nrow, ncol = ROWS, COLS
+    x_cpu = torch.randn(nrow, ncol, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("NROW", nrow)
+        pnd.declare_tensor_dim("NCOL", ncol)
+
+    _declare()
+
+    if TILES >= 2:
+
+        def fn(x):
+            pnd.name_tensor_dims(x, ["NROW", "NCOL"])
+            with spyre_hint(num_tiles_per_dim={"NROW": TILES}):
+                return torch.softmax(x, dim=-1)
+
+        _PREPARE = _declare
+    else:
+
+        def fn(x):
+            return torch.softmax(x, dim=-1)
+
+    fn(x_cpu)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (x_cpu.to(DEVICE),)
+
+
 def _mm_workload():
     """Matmul ``a @ b`` with a FORCED work-division split (spyre_hint work_div), so the
     (m, n, k) core split is controlled instead of planner-chosen -- for term isolation
@@ -258,6 +297,48 @@ def _mm_workload():
     return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
 
 
+def _matmul_row_tiling():
+    """Matmul ``a @ b`` COARSE-TILED over the M (row) dim via
+    spyre_hint(num_tiles_per_dim={"M": TILES}) -- mirrors
+    coarse_tile/run_matmul_row_tiling.py. DISTINCT from `mmwd`, which forces a
+    work-division CORE split: this creates a sequential M-tile LOOP. M=ROWS, K=COLS,
+    N=BENCH_N; BENCH_TILES>=2 tiles M, else untiled. Measured via the AIU profiler."""
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    m, k, n = ROWS, COLS, NCOLS
+    xa = torch.rand(m, k, dtype=torch.float16)  # CPU; timing only, values irrelevant
+    yb = torch.rand(k, n, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("M", m)
+        pnd.declare_tensor_dim("K", k)
+        pnd.declare_tensor_dim("N", n)
+
+    _declare()
+
+    if TILES >= 2:
+
+        def fn(a, b):
+            pnd.name_tensor_dims(a, ["M", "K"])
+            pnd.name_tensor_dims(b, ["K", "N"])
+            with spyre_hint(num_tiles_per_dim={"M": TILES}):
+                return a @ b
+
+        _PREPARE = _declare
+    else:
+
+        def fn(a, b):
+            return a @ b
+
+    fn(xa, yb)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
+
+
 def make_workload():
     if OP in _UNARY:
         return torch.compile(_UNARY[OP]), (_rand(ROWS, COLS),)
@@ -283,6 +364,10 @@ def make_workload():
         return _ct_workload(_CT_REDUCE[OP])
     if OP == "chain":  # fused pointwise chain z=(a+b)*c, tiled -> y in LX (BENCH_TILES)
         return _chain_workload()
+    if OP == "softmax_row_tiling":  # softmax(dim=-1) NROW-tiled -> 5 ops fuse in LX
+        return _softmax_row_tiling()
+    if OP == "matmul_row_tiling":  # a@b coarse-tiled over M (num_tiles, not core split)
+        return _matmul_row_tiling()
     if OP == "mm":  # matmul [M=ROWS, K=COLS] @ [K=COLS, N=BENCH_N]: a Reduction over K
         # -> work-division Pass 2 (cost_model_matmul_division) picks the (m,n,k) split.
         mm = lambda a, b: a @ b  # noqa: E731
@@ -292,7 +377,8 @@ def make_workload():
     known = (
         list(_UNARY) + list(_BINARY) + list(_NARY) + list(_REDUCE) + list(_BCAST)
         + list(_TRANSPORT)
-        + ["bcastcol", "write", "chain", "mm", "mmwd", "transpose_outer"]
+        + ["bcastcol", "write", "chain", "softmax_row_tiling", "matmul_row_tiling",
+           "mm", "mmwd", "transpose_outer"]
         + list(_CT_REDUCE)
     )
     raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
