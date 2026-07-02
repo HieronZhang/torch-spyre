@@ -39,6 +39,7 @@ PROFILE_OPS="$SCRIPT_DIR/profile_ops.py"
 cd "$ROOT" || exit 1
 mkdir -p haoyang_logs
 LOG="haoyang_logs/coarse_tiling_$(date +%Y%m%d_%H%M%S).log"
+[[ -n "${DB_LOG:-}" ]] && LOG=/dev/null   # under run_db_sweep: master writes the unified log
 SECTIONS="${SECTIONS:-CT1 CT2 CT3}"
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1
 
@@ -54,22 +55,28 @@ runtile() {  # runtile <op> <rows> <cols> <tiles> [lx=1]  softmax/chain/ct, core
   echo "-- $1 [$2,$3] tiles=$4 lx=${5:-1}" | tee -a "$LOG"
   SENCORES=32 LX_PLANNING="${5:-1}" SPYRE_DUMP_IR=1 SPYRE_DUMP_COST=1 \
     BENCH_OP="$1" BENCH_ROWS="$2" BENCH_COLS="$3" BENCH_TILES="$4" \
-    python "$PROFILE_OPS" 2>&1 | _emit "$1 [$2,$3] tiles=$4 lx=${5:-1}"
+    timeout -k 20 "${RUN_TIMEOUT:-180}" python "$PROFILE_OPS" 2>&1 | _emit "$1 [$2,$3] tiles=$4 lx=${5:-1}"
 }
 runmt() {  # runmt <M> <K> <N> <tiles>   matmul_row_tiling (needs BENCH_N), cores=32
   echo "-- matmul_row_tiling M=$1 K=$2 N=$3 tiles=$4" | tee -a "$LOG"
   SENCORES=32 SPYRE_DUMP_IR=1 SPYRE_DUMP_COST=1 \
     BENCH_OP=matmul_row_tiling BENCH_ROWS="$1" BENCH_COLS="$2" BENCH_N="$3" \
     BENCH_TILES="$4" \
-    python "$PROFILE_OPS" 2>&1 | _emit "matmul_row_tiling M=$1 K=$2 N=$3 tiles=$4"
+    timeout -k 20 "${RUN_TIMEOUT:-180}" python "$PROFILE_OPS" 2>&1 | _emit "matmul_row_tiling M=$1 K=$2 N=$3 tiles=$4"
 }
 
 # ============ CT1: softmax_row_tiling, tile-count x shape ===================
-has CT1 && { echo "## CT1 softmax_row_tiling: 4 shapes x TILES {2,4,8,16}" \
+# LX-SAFE: keep tile_rows = ROWS/tiles <= 4096 so the per-tile intermediate
+# (tile_rows x COLS x 2B) stays <= 33.5MB -- the proven-OK point ([4096,4096] at
+# tiles=4). tiles=2 on [16384,4096] (67MB tile) would overflow the LX planner and
+# hang, like write[2048,16384], so it is dropped. Still spans tiles {2..16} and
+# tile_rows {512..4096} across shapes.
+has CT1 && { echo "## CT1 softmax_row_tiling: tile_rows<=4096 (<=33.5MB LX; no hang)" \
     | tee -a "$LOG"
-  for shape in "16384 4096" "8192 2048" "4096 4096" "16384 2048"; do
-    for t in 2 4 8 16; do runtile softmax_row_tiling $shape "$t"; done
-  done; }
+  for t in 4 8 16;   do runtile softmax_row_tiling 16384 4096 "$t"; done  # tr 4096..1024
+  for t in 4 8 16;   do runtile softmax_row_tiling 16384 2048 "$t"; done  # tr 4096..1024
+  for t in 2 4 8 16; do runtile softmax_row_tiling 8192  2048 "$t"; done  # tr 4096..512
+  for t in 2 4 8;    do runtile softmax_row_tiling 4096  4096 "$t"; done; }  # tr 2048..512
 
 # ============ CT2: matmul_row_tiling, tile-count x shape ====================
 has CT2 && { echo "## CT2 matmul_row_tiling: 3 shapes x TILES {2,4,8}" | tee -a "$LOG"

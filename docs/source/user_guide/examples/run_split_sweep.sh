@@ -44,6 +44,7 @@ PROFILE_OPS="$SCRIPT_DIR/profile_ops.py"
 cd "$ROOT" || exit 1
 mkdir -p haoyang_logs
 LOG="haoyang_logs/split_$(date +%Y%m%d_%H%M%S).log"
+[[ -n "${DB_LOG:-}" ]] && LOG=/dev/null   # under run_db_sweep: master writes the unified log
 SECTIONS="${SECTIONS:-SP1 SP2 SP3}"
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1
 
@@ -60,7 +61,7 @@ runmmwd() {  # runmmwd <M> <K> <N> <m> <n> <k>   FORCED split, cores=m*n*k
     "B-fanout=$4, M-tile=$(($1 / $4)))" | tee -a "$LOG"
   SENCORES=32 WD_M="$4" WD_N="$5" WD_K="$6" SPYRE_DUMP_IR=1 SPYRE_DUMP_COST=1 \
     BENCH_OP=mmwd BENCH_ROWS="$1" BENCH_COLS="$2" BENCH_N="$3" \
-    python "$PROFILE_OPS" 2>&1 | _emit "mmwd M=$1 K=$2 N=$3 m=$4 n=$5 k=$6"
+    timeout -k 20 "${RUN_TIMEOUT:-180}" python "$PROFILE_OPS" 2>&1 | _emit "mmwd M=$1 K=$2 N=$3 m=$4 n=$5 k=$6"
 }
 
 # ============ SP1: M=4096, full m-sweep (B-fanout m vs M-tile M/m) ==========

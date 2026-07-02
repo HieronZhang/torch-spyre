@@ -14,36 +14,39 @@
 # limitations under the License.
 #
 # ============================================================================
-# COST-MODEL PROFILING DATABASE -- run EVERY sweep back-to-back, then fold all
-# logs into notes/sweep_records.{json,csv}. The goal is one command that rebuilds
-# the measurement DB, so any model change is validated by diffing model vs the
-# recorded kernel_us (never re-derived). ~170 runs, ~30-45 min (runs are now
-# CPU-time-bound). A failing child does NOT abort the rest (no set -e).
+# COST-MODEL PROFILING DATABASE -- run EVERY sweep back-to-back into ONE unified
+# log, then fold it into notes/sweep_records.{json,csv}. One command rebuilds the
+# measurement DB so any model change is validated by diffing model vs the recorded
+# kernel_us (never re-derived). ~160 runs, ~30-45 min (runs are CPU-time-bound).
 #
-# Chained, in the matmul isolation order (HBM -> compute -> split -> psum) plus
-# the global op coverage:
-#   run_hbm_ops_sweep.sh        pointwise / reduction / broadcast BW
-#   run_transport_sweep.sh      transport (restickify) BW
-#   run_matmul_validate_sweep.sh  matmul HBM only (SECTIONS=M1; compute/psum below)
-#   run_matmul_compute_sweep.sh   matmul compute (step 2)
-#   run_split_sweep.sh + run_decouple_sweep.sh  matmul split penalty (step 3)
-#   run_matmul_psum_sweep.sh      matmul psum (step 4)
-#   run_coarse_tiling_sweep.sh    softmax/matmul row-tiling x tile count
-# Final: notes/parse_sweep_logs.py refreshes the DB from haoyang_logs/*.log.
+# Robustness: no set -e (a failing sweep does not abort the rest), and every run
+# has a RUN_TIMEOUT (default 180s) guard -- a wedged compile/run is killed and
+# logged `... FAILED` instead of stalling the whole chain (that was the write[
+# 2048,16384] LX-planner hang). Lower it to fail faster: RUN_TIMEOUT=60.
 #
-# Run the WHOLE thing (do NOT set SECTIONS -- it is unset here so every child uses
-# its own default and full coverage is guaranteed):
+# ONE log: DB_LOG is exported; each child sends its output here and suppresses its
+# own per-child log (LOG=/dev/null), so the whole run is a single file that is
+# overwritten each time -- easy to forward. Chained in the matmul isolation order
+# (HBM -> compute -> split -> psum) + global op coverage:
+#   run_hbm_ops / run_transport / run_matmul_validate(M1) / run_matmul_compute /
+#   run_split / run_decouple / run_matmul_psum / run_coarse_tiling
+# Final: parse_sweep_logs.py folds DB_LOG into the DB.
+#
 #   bash docs/source/user_guide/examples/run_db_sweep.sh
-# Output: many haoyang_logs/*.log (forward all) + updated notes/sweep_records.*
+#   RUN_TIMEOUT=60 bash docs/source/user_guide/examples/run_db_sweep.sh
+# Output: ONE haoyang_logs/db_sweep.log + updated notes/sweep_records.{json,csv}.
 # ============================================================================
 
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR")"
-unset SECTIONS 2>/dev/null || true   # force each child's full default coverage
+mkdir -p "$ROOT/haoyang_logs"
+unset SECTIONS 2>/dev/null || true               # every child runs its full default
+export RUN_TIMEOUT="${RUN_TIMEOUT:-180}"         # per-run hang guard (see children)
+export DB_LOG="$ROOT/haoyang_logs/db_sweep.log"  # children tee here; per-child logs off
 
-echo "==== run_db_sweep $(date) -- full cost-model database rebuild ===="
-echo "git: $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null)"
+echo "==== run_db_sweep $(date) ===="
+echo "unified log: $DB_LOG   (RUN_TIMEOUT=${RUN_TIMEOUT}s per run)"
 
 run_one() {  # run_one <script> [SECTIONS override for this child only]
   local s="$1" sec="${2:-}"
@@ -58,19 +61,23 @@ run_one() {  # run_one <script> [SECTIONS override for this child only]
   fi
 }
 
-run_one run_hbm_ops_sweep.sh
-run_one run_transport_sweep.sh
-run_one run_matmul_validate_sweep.sh "M1"   # HBM only; compute/psum have own scripts
-run_one run_matmul_compute_sweep.sh
-run_one run_split_sweep.sh
-run_one run_decouple_sweep.sh
-run_one run_matmul_psum_sweep.sh
-run_one run_coarse_tiling_sweep.sh
+{
+  echo "==== cost-model database rebuild $(date) ===="
+  echo "git: $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null)"
+  run_one run_hbm_ops_sweep.sh
+  run_one run_transport_sweep.sh
+  run_one run_matmul_validate_sweep.sh "M1"   # HBM only; compute/psum have own scripts
+  run_one run_matmul_compute_sweep.sh
+  run_one run_split_sweep.sh
+  run_one run_decouple_sweep.sh
+  run_one run_matmul_psum_sweep.sh
+  run_one run_coarse_tiling_sweep.sh
+} 2>&1 | tee "$DB_LOG"
 
 echo
-echo "==== parsing all logs into notes/sweep_records.{json,csv} ===="
-python "$ROOT/notes/parse_sweep_logs.py" \
+echo "==== parsing $DB_LOG into notes/sweep_records.{json,csv} ===="
+python "$ROOT/notes/parse_sweep_logs.py" "$DB_LOG" \
   || echo "## !!! parse_sweep_logs.py failed (run it by hand)"
 
 echo
-echo "==== run_db_sweep DONE -- forward haoyang_logs/*.log + notes/sweep_records.* ===="
+echo "==== run_db_sweep DONE -- forward $DB_LOG + notes/sweep_records.* ===="

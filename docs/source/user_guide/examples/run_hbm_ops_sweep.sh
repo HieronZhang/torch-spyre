@@ -27,7 +27,9 @@
 #   HB3  broadcast one-time-load: bcast/bcastcol/write, SHRINK rows -> confirms
 #          the broadcast operand is loaded ONCE (BW rises as rows shrink).
 #
-# cores=32 for all. Measured via the AIU profiler.
+# cores=32, LX_PLANNING=0 for all (these are pure-HBM ops -- no scratchpad, so LX
+# planning is irrelevant to their bandwidth AND it is what hangs the planner on a
+# large broadcast output like write[2048,16384]). Measured via the AIU profiler.
 #
 #   bash docs/source/user_guide/examples/run_hbm_ops_sweep.sh   # HB1 HB2 HB3
 # Output: <repo-root>/haoyang_logs/hbm_ops_<timestamp>.log (forward it).
@@ -40,6 +42,7 @@ PROFILE_OPS="$SCRIPT_DIR/profile_ops.py"
 cd "$ROOT" || exit 1
 mkdir -p haoyang_logs
 LOG="haoyang_logs/hbm_ops_$(date +%Y%m%d_%H%M%S).log"
+[[ -n "${DB_LOG:-}" ]] && LOG=/dev/null   # under run_db_sweep: master writes the unified log
 SECTIONS="${SECTIONS:-HB1 HB2 HB3}"
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1
 
@@ -51,11 +54,11 @@ _emit() {
   local out; out=$(grep -E 'op_it_space_splits|^IO |^MODEL |^SUMMARY')
   echo "${out:-SUMMARY $1 FAILED}" | tee -a "$LOG"
 }
-runp() {  # runp <op> <rows> <cols>   pointwise/reduction/broadcast, cores=32
+runp() {  # runp <op> <rows> <cols>   HBM-bound op, cores=32, LX planning OFF
   echo "-- $1 [$2,$3]" | tee -a "$LOG"
-  SENCORES=32 SPYRE_DUMP_IR=1 SPYRE_DUMP_COST=1 \
+  SENCORES=32 LX_PLANNING=0 SPYRE_DUMP_IR=1 SPYRE_DUMP_COST=1 \
     BENCH_OP="$1" BENCH_ROWS="$2" BENCH_COLS="$3" \
-    python "$PROFILE_OPS" 2>&1 | _emit "$1 [$2,$3]"
+    timeout -k 20 "${RUN_TIMEOUT:-180}" python "$PROFILE_OPS" 2>&1 | _emit "$1 [$2,$3]"
 }
 
 # ============ HB1: pointwise arity x size (stream count -> turnaround) =======
