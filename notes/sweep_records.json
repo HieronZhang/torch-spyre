@@ -1,6 +1,85 @@
 {
   "records": [
     {
+      "id": "coarse_tiling_matmul_row_tiling.log:131",
+      "log_file": "coarse_tiling_matmul_row_tiling.log",
+      "lineno": 131,
+      "section": null,
+      "label": null,
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 4,
+      "lx": 1,
+      "io_hbm_bytes": 25165824,
+      "kernel_us": 437.342,
+      "pred_us": 394.01,
+      "err_pct": -9.9,
+      "bw_gbps": 57.5,
+      "memset_us": 161.142,
+      "other_dev_us": 432.52,
+      "total_dev_us": 1031.004,
+      "failed": false,
+      "model": {
+        "R": 16777216,
+        "W": 8388608,
+        "loop_trip": 4,
+        "base_us": 171.1,
+        "turn_us": 48.15,
+        "T_model_us": 394.01,
+        "compute_us": 174.76,
+        "m_over_m": 64.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2048, 2048]",
+              "device": "[2048, 2048]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 25165824,
+        "lx_bytes": 0
+      }
+    },
+    {
       "id": "compute_isolate_20260701_203949.log:23",
       "log_file": "compute_isolate_20260701_203949.log",
       "lineno": 23,
@@ -7240,6 +7319,205 @@
       }
     },
     {
+      "id": "new_coarse_tiling_softmax.log:215",
+      "log_file": "new_coarse_tiling_softmax.log",
+      "lineno": 215,
+      "section": null,
+      "label": null,
+      "op_it_space_splits": null,
+      "op": "softmax_row_tiling",
+      "rows": 16384,
+      "cols": 4096,
+      "cores": 32,
+      "tiles": 4,
+      "lx": 1,
+      "io_hbm_bytes": 402653184,
+      "kernel_us": 3089.867,
+      "pred_us": 3454.764,
+      "err_pct": 11.8,
+      "bw_gbps": 130.3,
+      "memset_us": 2416.541,
+      "other_dev_us": 15461.344,
+      "total_dev_us": 20967.752,
+      "failed": false,
+      "model": {
+        "R": 268435456,
+        "W": 134217728,
+        "loop_trip": 4,
+        "base_us": 2684.35,
+        "turn_us": 770.41,
+        "T_model_us": 3454.76
+      },
+      "io": [
+        {
+          "op": "amax",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4096, 1]",
+              "device": "[1, 4096, 64]",
+              "mem": "LX",
+              "elems": 262144,
+              "bytes": 524288,
+              "hbm_counted": 0,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[16384, 4096]",
+              "device": "[64, 16384, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            }
+          ]
+        },
+        {
+          "op": "sub",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op1",
+              "logical": "[4096, 4096]",
+              "device": "[64, 4096, 64]",
+              "mem": "LX",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 0,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[16384, 4096]",
+              "device": "[64, 16384, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "buf0",
+              "logical": "[4096, 1]",
+              "device": "[1, 4096, 64]",
+              "mem": "LX",
+              "elems": 262144,
+              "bytes": 524288,
+              "hbm_counted": 0,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        },
+        {
+          "op": "exp",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op2",
+              "logical": "[4096, 4096]",
+              "device": "[64, 4096, 64]",
+              "mem": "LX",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 0,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "buf1",
+              "logical": "[4096, 4096]",
+              "device": "[64, 4096, 64]",
+              "mem": "LX",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 0,
+              "flags": ""
+            }
+          ]
+        },
+        {
+          "op": "sum_1",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op3",
+              "logical": "[4096, 1]",
+              "device": "[1, 4096, 64]",
+              "mem": "LX",
+              "elems": 262144,
+              "bytes": 524288,
+              "hbm_counted": 0,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "buf2",
+              "logical": "[4096, 4096]",
+              "device": "[64, 4096, 64]",
+              "mem": "LX",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 0,
+              "flags": ""
+            }
+          ]
+        },
+        {
+          "op": "div",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op4",
+              "logical": "[16384, 4096]",
+              "device": "[16384, 4096]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "buf2",
+              "logical": "[4096, 4096]",
+              "device": "[64, 4096, 64]",
+              "mem": "LX",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 0,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "buf3",
+              "logical": "[4096, 1]",
+              "device": "[1, 4096, 64]",
+              "mem": "LX",
+              "elems": 262144,
+              "bytes": 524288,
+              "hbm_counted": 0,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 402653184,
+        "lx_bytes": 169869312
+      }
+    },
+    {
       "id": "profile_sweep_20260618_180841.log:4",
       "log_file": "profile_sweep_20260618_180841.log",
       "lineno": 4,
@@ -8326,6 +8604,1202 @@
       "io_totals": {
         "hbm_bytes": 8388736,
         "lx_bytes": 0
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:23",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 23,
+      "section": "SP1 M=4096 N=K=2048 cores=32: m in {1,2,4,8,16,32}",
+      "label": "mmwd M=4096 K=2048 N=2048 m=1 n=32 k=1 (cores=32,  B-fanout=1, M-tile=4096)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 1393.046,
+      "pred_us": 729.358,
+      "err_pct": -47.6,
+      "bw_gbps": 30.1,
+      "memset_us": 247.27,
+      "other_dev_us": 873.881,
+      "total_dev_us": 2514.197,
+      "failed": false,
+      "model": {
+        "R": 25165824,
+        "W": 16777216,
+        "loop_trip": 1,
+        "base_us": 283.53,
+        "turn_us": 96.3,
+        "T_model_us": 729.36,
+        "compute_us": 349.53,
+        "m_over_m": 4096.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 41943040,
+        "lx_bytes": 0
+      },
+      "M": 4096,
+      "K": 2048,
+      "N": 2048,
+      "macs": 17179869184,
+      "split_actual": {
+        "m": 1,
+        "n": 32,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:43",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 43,
+      "section": "SP1 M=4096 N=K=2048 cores=32: m in {1,2,4,8,16,32}",
+      "label": "mmwd M=4096 K=2048 N=2048 m=2 n=16 k=1 (cores=32,  B-fanout=2, M-tile=2048)",
+      "op_it_space_splits": {
+        "d0": 2,
+        "d1": 16,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 815.07,
+      "pred_us": 729.358,
+      "err_pct": -10.5,
+      "bw_gbps": 51.5,
+      "memset_us": 274.658,
+      "other_dev_us": 966.521,
+      "total_dev_us": 2056.249,
+      "failed": false,
+      "model": {
+        "R": 25165824,
+        "W": 16777216,
+        "loop_trip": 1,
+        "base_us": 283.53,
+        "turn_us": 96.3,
+        "T_model_us": 729.36,
+        "compute_us": 349.53,
+        "m_over_m": 2048.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 41943040,
+        "lx_bytes": 0
+      },
+      "M": 4096,
+      "K": 2048,
+      "N": 2048,
+      "macs": 17179869184,
+      "split_actual": {
+        "m": 2,
+        "n": 16,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:63",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 63,
+      "section": "SP1 M=4096 N=K=2048 cores=32: m in {1,2,4,8,16,32}",
+      "label": "mmwd M=4096 K=2048 N=2048 m=4 n=8 k=1 (cores=32,  B-fanout=4, M-tile=1024)",
+      "op_it_space_splits": {
+        "d0": 4,
+        "d1": 8,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 800.921,
+      "pred_us": 729.358,
+      "err_pct": -8.9,
+      "bw_gbps": 52.4,
+      "memset_us": 315.885,
+      "other_dev_us": 786.097,
+      "total_dev_us": 1902.903,
+      "failed": false,
+      "model": {
+        "R": 25165824,
+        "W": 16777216,
+        "loop_trip": 1,
+        "base_us": 283.53,
+        "turn_us": 96.3,
+        "T_model_us": 729.36,
+        "compute_us": 349.53,
+        "m_over_m": 1024.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 41943040,
+        "lx_bytes": 0
+      },
+      "M": 4096,
+      "K": 2048,
+      "N": 2048,
+      "macs": 17179869184,
+      "split_actual": {
+        "m": 4,
+        "n": 8,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:83",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 83,
+      "section": "SP1 M=4096 N=K=2048 cores=32: m in {1,2,4,8,16,32}",
+      "label": "mmwd M=4096 K=2048 N=2048 m=8 n=4 k=1 (cores=32,  B-fanout=8, M-tile=512)",
+      "op_it_space_splits": {
+        "d0": 8,
+        "d1": 4,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 843.77,
+      "pred_us": 729.358,
+      "err_pct": -13.6,
+      "bw_gbps": 49.7,
+      "memset_us": 327.626,
+      "other_dev_us": 861.711,
+      "total_dev_us": 2033.107,
+      "failed": false,
+      "model": {
+        "R": 25165824,
+        "W": 16777216,
+        "loop_trip": 1,
+        "base_us": 283.53,
+        "turn_us": 96.3,
+        "T_model_us": 729.36,
+        "compute_us": 349.53,
+        "m_over_m": 512.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 41943040,
+        "lx_bytes": 0
+      },
+      "M": 4096,
+      "K": 2048,
+      "N": 2048,
+      "macs": 17179869184,
+      "split_actual": {
+        "m": 8,
+        "n": 4,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:103",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 103,
+      "section": "SP1 M=4096 N=K=2048 cores=32: m in {1,2,4,8,16,32}",
+      "label": "mmwd M=4096 K=2048 N=2048 m=16 n=2 k=1 (cores=32,  B-fanout=16, M-tile=256)",
+      "op_it_space_splits": {
+        "d0": 16,
+        "d1": 2,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 1200.362,
+      "pred_us": 729.358,
+      "err_pct": -39.2,
+      "bw_gbps": 34.9,
+      "memset_us": 305.421,
+      "other_dev_us": 1104.25,
+      "total_dev_us": 2610.033,
+      "failed": false,
+      "model": {
+        "R": 25165824,
+        "W": 16777216,
+        "loop_trip": 1,
+        "base_us": 283.53,
+        "turn_us": 96.3,
+        "T_model_us": 729.36,
+        "compute_us": 349.53,
+        "m_over_m": 256.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 41943040,
+        "lx_bytes": 0
+      },
+      "M": 4096,
+      "K": 2048,
+      "N": 2048,
+      "macs": 17179869184,
+      "split_actual": {
+        "m": 16,
+        "n": 2,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:123",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 123,
+      "section": "SP1 M=4096 N=K=2048 cores=32: m in {1,2,4,8,16,32}",
+      "label": "mmwd M=4096 K=2048 N=2048 m=32 n=1 k=1 (cores=32,  B-fanout=32, M-tile=128)",
+      "op_it_space_splits": {
+        "d0": 32,
+        "d1": 1,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 1201.974,
+      "pred_us": 729.358,
+      "err_pct": -39.3,
+      "bw_gbps": 34.9,
+      "memset_us": 241.34,
+      "other_dev_us": 963.422,
+      "total_dev_us": 2406.736,
+      "failed": false,
+      "model": {
+        "R": 25165824,
+        "W": 16777216,
+        "loop_trip": 1,
+        "base_us": 283.53,
+        "turn_us": 96.3,
+        "T_model_us": 729.36,
+        "compute_us": 349.53,
+        "m_over_m": 128.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[4096, 2048]",
+              "device": "[32, 4096, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 41943040,
+        "lx_bytes": 0
+      },
+      "M": 4096,
+      "K": 2048,
+      "N": 2048,
+      "macs": 17179869184,
+      "split_actual": {
+        "m": 32,
+        "n": 1,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:144",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 144,
+      "section": "SP2 M=8192 N=K=2048 cores=32: m in {2,4,8,16}",
+      "label": "mmwd M=8192 K=2048 N=2048 m=2 n=16 k=1 (cores=32,  B-fanout=2, M-tile=4096)",
+      "op_it_space_splits": {
+        "d0": 2,
+        "d1": 16,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 8192,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 75497472,
+      "kernel_us": 1631.219,
+      "pred_us": 1400.054,
+      "err_pct": -14.2,
+      "bw_gbps": 46.3,
+      "memset_us": 446.12,
+      "other_dev_us": 2401.612,
+      "total_dev_us": 4478.951,
+      "failed": false,
+      "model": {
+        "R": 41943040,
+        "W": 33554432,
+        "loop_trip": 1,
+        "base_us": 508.4,
+        "turn_us": 192.6,
+        "T_model_us": 1400.05,
+        "compute_us": 699.05,
+        "m_over_m": 4096.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8192, 2048]",
+              "device": "[32, 8192, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[8192, 2048]",
+              "device": "[32, 8192, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 75497472,
+        "lx_bytes": 0
+      },
+      "M": 8192,
+      "K": 2048,
+      "N": 2048,
+      "macs": 34359738368,
+      "split_actual": {
+        "m": 2,
+        "n": 16,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:164",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 164,
+      "section": "SP2 M=8192 N=K=2048 cores=32: m in {2,4,8,16}",
+      "label": "mmwd M=8192 K=2048 N=2048 m=4 n=8 k=1 (cores=32,  B-fanout=4, M-tile=2048)",
+      "op_it_space_splits": {
+        "d0": 4,
+        "d1": 8,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 8192,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 75497472,
+      "kernel_us": 1593.951,
+      "pred_us": 1400.054,
+      "err_pct": -12.2,
+      "bw_gbps": 47.4,
+      "memset_us": 412.864,
+      "other_dev_us": 2416.068,
+      "total_dev_us": 4422.883,
+      "failed": false,
+      "model": {
+        "R": 41943040,
+        "W": 33554432,
+        "loop_trip": 1,
+        "base_us": 508.4,
+        "turn_us": 192.6,
+        "T_model_us": 1400.05,
+        "compute_us": 699.05,
+        "m_over_m": 2048.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8192, 2048]",
+              "device": "[32, 8192, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[8192, 2048]",
+              "device": "[32, 8192, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 75497472,
+        "lx_bytes": 0
+      },
+      "M": 8192,
+      "K": 2048,
+      "N": 2048,
+      "macs": 34359738368,
+      "split_actual": {
+        "m": 4,
+        "n": 8,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:184",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 184,
+      "section": "SP2 M=8192 N=K=2048 cores=32: m in {2,4,8,16}",
+      "label": "mmwd M=8192 K=2048 N=2048 m=8 n=4 k=1 (cores=32,  B-fanout=8, M-tile=1024)",
+      "op_it_space_splits": {
+        "d0": 8,
+        "d1": 4,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 8192,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 75497472,
+      "kernel_us": 1619.863,
+      "pred_us": 1400.054,
+      "err_pct": -13.6,
+      "bw_gbps": 46.6,
+      "memset_us": 412.475,
+      "other_dev_us": 2309.697,
+      "total_dev_us": 4342.035,
+      "failed": false,
+      "model": {
+        "R": 41943040,
+        "W": 33554432,
+        "loop_trip": 1,
+        "base_us": 508.4,
+        "turn_us": 192.6,
+        "T_model_us": 1400.05,
+        "compute_us": 699.05,
+        "m_over_m": 1024.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8192, 2048]",
+              "device": "[32, 8192, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[8192, 2048]",
+              "device": "[32, 8192, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 75497472,
+        "lx_bytes": 0
+      },
+      "M": 8192,
+      "K": 2048,
+      "N": 2048,
+      "macs": 34359738368,
+      "split_actual": {
+        "m": 8,
+        "n": 4,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:204",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 204,
+      "section": "SP2 M=8192 N=K=2048 cores=32: m in {2,4,8,16}",
+      "label": "mmwd M=8192 K=2048 N=2048 m=16 n=2 k=1 (cores=32,  B-fanout=16, M-tile=512)",
+      "op_it_space_splits": {
+        "d0": 16,
+        "d1": 2,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 8192,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 75497472,
+      "kernel_us": 2587.129,
+      "pred_us": 1400.054,
+      "err_pct": -45.9,
+      "bw_gbps": 29.2,
+      "memset_us": 462.1,
+      "other_dev_us": 2370.784,
+      "total_dev_us": 5420.013,
+      "failed": false,
+      "model": {
+        "R": 41943040,
+        "W": 33554432,
+        "loop_trip": 1,
+        "base_us": 508.4,
+        "turn_us": 192.6,
+        "T_model_us": 1400.05,
+        "compute_us": 699.05,
+        "m_over_m": 512.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8192, 2048]",
+              "device": "[32, 8192, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[8192, 2048]",
+              "device": "[32, 8192, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 75497472,
+        "lx_bytes": 0
+      },
+      "M": 8192,
+      "K": 2048,
+      "N": 2048,
+      "macs": 34359738368,
+      "split_actual": {
+        "m": 16,
+        "n": 2,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:225",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 225,
+      "section": "SP3 M=2048 N=K=2048 cores=32: m in {2,4,8}",
+      "label": "mmwd M=2048 K=2048 N=2048 m=2 n=16 k=1 (cores=32,  B-fanout=2, M-tile=1024)",
+      "op_it_space_splits": {
+        "d0": 2,
+        "d1": 16,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 25165824,
+      "kernel_us": 405.4,
+      "pred_us": 394.01,
+      "err_pct": -2.8,
+      "bw_gbps": 62.1,
+      "memset_us": 196.975,
+      "other_dev_us": 585.777,
+      "total_dev_us": 1188.152,
+      "failed": false,
+      "model": {
+        "R": 16777216,
+        "W": 8388608,
+        "loop_trip": 1,
+        "base_us": 171.1,
+        "turn_us": 48.15,
+        "T_model_us": 394.01,
+        "compute_us": 174.76,
+        "m_over_m": 1024.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 25165824,
+        "lx_bytes": 0
+      },
+      "M": 2048,
+      "K": 2048,
+      "N": 2048,
+      "macs": 8589934592,
+      "split_actual": {
+        "m": 2,
+        "n": 16,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:245",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 245,
+      "section": "SP3 M=2048 N=K=2048 cores=32: m in {2,4,8}",
+      "label": "mmwd M=2048 K=2048 N=2048 m=4 n=8 k=1 (cores=32,  B-fanout=4, M-tile=512)",
+      "op_it_space_splits": {
+        "d0": 4,
+        "d1": 8,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 25165824,
+      "kernel_us": 387.54,
+      "pred_us": 394.01,
+      "err_pct": 1.7,
+      "bw_gbps": 64.9,
+      "memset_us": 155.718,
+      "other_dev_us": 334.575,
+      "total_dev_us": 877.833,
+      "failed": false,
+      "model": {
+        "R": 16777216,
+        "W": 8388608,
+        "loop_trip": 1,
+        "base_us": 171.1,
+        "turn_us": 48.15,
+        "T_model_us": 394.01,
+        "compute_us": 174.76,
+        "m_over_m": 512.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 25165824,
+        "lx_bytes": 0
+      },
+      "M": 2048,
+      "K": 2048,
+      "N": 2048,
+      "macs": 8589934592,
+      "split_actual": {
+        "m": 4,
+        "n": 8,
+        "k": 1
+      }
+    },
+    {
+      "id": "split_20260701_213147.log:265",
+      "log_file": "split_20260701_213147.log",
+      "lineno": 265,
+      "section": "SP3 M=2048 N=K=2048 cores=32: m in {2,4,8}",
+      "label": "mmwd M=2048 K=2048 N=2048 m=8 n=4 k=1 (cores=32,  B-fanout=8, M-tile=256)",
+      "op_it_space_splits": {
+        "d0": 8,
+        "d1": 4,
+        "d2": 1
+      },
+      "op": "mmwd",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 1,
+      "io_hbm_bytes": 25165824,
+      "kernel_us": 385.975,
+      "pred_us": 394.01,
+      "err_pct": 2.1,
+      "bw_gbps": 65.2,
+      "memset_us": 221.473,
+      "other_dev_us": 379.467,
+      "total_dev_us": 986.915,
+      "failed": false,
+      "model": {
+        "R": 16777216,
+        "W": 8388608,
+        "loop_trip": 1,
+        "base_us": 171.1,
+        "turn_us": 48.15,
+        "T_model_us": 394.01,
+        "compute_us": 174.76,
+        "m_over_m": 256.0,
+        "pt_eff": 1.0
+      },
+      "io": [
+        {
+          "op": "mm",
+          "kind": "reduction",
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg1_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 25165824,
+        "lx_bytes": 0
+      },
+      "M": 2048,
+      "K": 2048,
+      "N": 2048,
+      "macs": 8589934592,
+      "split_actual": {
+        "m": 8,
+        "n": 4,
+        "k": 1
       }
     },
     {
