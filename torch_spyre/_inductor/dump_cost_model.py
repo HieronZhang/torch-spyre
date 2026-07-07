@@ -248,8 +248,6 @@ def _hbm_pattern(op, is_reduction: bool, out_dims) -> str:
     "" -> ordinary contiguous access; the default bw_peak + turnaround applies.
     """
     try:
-        if out_dims and len(out_dims) > 3 and 0 < _int(out_dims[-2], 64) < 64:
-            return "stick_scatter"
         rw = op.get_read_writes()
         write_index = next(iter(rw.writes)).index
         it_space = iteration_space_from_op(op)
@@ -260,18 +258,39 @@ def _hbm_pattern(op, is_reduction: bool, out_dims) -> str:
             except Exception:  # noqa: BLE001
                 return 0
 
-        stick = [
-            s for s in it_space if _c(write_index, s) == 1
-        ]  # inner (stick) out var
+        read_syms: set = set()
+        for dep in rw.reads:
+            ri = getattr(dep, "index", None)
+            if ri is not None:
+                read_syms |= getattr(ri, "free_symbols", None) or set()
+        out_vars = [s for s in it_space if _c(write_index, s) != 0]
+        stick = [s for s in it_space if _c(write_index, s) == 1]  # kept inner/stick var
         reduced = [s for s in it_space if _c(write_index, s) == 0]  # reduced-away vars
+        # A CONCAT copies its input into an output dim absent from the read index (the
+        # concat "which-copy" var, read-coeff 0). cat0 (concat on a PARTITION dim) wedges
+        # a small (<64) device dim just inside the 64-stick -> fine sub-stick interleave.
+        # (Gated on the concat dim so a mere permutation like transpose_outer -- whose
+        # small outer dim also lands at [-2] -- is NOT mistaken for it.)
+        concat = any(s not in read_syms for s in out_vars)
+        if (
+            concat
+            and out_dims
+            and len(out_dims) > 3
+            and 0 < _int(out_dims[-2], 64) < 64
+        ):
+            return "stick_scatter"
         for dep in rw.reads:
             ri = getattr(dep, "index", None)
             syms = getattr(ri, "free_symbols", None) or set()
             if ri is None:
                 continue
+            # reduce_outer: a REDUCED var read with coeff != 1 (across rows/outer) WHILE a
+            # stick dim is kept in the output (sumcol). A full reduction to a scalar
+            # (sumall) keeps no stick -> stays default (it is fast, not cross-row).
             if is_reduction:
-                if any(s in syms and abs(_c(ri, s)) > 1 for s in reduced):
+                if stick and any(s in syms and abs(_c(ri, s)) > 1 for s in reduced):
                     return "reduce_outer"
+            # restickify: the WRITE stick var is READ with coeff != 1 (transpose).
             elif any(s in syms and _c(ri, s) not in (0, 1) for s in stick):
                 return "restickify"
         return ""
