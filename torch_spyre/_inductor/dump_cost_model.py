@@ -182,21 +182,23 @@ def _row_split(op, default: int) -> int:
         return default
 
 
-def _matmul_features(op, out_elems: int):
-    """(macs, rows_per_core, k_split) for a batchmatmul op (best-effort).
+def _matmul_features(op, out_elems: int, dtype_bytes: int):
+    """(macs, rows_per_core, cols_per_core, a_bytes, b_bytes, k_split) for a batchmatmul.
 
-    ``macs`` = device(M*N) * K = total multiply-accumulates. ``rows_per_core`` = M/m
-    (per-core M tile, drives pt_eff). ``k_split`` = the K-dim core split (PSUM ring).
-    M/N/K and their splits are recovered from the iteration space + op_it_space_splits
-    the way ``_cores`` decodes it: reduction vars have coeff 0 in the write index;
-    among output vars M is the one with the largest write-index coeff (the row/outer
-    dim), N the stick (inner) dim. Returns (macs, 0.0, 1) on any failure -> the model
-    falls back to pt_eff=1 (no derate), k=1 (no PSUM), correct for the validated regime.
+    ``macs`` = device(M*N)*K. ``rows_per_core`` = M/m (drives pt_eff + A re-read),
+    ``cols_per_core`` = N/n (drives B re-read). ``a_bytes`` = |A| = M*K, ``b_bytes`` =
+    |B| = K*N (device dtype). ``k_split`` = the K-dim core split. M/N/K + splits are
+    recovered from the iteration space the way ``_cores`` decodes it: reduction (K) vars
+    have coeff 0 in the write index; among output vars M has the LARGEST write-index
+    coeff (row/outer dim), N the SMALLEST (stick/inner). Falls back to zeros/1 on any
+    failure -> the model drops the spill (safe for the validated balanced regime).
     """
     data = getattr(op, "data", None)
     k_size = _prod_ints(getattr(data, "reduction_ranges", None) or [])
     macs = out_elems * k_size
-    rows_per_core, k_split = 0.0, 1
+    rows_per_core = cols_per_core = 0.0
+    a_bytes = b_bytes = 0
+    k_split = 1
     try:
         splits = getattr(op, "op_it_space_splits", None)
         if splits:
@@ -215,15 +217,66 @@ def _matmul_features(op, out_elems: int):
                 else:  # reduction (K) dim -> contributes to the K-split
                     k_split *= max(1, int(readable.get(s, 1)))
             if out_vars:
-                out_vars.sort(key=lambda t: t[0])  # largest coeff = M (row/outer dim)
-                m_sym = out_vars[-1][1]
+                out_vars.sort(key=lambda t: t[0])  # largest coeff = M, smallest = N
+                m_sym, n_sym = out_vars[-1][1], out_vars[0][1]
                 m_size = _int(it_space[m_sym], 1)
-                m_split = max(1, int(readable.get(m_sym, 1)))
+                n_size = _int(it_space[n_sym], 1) if len(out_vars) >= 2 else 1
                 if m_size > 1:
-                    rows_per_core = m_size / m_split
+                    rows_per_core = m_size / max(1, int(readable.get(m_sym, 1)))
+                if n_size > 1:
+                    cols_per_core = n_size / max(1, int(readable.get(n_sym, 1)))
+                a_bytes = m_size * k_size * dtype_bytes
+                b_bytes = k_size * n_size * dtype_bytes
     except Exception:  # noqa: BLE001 - best-effort feature extraction
-        rows_per_core, k_split = 0.0, 1
-    return macs, rows_per_core, k_split
+        rows_per_core = cols_per_core = 0.0
+        a_bytes = b_bytes = 0
+        k_split = 1
+    return macs, rows_per_core, cols_per_core, a_bytes, b_bytes, k_split
+
+
+def _hbm_pattern(op, is_reduction: bool, out_dims) -> str:
+    """Access-pattern effective-BW tag, read straight from the LoopLevel IR.
+
+    Reuses the same "a var's coefficient in the write vs read index" decode ``_cores``
+    uses for the matmul K-dim (stick var = coeff 1; reduced var = coeff 0 in the write):
+      "stick_scatter": a device dim <64 sits just INSIDE the 64-stick -- a cat on a
+          partition dim (cat0 device_size [...,2,64]) -> fine sub-stick interleave (slow).
+      "restickify"   : the WRITE stick var is READ with coeff != 1 -> the stick dim is
+          remapped (transpose) -- less turnaround, faster.
+      "reduce_outer" : a REDUCED var is READ with coeff != 1 -> the reduction runs across
+          rows/outer, not within the stick (sumcol).
+    "" -> ordinary contiguous access; the default bw_peak + turnaround applies.
+    """
+    try:
+        if out_dims and len(out_dims) > 3 and 0 < _int(out_dims[-2], 64) < 64:
+            return "stick_scatter"
+        rw = op.get_read_writes()
+        write_index = next(iter(rw.writes)).index
+        it_space = iteration_space_from_op(op)
+
+        def _c(idx, s) -> int:
+            try:
+                return int(idx.coeff(s))
+            except Exception:  # noqa: BLE001
+                return 0
+
+        stick = [
+            s for s in it_space if _c(write_index, s) == 1
+        ]  # inner (stick) out var
+        reduced = [s for s in it_space if _c(write_index, s) == 0]  # reduced-away vars
+        for dep in rw.reads:
+            ri = getattr(dep, "index", None)
+            syms = getattr(ri, "free_symbols", None) or set()
+            if ri is None:
+                continue
+            if is_reduction:
+                if any(s in syms and abs(_c(ri, s)) > 1 for s in reduced):
+                    return "reduce_outer"
+            elif any(s in syms and _c(ri, s) not in (0, 1) for s in stick):
+                return "restickify"
+        return ""
+    except Exception:  # noqa: BLE001 - best-effort feature extraction
+        return ""
 
 
 def extract_op_features(op) -> OpFeatures:
@@ -262,9 +315,17 @@ def extract_op_features(op) -> OpFeatures:
     # so the existing combine term becomes the PSUM ring). Non-matmul ops keep is_matmul
     # False and the generic reduction_cores above.
     is_matmul = getattr(data, "reduction_type", None) == BATCH_MATMUL_OP
-    matmul_macs, matmul_rows_per_core = 0, 0.0
+    matmul_macs, matmul_rows_per_core, matmul_cols_per_core = 0, 0.0, 0.0
+    matmul_a_bytes = matmul_b_bytes = 0
     if is_matmul:
-        matmul_macs, matmul_rows_per_core, k_split = _matmul_features(op, out_elems)
+        (
+            matmul_macs,
+            matmul_rows_per_core,
+            matmul_cols_per_core,
+            matmul_a_bytes,
+            matmul_b_bytes,
+            k_split,
+        ) = _matmul_features(op, out_elems, dtype_bytes)
         reduction_cores = k_split
 
     # Per-core per-tile pass-row height for the UNDERFILL derate -- only for OUTPUT-dim
@@ -363,6 +424,10 @@ def extract_op_features(op) -> OpFeatures:
         is_matmul=is_matmul,
         matmul_macs=matmul_macs,
         matmul_rows_per_core=matmul_rows_per_core,
+        matmul_cols_per_core=matmul_cols_per_core,
+        matmul_a_bytes=matmul_a_bytes,
+        matmul_b_bytes=matmul_b_bytes,
+        hbm_pattern="" if is_matmul else _hbm_pattern(op, is_reduction, out_dims),
     )
 
 

@@ -65,14 +65,15 @@ and T ~= R / BW_PEAK -- the read-only rate -- automatically. ``is_reduction`` su
 only to add a cross-core ring-combine term (``psum_per_elem_ns``) when the reduced axis
 is split across cores.
 
-MATMUL (reduction_type batchmatmul) is COMPUTE-bound, so it gets an extra ADDITIVE term
-``compute = MACs / cores / (mac_peak * pt_eff)`` (MACs = M*N*K). ``pt_eff`` reuses the
-underfill derate (target_passes=8; matmul saturates ~64 rows/core). The K-split ring
-reduction reuses the ``combine`` term (reduction_cores = k). VALIDATED on the mm K-sweep
-(M=N=2048, K 512..8192): measured = compute_datasheet + the bandwidth turnaround term to
-~1% for K>=1024 -- ADDITIVE (no compute/HBM overlap) and the datasheet MAC peak is
-correct; the only fix vs the in-tree Pass-2 model (work_division.py) is its 204.8 GB/s
--> our turnaround BW. See notes/cost_model_summary.md.
+MATMUL (reduction_type batchmatmul) adds a compute term that OVERLAPS the HBM term:
+``T = compute + HBM - gamma*min(compute, HBM)``, with
+``compute = MACs / cores / (mac_peak * pt_eff)`` (MACs = M*N*K, mac_peak=1140 SUSTAINED,
+gamma=0.46). The matmul HBM is two-rate (reads 143 / writes 156) plus an operand RE-READ
+"tile spill": ``|A|*f(M/m) + |B|*f(N/n)`` at the read rate, f a saturating log (a per-core
+operand tile past ~448 rows/cols no longer stays on-chip). Fanout is NOT a term. K is
+always kept whole (WD_K=1) so the K-split psum ring term is 0. Fit on the db_sweep +
+decouple/re-read sweeps: ~8% RMS across cores 4->32, MNK 2e9..3.4e10. Isolation order and
+per-term data: notes/cost_model_presentation.md.
 
 COARSE-TILING UNDERFILL: tiling an OUTPUT dim (a fused pointwise chain split so an
 intermediate stays in LX) cuts each core's per-tile height. Total HBM bytes are
@@ -91,13 +92,15 @@ anti-correlated 64/L, so the two are confounded -- the untiled-small-ROWS confir
 L=1 with short tiles, isolate the underfill so the pointwise c_loop can be pinned
 separately.) PROVISIONAL: r_full and exp are guessed from the chain sweep.
 
-KNOWN systematic biases (B-F sweep; consistent per-category, so within-kind ranking is
-safe, cross-kind comparisons can be off ~15-20%):
-- broadcast pointwise (bcast) runs ~17% FASTER than the model (off the V-curve; cause
-  open) -- the model over-predicts their time.
-- write-only runs ~16% off (BW_PEAK treats writes like reads; writes are a bit slower).
-- high fan-in fused adds (add3/add4) ~8% (LX intermediates not perfectly free).
-- sumcol (reducing the outer/partitioned axis) ~19% (access-pattern, not ring-combine).
+ACCESS-PATTERN effective-BW overrides (db_sweep; ``OpFeatures.hbm_pattern``, set by the
+extractor from the LoopLevel IR index/layout -- these fold turnaround into one measured
+rate): "restickify" transpose (stick swapped -> ~116, FASTER), "stick_scatter" cat on a
+partition dim (fine sub-stick interleave -> ~60), "reduce_outer" sumcol (cross-row reduce
+-> ~113). Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) get a
+``pointwise_arity_derate`` (~7.5%/extra op). All land within ~4% after these.
+KNOWN residual biases (not yet modeled): broadcast pointwise (bcast) ~17% FASTER (off the
+V-curve; cause open); write-only ~16% (double-broadcast `write` is pathological, effBW
+~55); transpose_outer at large size ~-14% (size-dependent).
 
 CALIBRATION NOTE: the golden per-op measurement is the torch.profiler "Self SPYRE"
 (sdsc_fused) KERNEL device time -- NOT our old SPYRE_PROFILE_SYNC min (which folded in a
@@ -108,6 +111,7 @@ Parameters live in :class:`CostParams`, calibrated from device measurements
 """
 
 import dataclasses
+import math
 
 
 @dataclasses.dataclass
@@ -158,7 +162,15 @@ class OpFeatures:
     # term). All zero/False for non-matmul ops.
     is_matmul: bool = False
     matmul_macs: int = 0
-    matmul_rows_per_core: float = 0.0
+    matmul_rows_per_core: float = 0.0  # M/m (per-core A tile height -> A re-read)
+    matmul_cols_per_core: float = 0.0  # N/n (per-core B tile width  -> B re-read)
+    matmul_a_bytes: int = 0  # |A| = M*K device bytes (re-read scales with M/m)
+    matmul_b_bytes: int = 0  # |B| = K*N device bytes (re-read scales with N/n)
+    # Access-pattern HBM effective-BW override (from the LoopLevel IR index/layout):
+    # "restickify" (transpose: write-stick var read with coeff!=1), "stick_scatter"
+    # (cat on a partition dim -> a device dim <64 just inside the stick), "reduce_outer"
+    # (cross-row reduction: reduced var read with coeff!=1). "" -> default 150+turnaround.
+    hbm_pattern: str = ""
 
     def read_bytes(self) -> int:
         """HBM bytes READ (input args). Each HBM arg is counted at its own device size,
@@ -248,20 +260,41 @@ class CostParams:
     # splits COLUMNS not rows, so row_split=1 -> full row tile (handled by the extractor
     # keying tile_rows_per_core on the row-dim split, not total cores).
     underfill_exponent: float = 0.35
-    # MATMUL compute term (ADDITIVE with the bandwidth term -- no compute/HBM overlap).
-    # T_matmul = compute + H_turnaround + psum, compute = MACs/cores/(mac_peak*pt_eff).
-    # mac_peak = datasheet (98.304e12/2/32 MAC/us/core = 1536 MAC/ns/core) -- VALIDATED
-    # by the mm K-sweep (M=N=2048, K 512..8192): measured = compute_datasheet +
-    # H_turnaround to ~1% for K>=1024, so the peak is right and the only fix vs the
-    # in-tree Pass-2 model is its 204.8 GB/s -> our turnaround BW. pt_eff reuses the
-    # underfill derate with target_passes=8 (matmul saturates ~64 rows/core).
-    mac_peak_per_core_ns: float = 1536.0  # MAC/ns/core (datasheet; K-sweep checked)
+    # MATMUL compute term. T_matmul = compute + HBM - gamma*min(compute, HBM), where
+    # compute = MACs/cores/(mac_peak*pt_eff). mac_peak=1140 (sustained) fit on the
+    # compute-DOMINANT low-core runs (cores 4-8, compute 80-90% of the kernel; the old
+    # 1536 datasheet was ~33% optimistic). A single peak over-predicts cores=32 -- the
+    # fix is overlap_gamma (compute/HBM pipeline). Fit jointly: peak=1140, gamma=0.46,
+    # RMS 1.7% across cores 4->32. pt_eff reuses the underfill derate (~1 for M/m>=64).
+    mac_peak_per_core_ns: float = 1140.0  # MAC/ns/core (sustained; compute-isolate fit)
     underfill_target_passes_matmul: float = 8.0  # matmul full-fill ~8 passes (=64 rows)
+    overlap_gamma: float = 0.46  # compute/HBM overlap: min(compute,HBM) partly hidden
+    # Matmul operand RE-READ (tile spill): a per-core operand tile past ~t0 rows/cols no
+    # longer stays on-chip and is re-streamed from HBM. reread = |A|*f(M/m) + |B|*f(N/n),
+    # f(t) = min(cap, slope*log2(t/t0)). Fit on the decouple + re-read sweeps (fanout was
+    # proven NOT a term). K-split (WD_K>1) is never used, so the old psum ring term = 0.
+    mm_spill_t0: float = 448.0  # per-core tile below which no spill
+    mm_spill_slope: float = 1.10
+    mm_spill_cap: float = 1.70
     # Matmul HBM two-rate: reads (operand loads) run slower than writes (output store).
     # CALIBRATED on the compute-free M1 sweep (thin-K write-dom / thin-M read-dom) + the
     # balanced k=1 points, turnaround removed then re-added: fits all regimes to +/-4%.
     mm_bw_read_gbps: float = 143.0
     mm_bw_write_gbps: float = 156.0
+
+    # Access-pattern effective HBM BW (GB/s) for non-matmul ops whose stick layout is
+    # reorganized -- these fold turnaround into the single rate (measured io/kernel on
+    # the db_sweep). Keyed by OpFeatures.hbm_pattern; default ops keep bw_peak+turnaround.
+    bw_restickify_gbps: float = (
+        116.0  # transpose: stick swapped, LESS turnaround (faster)
+    )
+    bw_stick_scatter_gbps: float = (
+        60.0  # cat on partition dim: fine sub-stick interleave
+    )
+    bw_reduce_outer_gbps: float = 113.0  # cross-row (dim0) reduction (sumcol)
+    # Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) run slower per
+    # byte -- ~7.5% per extra op beyond the first. Fit on the arity sweep (add/add3/add4).
+    pointwise_arity_derate: float = 0.075
 
 
 def underfill_eff(
@@ -289,6 +322,19 @@ def underfill_eff(
     return min(1.0, (rows_per_core / r_full) ** p.underfill_exponent)
 
 
+def mm_spill_frac(tile_per_core: float, params: CostParams | None = None) -> float:
+    """Operand RE-READ fraction for a matmul: a per-core operand tile larger than
+    ``mm_spill_t0`` (rows for A / cols for B) no longer stays on-chip and is re-streamed
+    from HBM. Saturating log growth ``min(cap, slope*log2(tile/t0))``; 0 at/below t0."""
+    p = params or CostParams()
+    if tile_per_core <= 0:
+        return 0.0
+    return min(
+        p.mm_spill_cap,
+        p.mm_spill_slope * math.log2(max(1.0, tile_per_core / p.mm_spill_t0)),
+    )
+
+
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
     """Predicted device latency (ns) for a bundle of ops (one fused kernel).
 
@@ -308,11 +354,52 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     # BW_read~138, BW_write~149 GB/s), calibrated on the compute-free M1 thin-K/thin-M
     # sweep (fits +/-3%); the turnaround adds balanced-traffic contention. Pointwise/
     # reduction/transport keep the single-BW turnaround model.
+    _pat_bw = {
+        "restickify": p.bw_restickify_gbps,
+        "stick_scatter": p.bw_stick_scatter_gbps,
+        "reduce_outer": p.bw_reduce_outer_gbps,
+    }
     if any(getattr(o, "is_matmul", False) for o in ops):
-        mem = (r / p.mm_bw_read_gbps + w / p.mm_bw_write_gbps
-               + p.rw_turnaround_ns_per_byte * min(r, w))
+        # Operand re-read: |A| re-streamed as its per-core tile (M/m) spills, |B| as N/n
+        # spills. Read-rate bytes. (Fanout was proven NOT a term by the re-read sweep.)
+        spill = sum(
+            o.matmul_a_bytes * mm_spill_frac(o.matmul_rows_per_core, p)
+            + o.matmul_b_bytes * mm_spill_frac(o.matmul_cols_per_core, p)
+            for o in ops
+            if getattr(o, "is_matmul", False)
+        )
+        mem = (
+            r / p.mm_bw_read_gbps
+            + w / p.mm_bw_write_gbps
+            + spill / p.mm_bw_read_gbps
+            + p.rw_turnaround_ns_per_byte * min(r, w)
+        )
+    elif any(getattr(o, "hbm_pattern", "") in _pat_bw for o in ops):
+        # Per-op access-pattern effective BW (these ops fold turnaround into the rate);
+        # ops without a pattern keep the default single-BW + turnaround.
+        mem = 0.0
+        for o in ops:
+            ro, wo = o.read_bytes(), o.write_bytes()
+            bw = _pat_bw.get(getattr(o, "hbm_pattern", ""), 0.0)
+            if bw:
+                mem += (ro + wo) / bw
+            else:
+                mem += (ro + wo) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(
+                    ro, wo
+                )
     else:
         mem = (r + w) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(r, w)
+        # Multi-pass pointwise chain (add3/add4): intermediates round-trip HBM, so the
+        # bundle runs slower per byte than a single op. ~7.5% per extra HBM op.
+        n_pw = sum(
+            1
+            for o in ops
+            if not o.is_reduction
+            and not getattr(o, "is_matmul", False)
+            and not o.tiles_output_dim
+        )
+        if n_pw > 1:
+            mem *= 1.0 + p.pointwise_arity_derate * (n_pw - 1)
     # OUTPUT-dim (pointwise) coarse-tiling underfill: a short per-core tile underfills
     # the streaming pipeline, derating the bandwidth term. The smallest tile in the
     # bundle governs (worst underfill). 1.0 (no derate) when nothing is output-tiled.
@@ -320,15 +407,19 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     for o in ops:
         if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
             eff = min(eff, underfill_eff(o.tile_rows_per_core, p))
-    t = p.fill_ns + mem / eff
-    # MATMUL compute (ADDITIVE with the bandwidth term -- the mm K-sweep showed no
-    # compute/HBM overlap). compute = MACs/cores derated by pt_eff (PT-array fill).
+    mem_t = p.fill_ns + mem / eff
+    # MATMUL compute = MACs/cores derated by pt_eff (PT-array fill).
+    compute = 0.0
     for o in ops:
         if o.is_matmul and o.matmul_macs > 0 and o.cores > 0:
             pt_eff = underfill_eff(
                 o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
             )
-            t += o.matmul_macs / o.cores / (p.mac_peak_per_core_ns * pt_eff)
+            compute += o.matmul_macs / o.cores / (p.mac_peak_per_core_ns * pt_eff)
+    # compute/HBM OVERLAP: memory transfers pipeline with the systolic compute, so the
+    # smaller of the two is partly hidden (gamma=0.46). For a non-matmul bundle compute=0
+    # -> min(0, mem_t)=0 -> t = mem_t (unchanged).
+    t = compute + mem_t - p.overlap_gamma * min(compute, mem_t)
     for o in ops:
         if o.is_reduction:
             combine = max(0, o.reduction_cores - 1) * o.out_elems * p.psum_per_elem_ns
@@ -363,9 +454,8 @@ def explain(ops: list, params: CostParams | None = None) -> str:
         else:
             red = ""
         loop = f" loop_trip={o.loop_trip}" if o.loop_trip > 1 else ""
-        lines.append(
-            f"  {o.name:<12} read={r}B write={w}B lx={lx}B{loop}{red}"
-        )
+        pat = f" [{o.hbm_pattern}]" if getattr(o, "hbm_pattern", "") else ""
+        lines.append(f"  {o.name:<12} read={r}B write={w}B lx={lx}B{loop}{red}{pat}")
         for a in o.args:
             bc = " broadcast (loaded once)" if a.broadcast else ""
             lf = f" xL={a.loop_factor}" if a.loop_factor > 1 else ""
@@ -385,8 +475,11 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     R = sum(o.read_bytes() for o in ops)
     W = sum(o.write_bytes() for o in ops)
     is_mm = any(getattr(o, "is_matmul", False) for o in ops)
-    base = (R / p.mm_bw_read_gbps + W / p.mm_bw_write_gbps) if is_mm \
+    base = (
+        (R / p.mm_bw_read_gbps + W / p.mm_bw_write_gbps)
+        if is_mm
         else (R + W) / p.bw_peak_gbps
+    )
     turn = p.rw_turnaround_ns_per_byte * min(R, W)
     # Underfill derate (output-dim tiling): smallest per-core tile governs.
     eff, eff_rows = 1.0, 0.0
@@ -398,7 +491,8 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     red_trip = max((o.loop_trip for o in ops if not o.tiles_output_dim), default=1)
     pw_trip = max((o.loop_trip for o in ops if o.tiles_output_dim), default=1)
     loop_ns = (p.c_loop_ns * red_trip if red_trip > 1 else 0.0) + (
-        p.c_loop_pointwise_ns * pw_trip if pw_trip > 1 else 0.0)
+        p.c_loop_pointwise_ns * pw_trip if pw_trip > 1 else 0.0
+    )
     # Matmul compute (additive): sum the per-op compute term for any matmul ops.
     mm_us, mm_lines = 0.0, []
     for o in ops:
@@ -425,17 +519,21 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     lines.append(f"     R={R}B (read)   W={W}B (write)")
     lines.extend(mm_lines)
     if is_mm:
-        blab = (f"R/{p.mm_bw_read_gbps:.0f} + W/{p.mm_bw_write_gbps:.0f}")
+        blab = f"R/{p.mm_bw_read_gbps:.0f} + W/{p.mm_bw_write_gbps:.0f}"
     else:
         blab = f"(R+W)/{p.bw_peak_gbps:.0f}"
     lines.append(f"     base = {blab} = {base / 1000:.2f} us")
-    lines.append(f"     turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(R, W)} "
-                 f"= {turn / 1000:.2f} us")
+    lines.append(
+        f"     turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(R, W)} "
+        f"= {turn / 1000:.2f} us"
+    )
     if eff < 1.0:
         rf = p.underfill_pass_rows * p.underfill_target_passes_pointwise
-        lines.append(f"     eff_underfill = min(1,({eff_rows:.1f}/{rf:.0f})"
-                     f"**{p.underfill_exponent}) = {eff:.3f}  "
-                     f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us")
+        lines.append(
+            f"     eff_underfill = min(1,({eff_rows:.1f}/{rf:.0f})"
+            f"**{p.underfill_exponent}) = {eff:.3f}  "
+            f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
+        )
     if loop_ns > 0:
         lab = f"c_loop*{red_trip}" if red_trip > 1 else f"c_loop_pw*{pw_trip}"
         lines.append(f"     loop = {lab} = {loop_ns / 1000:.2f} us")
