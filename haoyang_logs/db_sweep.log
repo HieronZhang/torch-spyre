@@ -1,0 +1,298 @@
+==== cost-model database rebuild Thu Jul  9 20:41:03 UTC 2026 ====
+git: 2a5cdfa
+
+################################################################
+## >>> run_hbm_ops_sweep.sh 
+################################################################
+==== hbm-bound ops sweep Thu Jul  9 20:41:03 UTC 2026 ====
+git: 2a5cdfa  sections: HB1 HB2 HB3
+## HB1 pointwise: {neg,copy,gelu,exp,mul,add,add3,add4} x COLS
+-- neg [2048,1024]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op neg
+IO     output op0                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg0_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   => HBM I/O total = 8388608 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=4194304 B (read)   W=4194304 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 55.92 us
+MODEL   turn = a*min(R,W) = 0.00574*4194304 = 24.08 us
+MODEL   => T_model = 80.00 us
+SUMMARY op=neg rows=2048 cols=1024 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- copy [2048,1024]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg0_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  buf1                   device [1, 64] in HBM = 64 elems x 2B = 128 B  (hbm counted: 128 B) broadcast (loaded once)
+IO   => HBM I/O total = 8388736 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=4194432 B (read)   W=4194304 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 55.92 us
+MODEL   turn = a*min(R,W) = 0.00574*4194304 = 24.08 us
+MODEL   => T_model = 80.00 us
+SUMMARY op=copy rows=2048 cols=1024 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- gelu [2048,1024]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op gelu
+IO     output op0                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg0_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   => HBM I/O total = 8388608 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=4194304 B (read)   W=4194304 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 55.92 us
+MODEL   turn = a*min(R,W) = 0.00574*4194304 = 24.08 us
+MODEL   => T_model = 80.00 us
+SUMMARY op=gelu rows=2048 cols=1024 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- exp [2048,1024]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op exp
+IO     output op0                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg0_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   => HBM I/O total = 8388608 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=4194304 B (read)   W=4194304 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 55.92 us
+MODEL   turn = a*min(R,W) = 0.00574*4194304 = 24.08 us
+MODEL   => T_model = 80.00 us
+SUMMARY op=exp rows=2048 cols=1024 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- mul [2048,1024]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op mul
+IO     output op0                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg0_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg1_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   => HBM I/O total = 12582912 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=8388608 B (read)   W=4194304 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 83.89 us
+MODEL   turn = a*min(R,W) = 0.00574*4194304 = 24.08 us
+MODEL   => T_model = 107.96 us
+SUMMARY op=mul rows=2048 cols=1024 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- add [2048,1024]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg0_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg1_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   => HBM I/O total = 12582912 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=8388608 B (read)   W=4194304 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 83.89 us
+MODEL   turn = a*min(R,W) = 0.00574*4194304 = 24.08 us
+MODEL   => T_model = 107.96 us
+SUMMARY op=add rows=2048 cols=1024 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- add3 [2048,1024]
+  op_it_space_splits={d0: 32, d1: 1}
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg0_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg1_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   op add_1
+IO     output op1                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  buf0                   torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg2_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   => HBM I/O total = 25165824 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=16777216 B (read)   W=8388608 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 167.77 us
+MODEL   turn = a*min(R,W) = 0.00574*8388608 = 48.15 us
+MODEL   => T_model = 232.12 us
+SUMMARY op=add3 rows=2048 cols=1024 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- add4 [2048,1024]
+  op_it_space_splits={d0: 32, d1: 1}
+  op_it_space_splits={d0: 32, d1: 1}
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg0_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg1_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   op add_1
+IO     output op1                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  buf0                   torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg2_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   op add_2
+IO     output op2                    torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  buf1                   torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg3_1                 torch [2048, 1024] -> device [16, 2048, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   => HBM I/O total = 37748736 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=25165824 B (read)   W=12582912 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 251.66 us
+MODEL   turn = a*min(R,W) = 0.00574*12582912 = 72.23 us
+MODEL   => T_model = 372.47 us
+SUMMARY op=add4 rows=2048 cols=1024 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- neg [2048,4096]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op neg
+IO     output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   => HBM I/O total = 33554432 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=16777216 B (read)   W=16777216 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 223.70 us
+MODEL   turn = a*min(R,W) = 0.00574*16777216 = 96.30 us
+MODEL   => T_model = 320.00 us
+SUMMARY op=neg rows=2048 cols=4096 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- copy [2048,4096]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  buf1                   device [1, 64] in HBM = 64 elems x 2B = 128 B  (hbm counted: 128 B) broadcast (loaded once)
+IO   => HBM I/O total = 33554560 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=16777344 B (read)   W=16777216 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 223.70 us
+MODEL   turn = a*min(R,W) = 0.00574*16777216 = 96.30 us
+MODEL   => T_model = 320.00 us
+SUMMARY op=copy rows=2048 cols=4096 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- gelu [2048,4096]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op gelu
+IO     output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   => HBM I/O total = 33554432 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=16777216 B (read)   W=16777216 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 223.70 us
+MODEL   turn = a*min(R,W) = 0.00574*16777216 = 96.30 us
+MODEL   => T_model = 320.00 us
+SUMMARY op=gelu rows=2048 cols=4096 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- exp [2048,4096]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op exp
+IO     output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   => HBM I/O total = 33554432 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=16777216 B (read)   W=16777216 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 223.70 us
+MODEL   turn = a*min(R,W) = 0.00574*16777216 = 96.30 us
+MODEL   => T_model = 320.00 us
+SUMMARY op=exp rows=2048 cols=4096 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- mul [2048,4096]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op mul
+IO     output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg1_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   => HBM I/O total = 50331648 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=33554432 B (read)   W=16777216 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 335.54 us
+MODEL   turn = a*min(R,W) = 0.00574*16777216 = 96.30 us
+MODEL   => T_model = 431.85 us
+SUMMARY op=mul rows=2048 cols=4096 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- add [2048,4096]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg1_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   => HBM I/O total = 50331648 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=33554432 B (read)   W=16777216 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 335.54 us
+MODEL   turn = a*min(R,W) = 0.00574*16777216 = 96.30 us
+MODEL   => T_model = 431.85 us
+SUMMARY op=add rows=2048 cols=4096 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- add3 [2048,4096]
+  op_it_space_splits={d0: 32, d1: 1}
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg1_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   op add_1
+IO     output op1                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  buf0                   torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg2_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   => HBM I/O total = 100663296 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=67108864 B (read)   W=33554432 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 671.09 us
+MODEL   turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+MODEL   => T_model = 928.47 us
+SUMMARY op=add3 rows=2048 cols=4096 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- add4 [2048,4096]
+  op_it_space_splits={d0: 32, d1: 1}
+  op_it_space_splits={d0: 32, d1: 1}
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg1_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   op add_1
+IO     output op1                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  buf0                   torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg2_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   op add_2
+IO     output op2                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  buf1                   torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg3_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   => HBM I/O total = 150994944 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=100663296 B (read)   W=50331648 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 1006.63 us
+MODEL   turn = a*min(R,W) = 0.00574*50331648 = 288.90 us
+MODEL   => T_model = 1489.87 us
+SUMMARY op=add4 rows=2048 cols=4096 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- neg [2048,16384]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op neg
+IO     output op0                    torch [2048, 16384] -> device [256, 2048, 64] in HBM = 33554432 elems x 2B = 67108864 B  (hbm counted: 67108864 B)
+IO     input  arg0_1                 torch [2048, 16384] -> device [256, 2048, 64] in HBM = 33554432 elems x 2B = 67108864 B  (hbm counted: 67108864 B)
+IO   => HBM I/O total = 134217728 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=67108864 B (read)   W=67108864 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 894.78 us
+MODEL   turn = a*min(R,W) = 0.00574*67108864 = 385.20 us
+MODEL   => T_model = 1279.99 us
+SUMMARY op=neg rows=2048 cols=16384 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- copy [2048,16384]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 16384] -> device [256, 2048, 64] in HBM = 33554432 elems x 2B = 67108864 B  (hbm counted: 67108864 B)
+IO     input  arg0_1                 torch [2048, 16384] -> device [256, 2048, 64] in HBM = 33554432 elems x 2B = 67108864 B  (hbm counted: 67108864 B)
+IO     input  buf1                   device [1, 64] in HBM = 64 elems x 2B = 128 B  (hbm counted: 128 B) broadcast (loaded once)
+IO   => HBM I/O total = 134217856 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=67108992 B (read)   W=67108864 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 894.79 us
+MODEL   turn = a*min(R,W) = 0.00574*67108864 = 385.20 us
+MODEL   => T_model = 1279.99 us
+SUMMARY op=copy rows=2048 cols=16384 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- gelu [2048,16384]
+  op_it_space_splits={d0: 32, d1: 1}
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op gelu
+IO     output op0                    torch [2048, 16384] -> device [256, 2048, 64] in HBM = 33554432 elems x 2B = 67108864 B  (hbm counted: 67108864 B)
+IO     input  arg0_1                 torch [2048, 16384] -> device [256, 2048, 64] in HBM = 33554432 elems x 2B = 67108864 B  (hbm counted: 67108864 B)
+IO   => HBM I/O total = 134217728 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=67108864 B (read)   W=67108864 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 894.78 us
+MODEL   turn = a*min(R,W) = 0.00574*67108864 = 385.20 us
+MODEL   => T_model = 1279.99 us
+SUMMARY op=gelu rows=2048 cols=16384 tiles=0 lx=0 FAILED reason=TypeError: Object of type Integer is not JSON serializable
+-- exp [2048,16384]
