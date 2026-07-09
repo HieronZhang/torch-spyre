@@ -23,9 +23,19 @@ term breakdown (compute / base / turn / eff_underfill / c_loop / T_model), and t
 per-tensor IO. Records from several logs MERGE into one file keyed by ``log:lineno``, so
 re-parsing a log updates its rows in place (idempotent) without touching other logs.
 
+PROVENANCE / VERSION HYGIENE. ``pred_us`` / ``T_model_us`` are baked into each log at RUN
+time, so a log carries the predictions of whatever model version produced it -- mixing
+logs mixes model generations. Every sweep header echoes ``git: <sha>``; we capture it as
+``model_sha`` (and ``log_date`` from the filename) on each record, then flag ``is_current``
+= (model_sha == the current-model SHA). The MEASURED ``kernel_us`` is version-independent
+and always trustworthy; ``pred_us`` is only trustworthy for ``is_current`` rows. Use
+``--current-sha`` to set the authoritative SHA (default: the SHA of the newest parsed log)
+and ``--drop-ops`` to exclude retired ops (e.g. ``chain``) from the output entirely.
+
     python notes/parse_sweep_logs.py haoyang_logs/tiling_terms_*.log
     python notes/parse_sweep_logs.py                 # default: haoyang_logs/*.log
     python notes/parse_sweep_logs.py --out notes/sweep_records.json <logs...>
+    python notes/parse_sweep_logs.py --drop-ops chain --current-sha c2bb9ce
 
 Writes ``<out>.json`` (full structure) and ``<out>.csv`` (flat scalar columns).
 """
@@ -38,6 +48,8 @@ import os
 
 import regex as re
 
+_GIT = re.compile(r"^git:\s*([0-9a-f]{7,40})\b")
+_LOG_DATE = re.compile(r"_(\d{8})_(\d{6})")  # <name>_YYYYMMDD_HHMMSS.log
 _SECTION = re.compile(r"^##\s+(.*\S)")
 _LABEL = re.compile(r"^--\s+(.*\S)")
 _RUN_HDR = re.compile(r"^===\s+(.*?)\s+===\s*$")  # 3-equals run header (not the banner)
@@ -53,7 +65,7 @@ _M_TURN = re.compile(r"turn =.*?=\s*([\d.]+) us")
 _M_COMPUTE = re.compile(
     r"compute =.*?=\s*([\d.]+) us\s+\(M/m=([\d.]+), pt_eff=([\d.]+)\)"
 )
-_M_EFF = re.compile(r"eff_underfill = min\(1,.*?\)\s*=\s*([\d.]+)\b")
+_M_EFF = re.compile(r"eff_underfill = min\([^,]+,.*?\)\s*=\s*([\d.]+)\b")
 _M_LOOP = re.compile(r"loop = c_loop\*L =.*?=\s*([\d.]+) us")
 _M_TMODEL = re.compile(r"=> T_model =\s*([\d.]+) us")
 
@@ -86,16 +98,22 @@ def _parse_summary(line):
 def _parse_model(text):
     """Pull the term breakdown out of the joined ``MODEL`` lines of one run."""
     m = {}
-    if (g := _M_RW.search(text)):
+    if g := _M_RW.search(text):
         m["R"], m["W"], m["loop_trip"] = int(g[1]), int(g[2]), int(g[3])
-    for key, rx in (("base_us", _M_BASE), ("turn_us", _M_TURN),
-                    ("eff_underfill", _M_EFF), ("loop_us", _M_LOOP),
-                    ("T_model_us", _M_TMODEL)):
-        if (g := rx.search(text)):
+    for key, rx in (
+        ("base_us", _M_BASE),
+        ("turn_us", _M_TURN),
+        ("eff_underfill", _M_EFF),
+        ("loop_us", _M_LOOP),
+        ("T_model_us", _M_TMODEL),
+    ):
+        if g := rx.search(text):
             m[key] = float(g[1])
-    if (g := _M_COMPUTE.search(text)):
+    if g := _M_COMPUTE.search(text):
         m["compute_us"], m["m_over_m"], m["pt_eff"] = (
-            float(g[1]), float(g[2]), float(g[3])
+            float(g[1]),
+            float(g[2]),
+            float(g[3]),
         )
     return m
 
@@ -104,16 +122,24 @@ def _parse_io(io_lines):
     """List of per-tensor dicts + the HBM/LX totals from one run's ``IO`` block."""
     ops, cur, total = [], None, {}
     for ln in io_lines:
-        if (g := _IO_OP.match(ln)):
+        if g := _IO_OP.match(ln):
             cur = {"op": g[1], "kind": g[2], "tensors": []}
             ops.append(cur)
         elif (g := _IO_TENSOR.match(ln)) and cur is not None:
-            cur["tensors"].append({
-                "role": g[1], "name": g[2], "logical": g[3], "device": g[4],
-                "mem": g[5], "elems": int(g[6]), "bytes": int(g[7]),
-                "hbm_counted": int(g[8]), "flags": g[9].strip(),
-            })
-        elif (g := _IO_TOTAL.search(ln)):
+            cur["tensors"].append(
+                {
+                    "role": g[1],
+                    "name": g[2],
+                    "logical": g[3],
+                    "device": g[4],
+                    "mem": g[5],
+                    "elems": int(g[6]),
+                    "bytes": int(g[7]),
+                    "hbm_counted": int(g[8]),
+                    "flags": g[9].strip(),
+                }
+            )
+        elif g := _IO_TOTAL.search(ln):
             total = {"hbm_bytes": int(g[1]), "lx_bytes": int(g[2])}
     return ops, total
 
@@ -123,20 +149,22 @@ def _derive(rec):
     op, label = rec.get("op"), rec.get("label") or ""
     if op in ("mm", "mmwd"):
         rec["M"], rec["K"] = rec.get("rows"), rec.get("cols")
-        if (g := _LBL_MNK.search(label)):
+        if g := _LBL_MNK.search(label):
             rec["M"], rec["K"], rec["N"] = int(g[1]), int(g[2]), int(g[3])
         if all(rec.get(d) for d in ("M", "K", "N")):
             rec["macs"] = rec["M"] * rec["N"] * rec["K"]
-        if (g := _LBL_SPLIT.search(label)):
+        if g := _LBL_SPLIT.search(label):
             rec["split_forced"] = {"m": int(g[1]), "n": int(g[2]), "k": int(g[3])}
         # actual on-device split: d0=M(m), d1=N(n), d2=K(k)
         sp = rec.get("op_it_space_splits") or {}
         if sp:
             rec["split_actual"] = {
-                "m": sp.get("d0", 1), "n": sp.get("d1", 1), "k": sp.get("d2", 1)
+                "m": sp.get("d0", 1),
+                "n": sp.get("d1", 1),
+                "k": sp.get("d2", 1),
             }
     elif op == "chain":
-        if (g := _LBL_RPC.search(label)):
+        if g := _LBL_RPC.search(label):
             rec["rows_per_core"] = int(g[1])
     return rec
 
@@ -144,17 +172,25 @@ def _derive(rec):
 def parse_log(path):
     """Yield one record dict per SUMMARY line in ``path``."""
     base = os.path.basename(path)
+    dm = _LOG_DATE.search(base)
+    log_date = f"{dm[1]}_{dm[2]}" if dm else ""
+    model_sha = ""  # set by the first ``git: <sha>`` header line (sweep provenance)
     section = label = None
     splits, io_lines, model_lines = {}, [], []
     with open(path, encoding="utf-8", errors="replace") as f:
         for lineno, raw in enumerate(f, 1):
             line = raw.rstrip("\n")
-            if (g := _SECTION.match(line)):
+            if (g := _GIT.match(line)) and not model_sha:
+                model_sha = g[1][:7]
+            elif g := _SECTION.match(line):
                 section = g[1]
-            elif (g := _LABEL.match(line)):
+            elif g := _LABEL.match(line):
                 label = g[1]
-            elif (g := _RUN_HDR.match(line)) and "sweep" not in line and "DONE" \
-                    not in line:
+            elif (
+                (g := _RUN_HDR.match(line))
+                and "sweep" not in line
+                and "DONE" not in line
+            ):
                 label = g[1]
             elif (g := _SPLITS.findall(line)) and "op_it_space_splits" in line:
                 splits = {k: int(v) for k, v in g}
@@ -164,8 +200,13 @@ def parse_log(path):
                 model_lines.append(line)
             elif line.startswith("SUMMARY"):
                 rec = {
-                    "id": f"{base}:{lineno}", "log_file": base, "lineno": lineno,
-                    "section": section, "label": label,
+                    "id": f"{base}:{lineno}",
+                    "log_file": base,
+                    "lineno": lineno,
+                    "model_sha": model_sha,
+                    "log_date": log_date,
+                    "section": section,
+                    "label": label,
                     "op_it_space_splits": splits or None,
                 }
                 rec.update(_parse_summary(line))
@@ -180,17 +221,47 @@ def parse_log(path):
 
 
 _CSV_COLS = [
-    "id", "log_file", "section", "op", "M", "K", "N", "rows", "cols", "tiles", "lx",
-    "rows_per_core", "cores", "macs", "kernel_us", "pred_us", "err_pct", "bw_gbps",
-    "memset_us", "other_dev_us", "total_dev_us", "io_hbm_bytes", "failed",
+    "id",
+    "log_file",
+    "model_sha",
+    "log_date",
+    "is_current",
+    "section",
+    "op",
+    "M",
+    "K",
+    "N",
+    "rows",
+    "cols",
+    "tiles",
+    "lx",
+    "rows_per_core",
+    "cores",
+    "macs",
+    "kernel_us",
+    "pred_us",
+    "err_pct",
+    "bw_gbps",
+    "memset_us",
+    "other_dev_us",
+    "total_dev_us",
+    "io_hbm_bytes",
+    "failed",
 ]
 
 
 def _flatten(rec):
     row = {c: rec.get(c, "") for c in _CSV_COLS}
     m = rec.get("model", {})
-    for k in ("compute_us", "base_us", "turn_us", "eff_underfill", "pt_eff", "loop_us",
-              "T_model_us"):
+    for k in (
+        "compute_us",
+        "base_us",
+        "turn_us",
+        "eff_underfill",
+        "pt_eff",
+        "loop_us",
+        "T_model_us",
+    ):
         row[k] = m.get(k, "")
     sf, sa = rec.get("split_forced"), rec.get("split_actual")
     row["split_forced"] = "" if not sf else f"{sf['m']}x{sf['n']}x{sf['k']}"
@@ -204,6 +275,17 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(here)
     ap.add_argument("--out", default=os.path.join(here, "sweep_records.json"))
+    ap.add_argument(
+        "--drop-ops",
+        default="",
+        help="comma list of ops to EXCLUDE from output (e.g. chain)",
+    )
+    ap.add_argument(
+        "--current-sha",
+        default="",
+        help="model SHA whose pred_us is authoritative (default: newest "
+        "parsed log's git sha). Flags is_current on every record.",
+    )
     args = ap.parse_args()
 
     logs = args.logs or sorted(glob.glob(os.path.join(root, "haoyang_logs", "*.log")))
@@ -223,13 +305,39 @@ def main():
     touched = {os.path.basename(p) for p in logs}
     merged = {i: r for i, r in merged.items() if r["log_file"] not in touched}
     merged.update(parsed)
-    records = sorted(merged.values(), key=lambda r: (r["log_file"], r["lineno"]))
+
+    # Drop retired ops entirely (e.g. chain), then flag the authoritative model version.
+    drop = {o.strip() for o in args.drop_ops.split(",") if o.strip()}
+    records = [r for r in merged.values() if r.get("op") not in drop]
+    # current-sha default: the git sha of the newest parsed log (by log_date).
+    cur_sha = args.current_sha
+    if not cur_sha:
+        dated = [r for r in records if r.get("model_sha") and r.get("log_date")]
+        if dated:
+            cur_sha = max(dated, key=lambda r: r["log_date"])["model_sha"]
+    for r in records:
+        r["is_current"] = bool(cur_sha) and r.get("model_sha") == cur_sha
+    records = sorted(records, key=lambda r: (r["log_file"], r["lineno"]))
+    n_cur = sum(1 for r in records if r["is_current"])
+    print(
+        f"  current-model sha={cur_sha or '(none)'}: {n_cur} current rows"
+        + (f"; dropped ops {sorted(drop)}" if drop else "")
+    )
 
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump({"records": records}, f, indent=2)
     csv_path = os.path.splitext(args.out)[0] + ".csv"
-    cols = _CSV_COLS + ["split_forced", "split_actual", "compute_us", "base_us",
-                        "turn_us", "eff_underfill", "pt_eff", "loop_us", "T_model_us"]
+    cols = _CSV_COLS + [
+        "split_forced",
+        "split_actual",
+        "compute_us",
+        "base_us",
+        "turn_us",
+        "eff_underfill",
+        "pt_eff",
+        "loop_us",
+        "T_model_us",
+    ]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()

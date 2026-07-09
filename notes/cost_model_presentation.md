@@ -31,7 +31,7 @@ T = compute + HBM/eff − γ·min(compute, HBM/eff)
 | `HBM` (access-pattern op) | `(R+W)/BW_eff` | per-op effective BW (`transpose`/`cat0`/`sumcol`) |
 | `HBM` (matmul) | `R/BW_r + W/BW_w + α·min(R,W) + spill` | two-rate reads/writes + operand re-read |
 | `compute` (matmul only) | `MACs / cores / peak` | `MACs=M·N·K`, cores = split product; else `compute=0` |
-| **`eff`** (underfill) | `min(1, (rows_per_core / r_full)^0.35)`, `r_full≈16` | **coarse-tiling only**: a short per-core tile underfills the streaming pipeline → derates HBM. `=1` untiled or when the tile is tall enough |
+| **`eff`** (underfill) | `min(0.95, (rpc / 13)^0.68)`, `rpc = ROWS/(cores·tiles)` | **coarse-tiling only**: a short per-core tile (rpc rows) underfills the streaming pipeline → derates HBM. Keys on ROWS (rpc), not tile bytes (cross-COLS control). `=1` untiled. Separate from the matmul `pt_eff` |
 | `γ·min(compute,HBM)` | `γ=0.46` | compute/HBM **overlap** (memory hides behind compute) |
 | `spill` | `|A|·f(M/m) + |B|·f(N/n)`, `f(t)=min(1.7, 1.1·log₂(t/448))` | matmul per-core operand **re-read** past on-chip capacity |
 | n-ary derate | `× (1 + 0.075·(n_ops−1))` | multi-pass pointwise chain (`add3/add4`, HBM intermediates) |
@@ -39,11 +39,10 @@ T = compute + HBM/eff − γ·min(compute, HBM/eff)
 Constants: `BW_peak=150`, `α=0.00574 ns/B`, matmul `BW_r=143 / BW_w=156`,
 `peak=1140 MAC/ns/core`. K is always kept whole (`WD_K=1`); K-split is never used.
 
-> **Coarse-tiling caveat (§5):** a coarse-tiled op is ONE *fused* kernel (intermediates stay
-> in LX). The model builds `R`,`W` by **summing per-op bytes** — correct for an untiled chain
-> (each op is a separate kernel + HBM round-trip) but WRONG when fused: an input read by two
-> fused ops (e.g. `softmax`'s `arg0` in `amax` *and* `sub`) is loaded from HBM **once** and
-> reused from LX, yet the sum counts it twice. This is the main coarse-tiling error today.
+> **Coarse-tiling (§5):** a coarse-tiled op is ONE *fused* kernel (intermediates stay in LX).
+> `R`,`W` therefore count each distinct **external** input once + outputs once (`_fused_hbm_bytes`):
+> `softmax`'s `arg0`, read by `amax` *and* `sub`, is loaded from HBM **once** (2nd read served
+> on-chip) — the old per-op sum double-counted it (~+25% at the floor). Fixed 2026-07-09.
 
 ## (2) Data — ~180 points from the profiling DB (`run_db_sweep.sh` + re-read sweep)
 
@@ -96,8 +95,9 @@ validated (never model-minus-model on an unvalidated term):
    balanced cores=32 runs is operand re-read. Decouple with two sweeps: vary the matrix
    dim at a **fixed split** (isolates the per-core tile) and vary fanout at a **fixed small
    tile** (proved fanout is *not* a term). → re-read is a per-operand log-curve in M/m, N/n.
-   (**K-split `WD_K>1` is excluded** — the planner always keeps K whole; we confirmed the
-   old `(k−1)·out` "psum" ring term is ≈ 0, so it is simply dropped.)
+   (**K-split `WD_K>1` is excluded** — the planner always keeps K whole. The old `(k−1)·out`
+   "psum" ring term is now **gated off matmul**: forcing `WD_K>1` made it explode (+489%), and
+   since K is never split it contributes nothing in practice.)
 
 Result: **≈8–12 % RMS across the balanced matmul range** (cores 4→32, MNK 2e9→3.4e10;
 ≈8 % on power-of-2 shapes, the −40 % tail is non-power-of-2 N stick-padding, unmodeled).
@@ -122,29 +122,26 @@ So a plain copy (`neg`) and most transports share the ~105–116 balanced rate; 
 outliers (`transpose` faster, `cat0` slower) get a per-op `BW_eff` that the extractor
 reads straight from the IR (stick-var coefficient in the load index / device layout).
 
-## (5) Coarse tiling — a fused kernel, NOT a sum of kernels (open rework)
+## (5) Coarse tiling — a fused kernel, NOT a sum of kernels
 
-`softmax_row_tiling` (`softmax(x,dim=-1)`), `chain` (`(a+b)*c`), `matmul_row_tiling` (`a@b`)
-tile one dimension so a loop runs all the ops **fused into ONE kernel**, keeping the
-intermediates in LX. The model handles the untiled case correctly (each op is a separate
-kernel → sum the per-op HBM), but the fused case has a **structural error**:
+`softmax_row_tiling` (`softmax(x,dim=-1)`) and `matmul_row_tiling` (`a@b`) tile one dimension
+so a loop runs all the ops **fused into ONE kernel**, intermediates in LX. Two mechanisms,
+isolated by the `softmax_terms` grid + a cross-COLS control (COLS 2048 vs 4096 at matched
+per-core tile) + an adversarial challenge; `rpc = ROWS/(cores·tiles)` = per-core rows per tile:
 
-- **Fatal error — double-counted reused inputs.** Summing per-op `R`/`W` counts an input
-  read by several fused ops once *per op*. `softmax` reads `arg0` in both `amax` and `sub`,
-  so the model charges `2×arg0` of HBM — but the fused kernel loads each tile **once** and
-  `sub` reads it back **from LX**. The correct fused HBM is *distinct external inputs once +
-  outputs once*; internal reuse and intermediates are LX (free), with compute pipelined
-  behind that I/O. This is not a tunable "effective R" — it is a fixed 1× read that only
-  breaks when a tile exceeds LX.
-- **Tile-count trend, explained physically** (measured, not fit):
+- **Fused HBM — external input counted once (fixed 2026-07-09).** `softmax` reads `arg0` in
+  both `amax` and `sub`; the fused kernel loads it from HBM **once** and serves the 2nd read
+  on-chip. Counting it per-op over-charged the floor ~25%. Confirmed physically: at the
+  underfill-free floor softmax runs at ~100 GB/s = the balanced-copy rate (1 read + 1 write).
+- **Underfill keys on ROWS (rpc), not tile bytes, and not the tile count `L`.** At matched
+  `rpc`, doubling COLS (2× tile bytes) leaves per-byte cost unchanged (±4%); and four `T=4..32`
+  points at `rpc=16` cost the same (so `L` is not the driver). `eff` = `min(0.95,(rpc/13)^0.68)`:
+  plateau ~0.95 at rpc 16–32, cliff below (rpc4≈0.45, rpc2≈0.28). Softmax now **RMS 7.3%**
+  (floor ±2%; residual: rpc≤8 +8–10%, rpc≥64 −7…−14% — a mild rows-driven rise the cap omits).
+- **LX-spill is auto-captured, not a modeled knee.** When a per-core tile overflows LX (~1–2
+  MB/core) the compiler spills intermediates to HBM and the **IR already reflects it** (the
+  extractor counts the extra bytes). Remaining gap: spilled traffic runs ~34% slower than the
+  byte model (1 data point) — a rate effect, deferred to a finer knee sweep.
 
-  | op | kernel vs #tiles | why |
-  |---|---|---|
-  | `softmax_row_tiling` | **decreases** | tile fits LX → `arg0`'s 2nd read is LX not HBM (→1× read); at few/big tiles the tile exceeds LX (~33–50 MB knee: `[16384,4096] t=2` = 67 MB tile spills, runs like untiled) so it re-reads |
-  | `chain` | flat then **cliffs** | pure **underfill** — proven by the tall `[16384,512]` staying flat (rows/core ≥ `r_full`≈16) while wide `[2048,4096]` cliffs; the `eff` exponent (0.35) is too weak |
-  | `matmul_row_tiling` | **U-shape / grows** | same underfill, but on the per-tile M — `pt_eff` must be keyed on `M/tiles`, not the whole M |
-
-- **Fixes (in progress):** (a) count each distinct external HBM input once for a fused
-  kernel + add an LX-capacity spill (the ~33–50 MB knee) when a tile overflows; (b) steepen
-  the `eff` underfill exponent (fixes `chain`); (c) key `matmul_row_tiling`'s `pt_eff` /
-  underfill on the coarse-tile `M/tiles`. Until then the coarse rows in §2 carry ~11–20 % RMS.
+`chain` was dropped (per user). `matmul_row_tiling` still open — same underfill but on the
+per-tile `M`; needs `pt_eff` keyed on `M/tiles`.

@@ -1,148 +1,191 @@
-# Spyre Cost Model — Current Status (2026-07-01)
+# Spyre Cost Model — Status / Handoff (2026-07-07)
 
-Living status/handoff doc — the single up-to-date source. Read this first on resume.
-Companions: [cost_model_summary.md](cost_model_summary.md) (model + matmul plan),
-[cost_model_design.md](cost_model_design.md) (older full design; partly stale).
+Living status + detail doc — **read this first on resume**. The concise model write-up is
+[cost_model_presentation.md](cost_model_presentation.md) (the MAIN doc; keep it short). This
+file holds the details that don't belong there: implementation state, open work, methodology,
+tooling, next steps. Keep the two in sync — if a number changes here, update the presentation.
 
-Goal: a HIGH-LEVEL **relative** cost model over the after-pre-scheduling LoopLevel IR,
-to guide optimization decisions (LX placement, whether/how to coarse-tile). Accurate
-*ranking* + ±15-20% is the bar; re-sweepable when the compiler/HW changes. No local HW —
-edits done locally, commands handed to a run machine, logs pasted back.
+Goal: a HIGH-LEVEL **relative** cost model over the after-pre-scheduling LoopLevel IR, to
+guide optimization (LX placement, coarse-tiling). Bar: correct ranking + ±15-20%. No local HW —
+edit locally, hand commands to a run machine, logs pasted back.
 
-## Golden measurement (IMPORTANT)
+## Golden measurement
 
-Use the **AIU profiler**: `torch.profiler` ProfilerActivity.PrivateUse1, "Self SPYRE"
-per-kernel device time. The harness ([profile_ops.py]) does this. The new runtime image
-leaves the kernel event **name BLANK**, so we now classify the kernel **by exclusion**
-(device time that is NOT Memset and NOT Memcpy) — a name match (`sdsc_fused`) silently
-returned 0. Do NOT use `SPYRE_PROFILE` (host launch) or `SPYRE_PROFILE_SYNC` (needs
-`SPYRE_PROFILE=1` too, and is still a host wall-clock) — they are not the golden path.
+AIU profiler: `torch.profiler` PrivateUse1, "Self SPYRE" per-kernel device time (harness
+`profile_ops.py`). New image leaves the kernel name BLANK → classify **by exclusion** (device
+time not Memset/Memcpy). Do NOT use `SPYRE_PROFILE`/`SPYRE_PROFILE_SYNC` (host wall-clocks).
 
-## The model (torch_spyre/_inductor/cost_model.py)
+## Model + params (implemented in torch_spyre/_inductor/cost_model.py)
 
-```
-T = fill + [ hbm ] / eff_underfill + matmul_compute + combine + c_loop*L
-hbm      = (R+W)/BW_PEAK + a*min(R,W)             (pointwise/reduction/transport)
-         = R/mm_bw_read + W/mm_bw_write + a*min(R,W)   (matmul, TWO-RATE)
-matmul_compute = MACs/cores/(mac_peak * pt_eff)   (ADDITIVE)
-combine  = (k-1)*out_elems*psum_per_elem          (reduction ring / matmul PSUM)
-```
+Form: `T = compute + HBM/eff − γ·min(compute, HBM/eff)` (see presentation §1 for term table).
 
-Params + validation status:
 | param | value | status |
 |---|---|---|
-| `bw_peak_gbps` | 150 | ✅ pointwise/reduction (~2-7%) |
-| `rw_turnaround_ns_per_byte` (a) | 0.00574 | ✅ pointwise balanced |
-| `mm_bw_read_gbps` / `mm_bw_write_gbps` | 143 / 156 | ✅ NEW, fit on M1 (±4%, cores=32) |
-| `mac_peak_per_core_ns` | 1536 | ⚠️ datasheet; matches at cores=32, off at cores=16 |
-| `underfill_pass_rows` / `_target_passes_pointwise` / `_exponent` | 8 / 2 (r_full=16) / 0.35 | ✅ chain sweep |
-| `underfill_target_passes_matmul` | 8 (r_full=64) | ⚠️ pt_eff=1 for all tested (M/m>=128); NOT the split lever -- split penalty is FANOUT, see below |
-| `c_loop_ns` (reduction-dim tiling) | 860 | ✅ reduction K-sweep |
-| `c_loop_pointwise_ns` | 0 | ✅ Section-A chain flat |
-| `psum_per_elem_ns` | 0.14 | ❌ matmul PSUM 3-10x over (see below) |
+| `bw_peak_gbps` / `rw_turnaround_ns_per_byte` | 150 / 0.00574 | ✅ pointwise/reduction ±5% |
+| `mm_bw_read_gbps` / `mm_bw_write_gbps` | 143 / 156 | ✅ M1 compute-free sweep |
+| `mac_peak_per_core_ns` | **1140** (was 1536) | ✅ compute-dominant low-core fit |
+| `overlap_gamma` | **0.46** (NEW) | ✅ jointly fit w/ peak, RMS 1.7% |
+| `mm_spill_t0 / slope / cap` | **448 / 1.10 / 1.70** (NEW) | ✅ decouple+reread sweeps |
+| `bw_restickify / stick_scatter / reduce_outer_gbps` | **116 / 60 / 113** (NEW) | ✅ HW-validated |
+| `pointwise_arity_derate` | **0.075** (NEW) | ✅ add3/add4 |
+| matmul `pt_eff` (`r_full=64`, `exp 0.35`) | matmul only | ✅ unchanged |
+| `coarse_underfill` (`r_full 13`, `exp 0.68`, `cap 0.95`) | coarse/softmax only (2026-07-09) | ✅ re-fit, softmax RMS 7.3% |
+| `psum_per_elem_ns` | **0.14, GATED off matmul** (2026-07-08) | ✅ bug fixed (was +489% on forced `WD_K>1`) |
 
-## Findings by op category
+All matmul + per-op changes are **implemented in cost_model.py + dump_cost_model.py**.
+Coarse-tiling terms are NOT reworked yet (open).
 
-**Pointwise / reduction** — turnaround HBM model, ~2-7%. Settled.
+### ⚠️ Version hygiene — the recorded `pred_us` is NOT current (2026-07-08)
 
-**Coarse-tiling (chain / softmax / matmul row-tiling)** — output-dim tiling fuses ops into
-one loop with intermediates LX-resident. Two mechanisms: `c_loop*L` (per-iteration, ~0 for
-pointwise, 860ns for reduction-dim) and `eff_underfill` (per-tile-SIZE derate, p=0.35,
-saturates rc>=16). `rc=1` "anomaly" = planner switches row-split -> col-split, so
-`tile_rows_per_core` now uses the ROW-dim split (d0), not total cores. **Now measured on the
-golden profiler** (2026-07-01): `softmax_row_tiling` [16384x4096] +11.8% (model over),
-`matmul_row_tiling` [2048^3] -9.9% (model under) — both within bar, opposite signs, so the
-fused-LX-resident structure is validated (arg0 confirmed re-read twice in softmax: read-once
-would be -17%, twice +12%). Two small residuals for the backlog, NOT knobs: (a) the turnaround
-term is too big in a fused reduce-softmax (reads and the single write are temporally separated
--> ~L direction-switches, not min(R,W)-proportional); (b) coarse-tiled matmul wants a small
-per-tile overhead (~10us/tile), distinct from the reduction-dim c_loop=860.
+An adversarial review + direct checks found the dataset **mixes model generations**: `pred_us`
+is baked into each log at run time, `sweep_records.csv` spans 14 log-families (June→July), and
+26 configs have divergent `pred_us` for identical shapes. The old `db_sweep.log` (the claimed
+"validated re-run") **predates the extractor false-positive fix** — `sumall` still shows +37/+40%
+and `transpose_outer` +66/+49% in those records — and now also predates the psum gate. **Its raw
+file is gone** (records survive only in the CSV). So the earlier "HW-validated ±5% / matmul 8%"
+claims are **not backed by current-model records**. Only the measured `kernel_us` is version-
+independent and trustworthy.
 
-**Matmul** — `T = compute + hbm + psum`, additive (K-sweep at cores=32).
-- HBM: **fixed to two-rate 143/156** (reads slower than writes), ±4% on the compute-free
-  M1 sweep. Read-dom went -8% -> ~0%.
-- Compute: datasheet peak matches at **cores=32 for BALANCED splits**. Split sweep
-  (run_split_sweep.sh, k=1, 3 sizes) -> additive model accurate a few % (SP3 2048^3:
-  -2.8/+1.7/+2.1%) to ~15% (SP2 large M) for m,n in {2,4,8} -- the region a planner picks.
-  BUT the split alone swings true time up to **1.9x at fixed compute/hbm/bytes** (V-shape,
-  min 4x8). Penalty onset is a **FANOUT threshold, NOT rows/core**: B-fanout m>8 (m=16: 1.65
-  SP1 / 1.85 SP2, replicated) and A-fanout n>16 (n=32: 1.91, SP1). Decoupled from tile height
-  by m8-vs-m16 at equal M/m=256 (0.98 vs 1.65 -> tracks m; pt_eff=1 for all, so the existing
-  underfill is blind to it). **`(fanout/8)^0.75` FALSIFIED**: predicts 1.68 at n=16 where
-  actual is 1.12, and saturates (m16=m32=1.65) instead of growing. CONFOUND remaining: n=32
-  also = N/n=64 (1 stick), so fanout vs per-core-width not yet separated. NO param change
-  until run_decouple_sweep.sh (vary MATRIX dim at FIXED 4x8) isolates them.
-- PSUM: **model 3-10x over** (k=8 total +472%). But CANNOT be isolated until hbm+compute
-  are accurate (varying k at fixed cores changes (m,n) -> moves hbm+compute). psum is LAST.
+Parser now stamps provenance: `model_sha` (from each sweep's `git:` header), `log_date`, and
+`is_current` (= `model_sha == --current-sha`); `--drop-ops chain` retires `chain`. After the
+cleanup only **21 rows are `is_current`** (the `coarse_terms` coarse ops). **ACTION REQUIRED: a
+fresh `run_db_sweep.sh` on the current code is the only path to a clean current-model dataset**
+(the master runner now auto-stamps this run's sha as current and drops chain).
 
-**Transport (restickify)** — the 4th category. A transpose/cat lowers to a Pointwise copy
-(model counts R=W=data) but codegens to RESTICKIFY_OP. Data: `transpose` bw ~116 (11%
-FASTER than a `neg` copy at 105 — restickify pays less turnaround) and SHAPE-independent;
-`cat0` slow (bw 63) because the concat dim lands next to the stick (`[2048,32,2,64]`, fine
-interleave) vs `cat1` (`[2,32,2048,64]`, outer, bw 108). Fix (deferred): a per-op eff-BW
-mapping (transport ~116); needs restickify detection in the extractor + a fuller sweep.
+## Findings by category (all HW-validated unless noted)
 
-## Methodological lessons (do NOT repeat)
+**Pointwise / reduction / broadcast / transport** — ±5% on anchors, but the adversarial review
+(2026-07-08) found several claims thinner than presented. Per-op effective-BW overrides
+(extractor `_hbm_pattern` from the IR index/layout): `transpose`→`restickify` 116, `cat0`→
+`stick_scatter` 60, `sumcol`→`reduce_outer` 113; `add3/add4` get the arity derate. The
+false-positive fixes (`reduce_outer` requires a **kept stick dim**, excl. `sumall`;
+`stick_scatter` requires a **concat dim**, excl. `transpose_outer`) are **in code but NOT in the
+current records** (db_sweep predates them → still +37/+66% there); re-run needed to confirm.
+Downgrades: `BW_peak=150`/`α` are a soft decomposition — only the combination is identifiable
+from pointwise, and the 2:1 `add`/`mul` ratio prefers `BW_peak≈138–147` (150 imported from
+read-only reductions). `cat0=60` (2 square pts, drifts 63→59) and `sumcol reduce_outer=113` (rows
+never varied) are HYPOTHESIS. Arity `0.075` fit from 2 arities; per-op derate is 0.06→0.094
+(superlinear); decisive test = add3/add4 with LX on. `copy` runs +12–14% faster than `neg` (both
+1R1W) — unmodeled. **`write` is not a V-curve anomaly**: it degrades super-linearly in C (to
+−62%) — a turnaround term on `min(R,W)` mathematically cannot produce that; looks like operand-
+spill-in-C. `cat0`/`cat1` are 2:1 write-heavy, not the "R=W byte-copy" the doc states.
 
-1. **Never `measured - model_term` to isolate another term** — circular; broke twice (psum,
-   then the CM compute isolation gave pt_eff>1 nonsense).
-2. **Measure at matching core counts** — the CM sweep used cores=16 (for re-read-free) but
-   hbm/additivity were calibrated at cores=32; incomparable. Re-read-free (fanout<8) and
-   cores=32 are mutually exclusive at k=1, so the split must be attacked WITH re-read present.
-3. **Trust measured data, not the in-tree work_division.py cost model** — it was rewritten in
-   the merge (pt_eff target 8->5 exp 0.25, cohort `(fanout/8)^0.75`, per-core psum). It's a
-   relative *ranker*, not an absolute-time predictor; use its FORMS as candidates, calibrate
-   constants to our sweeps.
+**Matmul (k=1) — ~8% on the calibration envelope, NOT "done".** `compute(peak=1140) + two-rate
+HBM + tile-spill`, with compute/HBM `overlap γ=0.46`. Isolation order: HBM (compute-free) →
+compute+overlap (low cores) → spill → (K-split now gated off). The 8% holds on pow2/balanced/
+mid-size shapes (~half the tested points); **honest full-range k=1 RMS ≈18% (−48…+68%), mean
+bias −4%**. **The "fanout penalty" hypothesis was FALSIFIED** (re-read sweep FB/FA: fanout 1→32
+at fixed small tile → ~0 effect); the split penalty is per-core **TILE SPILL** and the residual
+grows with *large* tiles (so it is NOT misattributed underfill — right sign). Residuals (⚠):
+tiny matmuls +54% (fixed-overhead floor), extreme *forced* splits, non-pow2-N (model even
+*inverts* the 6144-vs-8192 ranking).
 
-## Tooling built
+Adversarial review (2026-07-08) downgraded several matmul terms to HYPOTHESIS pending the re-run
++ decouplers: (a) `BW_w=156 > 150` one-directional peak is physically impossible → the "compute-
+free" M1 fit absorbed compute-overlap; re-fit BW_r/BW_w on the FULL model (subtract γ), not raw
+bytes/time. (b) `peak=1140 / γ=0.46` sit on a non-identifiable ridge — (1190,0.40)/(1220,0.30)
+fit equal or better OOS; γ is pinned by ~one shape → need an HBM-dominant cores-scan to pin γ
+alone. (c) overlap `min()` FORM untested (52/79 points cluster at compute≈HBM where all forms
+coincide). (d) spill log-curve fit from ~5 pts, cap from ~2, `RB` corrupted by non-pow2 N.
 
-- **Harness** `docs/source/user_guide/examples/profile_ops.py` (BENCH_OP=...). Ops: pointwise
-  (neg/gelu/mul/add3/add4/...), reductions (sumrow/sumcol/amax/...), broadcasts, `chain`,
-  `softmax_row_tiling`, `matmul_row_tiling` (coarse tiling), `mm` (plain), `mmwd` (FORCED
-  split via WD_M/N/K), `transpose`/`cat0`/`cat1`/`transpose_outer` (transport), coarse-tiled
-  reductions. Knobs: BENCH_ROWS/COLS/N, BENCH_TILES, WD_M/N/K, SENCORES, LX_PLANNING.
-- **Sweep scripts** (same dir): `run_matmul_validate_sweep.sh` (M1 hbm / M2 compute / M3 psum
-  - E2E smoke), `run_transport_sweep.sh` (T1/T2), `run_compute_isolate_sweep.sh` (CM1/CM2 —
-  the flawed cores=16 one), `run_split_sweep.sh` (SP1/2/3 — cores=32, QUEUED), `run_tiling_
-  terms_sweep.sh` (A/B chain + superseded C-H), `run_all_sweeps.sh` (chains several).
-- **Parser** `notes/parse_sweep_logs.py` -> `notes/sweep_records.{json,csv}`. Merges by
-  `log:lineno` (idempotent). All runs to date are recorded there.
+**Coarse-tiling — OPEN (active).** See below.
 
-## Profiling database (run_db_sweep.sh)
+## Coarse-tiling — softmax now largely isolated (2026-07-08)
 
-One command rebuilds the whole measurement DB so any model change is validated by diffing
-model vs recorded `kernel_us` (never re-derived): `bash docs/source/user_guide/examples/
-run_db_sweep.sh` (~170 runs, ~30-45 min; runs are now CPU-time-bound). It chains every sweep in
-the matmul isolation order + global op coverage, then auto-runs the parser. New DB scripts:
-- `run_hbm_ops_sweep.sh` (HB1/2/3) — per-op-type effective BW: pointwise arity, reduction axis,
-  broadcast one-time-load. (transport BW = `run_transport_sweep.sh`.)
-- `run_matmul_compute_sweep.sh` (MC1/2/3) — **step 2**: mac_peak at LOW cores (compute-dominant,
-  HBM byte-subtracted), cores-scaling (per-core-peak / cores=16 anomaly), peak across shapes.
-  KEY: compute dominates only at low cores, NOT big K (K scales compute AND reads equally).
-- `run_matmul_psum_sweep.sh` (PS1/2) — **step 4**: k-sweep at FIXED (m,n) (no re-read confound) +
-  out-size dependence. Run LAST (needs compute+split pinned).
-- `run_coarse_tiling_sweep.sh` (CT1/2/3) — softmax/matmul row-tiling x tile count + chain/ctsum LX.
-- `run_db_sweep.sh` — master; `unset SECTIONS` so every child runs full; matmul_validate gets
-  `SECTIONS=M1` (HBM only). Split (step 3) reuses `run_split_sweep.sh` + `run_decouple_sweep.sh`.
+Reframe (agreed with user): a coarse-tiled op is ONE **fused kernel** (intermediates in LX),
+NOT a sum of per-op kernels. Define `rpc = ROWS/(cores·T)` = per-core rows per tile.
 
-## Merge / runtime notes
+The `softmax_terms` grid (ROWS×T at COLS=2048) + the `coarse_terms` softmax runs (ROWS=16384 at
+**both COLS=2048 and 4096**) together isolate the softmax cost, and an adversarial challenge was
+run + addressed. Results (units: `us/1k-row/1k-col` ≈ per-byte cost):
 
-- New image: kernel-name-blank -> by-exclusion classifier (fixed in profile_ops + profile_test).
-- Post-merge codegen changed (superdsc/unroll/fusion/scratchpad): **planner-split `mm` data is
-  stale**; forced `mmwd` data is fine. Pre-merge `sweep_records` times may have shifted.
-- E2E coarse-tile examples on the new image: `softmax_row_tiling` ✅, `matmul_row_tiling` ✅,
-  **`matmul_k_tiled` FAILED** (`dxp_standalone --bundle ... SIGABRT` — toolchain, not our code;
-  report to manager).
++ **SETTLED — the driver is `rpc`, NOT the tile count `L`.** At `rpc=16` the four points span
+  `T=4..32` (4× tile count) at ~flat cost → kills any `L`/pipeline-overlap story. Normalized
+  cost/row collapses onto `rpc` across 4 ROWS values.
++ **SETTLED — underfill is ROWS-driven, NOT per-core-tile BYTES.** The old confound (COLS fixed →
+  rows≡bytes) is broken by the cross-COLS data: at **matched `rpc`, doubling COLS (2× tile bytes)
+  leaves per-byte cost unchanged (ratio 0.96–1.02)** across the whole non-spill range. So the
+  underfill derate keys on `rpc` (rows), independent of COLS.
++ **cost(`rpc`) is U-shaped** (per-byte): min ~40 at `rpc≈32`; steep underfill rise below
+  (`rpc8`≈49, `rpc4`≈78, `rpc2`≈126 — i.e. 1.2×/1.9×/3.1× the floor); MILD rise above
+  (`rpc64`≈43, `rpc128`≈46), COLS-independent (so also rows-driven, not LX pressure). The current
+  derate `min(1,(rpc/16)**0.35)` is mis-shaped: under-derates `rpc≤4`, ignores the `rpc>32` rise.
++ **HYPOTHESIS (leaning likely) — double-counted `arg0` read.** At the floor softmax runs at
+  ~100 GB/s single-read-equiv (≈ the balanced copy rate), matching arg0-read-ONCE on both COLS;
+  arg0-read-TWICE implies ~150 GB/s (at/above peak). So the fused kernel likely reads arg0 once
+  (2nd read LX-served) and the model's 2× read over-counts the floor ~25%. **Confound (from the
+  adversarial agent): not separated from a compute-bound (exp) floor or a BW_peak error** — the
+  deciding test is a pure-copy of identical footprint vs the softmax floor.
++ **SETTLED mechanism / under-sampled shape — LX-spill is BYTE-driven, separate from underfill.**
+  At `rpc=256`, C4096 (2.1 MB/core tile) SPILLED (per-byte 145, `io_hbm_bytes` itself jumped as
+  intermediates went to HBM) while C2048 (1.05 MB/core) did NOT. So spill triggers on per-core
+  tile MB (~knee 1–2 MB/core), independent of the rows-driven underfill. Only 1 point past the
+  knee → exact threshold + post-knee slope need a finer sweep.
++ **Noise:** VAR (5× within-process) = 0.3%; cross-config agreement at matched rpc ≈ ±2–4%. The
+  `rpc>32` "mild rise" (+7…+15%) is real vs that, but **cross-process/thermal variance is still
+  unbounded** — bound it before trusting single-digit-% effects.
 
-## Immediate next steps (in order)
+**IMPLEMENTED 2026-07-09** (in cost_model.py; synthetic-validated, HW re-run pending):
++ (a) **Fused-kernel HBM counts each distinct external input ONCE** — `_fused_hbm_bytes(ops)`
+  dedups `arg`-named HBM inputs across the bundle (softmax `arg0` read by `amax`+`sub` → once).
+  Fixes the ~25% floor over-count. Non-softmax ops unaffected (no `arg` reused across ops).
++ (b) **Re-fit `rpc` underfill, decoupled from matmul** — new `coarse_underfill_eff` +
+  `coarse_underfill_{rfull=13,exp=0.68,cap=0.95}`; matmul `pt_eff` untouched. Softmax now
+  RMS 7.3% (was ~20%): floor ±2%; residual is rpc≤8 (+8–10%) and rpc≥64 (−7…−14%, the mild
+  rise the cap doesn't model).
++ (c) **NO categorical spill term** — the plan said add one, but the IR check showed the
+  extractor **already counts spilled bytes**: when a per-core tile overflows LX (~1–2 MB/core)
+  the compiler moves intermediates to HBM and the IR reflects it (LX total collapses,
+  `io_hbm_bytes` jumps). A predicted-knee term would double-count. The real residual is that
+  spilled traffic runs slower than modeled (−34% at the one spill point) — a RATE effect,
+  1 data point, DEFERRED until the finer knee sweep.
 
-1. **Decoupling sweep** — split sweep DONE (fanout penalty found at m>8 / n>16, up to 1.9x;
-   `(fanout/8)^0.75` falsified; confounded with per-core tile width). Next: `run_decouple_
-   sweep.sh` varies the MATRIX dim at FIXED 4x8 split (DC1 sweep N -> N/n 64..512; DC2 sweep
-   M -> M/m 128..2048) to separate per-core-tile underutilization from fanout, THEN commit a
-   split-penalty derate. NO param change until decoupled.
-2. **Coarse-tiling golden measurements** — `softmax_row_tiling` (+11.8%) and
-   `matmul_row_tiling` (-9.9%) DONE, both within bar. `chain` still pending.
-3. **THEN psum** (only after 1+2 pin compute).
-4. Fold into `cost_model_design.md` + `notes/README.md` (canonical write-up) — still pending.
-5. Transport per-op eff-BW mapping (needs restickify detection + fuller sweep).
+Remaining softmax decouplers for the report (not yet run): pure-copy vs softmax floor (settles
+the double-count mechanism vs a compute-bound floor); finer spill knee at C4096
+`rpc∈{160,192,208,224,240,256}` (fit the spilled-traffic rate); cross-process repeats (bound
+noise); cross-COLS at a 2nd ROWS (strengthen rows-vs-bytes). `chain` DROPPED (per user).
+`matmul_row_tiling` deferred (needs `pt_eff` keyed on coarse-tile `M/tiles`).
+
+## Methodology (do NOT repeat past mistakes)
+
+1. Never `measured − model_term` to isolate another term (circular).
+2. Isolate each term in a regime where it DOMINATES; subtract only ALREADY-validated terms.
+3. **Be conservative on every claim; before pushing a mechanism/parameter, LAUNCH adversarial
+   agent(s) to challenge it** (confounds, alternatives, missing controls) and address every
+   challenge, or downgrade to "hypothesis + the deciding experiment." (memory: conservative-
+   claims-adversarial-check.) This caught real over-claims here (chain underfill, softmax R_eff).
+4. Trust measured data, not the in-tree work_division.py model (it's a relative ranker).
+
+## Tooling
+
++ **Harness** `docs/source/user_guide/examples/profile_ops.py` (BENCH_OP=…; knobs BENCH_ROWS/
+  COLS/N, BENCH_TILES, WD_M/N/K, SENCORES, LX_PLANNING).
++ **DB rebuild** `run_db_sweep.sh` — chains all sweeps into ONE `haoyang_logs/db_sweep.log`
+  (children write there via `DB_LOG`; per-run `timeout` guard) + auto-parses. New sweeps:
+  `run_hbm_ops_sweep.sh`, `run_matmul_compute_sweep.sh`, `run_matmul_psum_sweep.sh`,
+  `run_reread_sweep.sh` (RA/RB tile-spill, FB/FA fanout-isolation — falsified fanout),
+  `run_decouple_sweep.sh`, `run_split_sweep.sh`, `run_coarse_tiling_sweep.sh`,
+  `run_coarse_terms_sweep.sh`, `run_softmax_terms_sweep.sh` (active).
++ **Parser** `notes/parse_sweep_logs.py` → `notes/sweep_records.{json,csv}` (merge by
+  `log:lineno`, idempotent). Carries per-op split/model-term breakdown + **provenance**:
+  `model_sha` (from `git:` header), `log_date`, `is_current`. Flags: `--drop-ops chain`,
+  `--current-sha <sha>` (default: newest parsed log's sha). Filter analysis on `is_current`
+  to avoid mixing model versions.
++ **Extractor** `dump_cost_model.py`: `_matmul_features` (MACs, M/m, N/n, |A|, |B|, k),
+  `_hbm_pattern` (restickify / stick_scatter / reduce_outer from IR index+layout).
+
+## Immediate next steps
+
+1. **Re-run `run_db_sweep.sh` on current code** (psum gate + extractor fixes) → the ONE clean
+   current-model dataset. Master runner auto-stamps this sha as `is_current` and drops chain.
+   Everything below depends on having current-model `pred_us`.
+2. **softmax_terms sweep** (running) → VAR (is the ~19% swing real?) → GR (L vs rows/tile) →
+   SP (spill knee). Then adversarial-challenge the conclusion BEFORE modeling.
+3. **Decoupler sweeps** the adversarial review proved necessary (fold into the re-run) — for the
+   report's "hypothesis → isolation" narrative: pointwise write-only + read-only probes (break
+   the `BW_peak`/`α` degeneracy); add3/add4 with LX on (arity mechanism); `cat0` size/aspect +
+   `sumcol` reduced-dim (rows) sweeps; matmul HBM-dominant cores-scan (pin γ alone) + BW_r/BW_w
+   re-fit on the full model; non-pow2-N handling.
+4. If a real, isolable coarse driver: fused-kernel HBM (count reused inputs once) + the
+   L-or-rows/tile term + the categorical LX-spill. Re-verify via db_sweep.
+5. `matmul_row_tiling` pt_eff keyed on coarse-tile M; recheck.

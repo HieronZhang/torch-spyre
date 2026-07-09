@@ -375,10 +375,22 @@ def make_workload():
     if OP == "mmwd":  # matmul with a FORCED (m,n,k) split via WD_M/WD_N/WD_K
         return _mm_workload()
     known = (
-        list(_UNARY) + list(_BINARY) + list(_NARY) + list(_REDUCE) + list(_BCAST)
+        list(_UNARY)
+        + list(_BINARY)
+        + list(_NARY)
+        + list(_REDUCE)
+        + list(_BCAST)
         + list(_TRANSPORT)
-        + ["bcastcol", "write", "chain", "softmax_row_tiling", "matmul_row_tiling",
-           "mm", "mmwd", "transpose_outer"]
+        + [
+            "bcastcol",
+            "write",
+            "chain",
+            "softmax_row_tiling",
+            "matmul_row_tiling",
+            "mm",
+            "mmwd",
+            "transpose_outer",
+        ]
         + list(_CT_REDUCE)
     )
     raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
@@ -405,8 +417,10 @@ def _print_io(io: dict) -> None:
                 f"{a['elems']} elems x 2B = {a['bytes']} B"
                 f"  (hbm counted: {a['hbm_counted']} B){xl}{bc}"
             )
-    print(f"IO   => HBM I/O total = {io.get('hbm_bytes', 0)} B  "
-          f"(lx {io.get('lx_bytes', 0)} B, ~free)")
+    print(
+        f"IO   => HBM I/O total = {io.get('hbm_bytes', 0)} B  "
+        f"(lx {io.get('lx_bytes', 0)} B, ~free)"
+    )
 
 
 def _print_model(feats: list) -> float:
@@ -419,24 +433,29 @@ def _print_model(feats: list) -> float:
         print("MODEL (no features extracted)")
         return 0.0
     p = cost_model.CostParams()
-    r = sum(o.read_bytes() for o in feats)
-    w = sum(o.write_bytes() for o in feats)
+    r, w = cost_model._fused_hbm_bytes(
+        feats
+    )  # external input counted once (fused kernel)
     lp = max((o.loop_trip for o in feats), default=1)
     is_mm = any(getattr(o, "is_matmul", False) for o in feats)
-    base = (r / p.mm_bw_read_gbps + w / p.mm_bw_write_gbps) if is_mm \
+    base = (
+        (r / p.mm_bw_read_gbps + w / p.mm_bw_write_gbps)
+        if is_mm
         else (r + w) / p.bw_peak_gbps
+    )
     turn = p.rw_turnaround_ns_per_byte * min(r, w)
     # Underfill derate (output-dim tiling): smallest per-core tile governs.
     eff, eff_rows = 1.0, 0.0
     for o in feats:
         if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
-            e = cost_model.underfill_eff(o.tile_rows_per_core, p)
+            e = cost_model.coarse_underfill_eff(o.tile_rows_per_core, p)
             if e < eff:
                 eff, eff_rows = e, o.tile_rows_per_core
     red_trip = max((o.loop_trip for o in feats if not o.tiles_output_dim), default=1)
     pw_trip = max((o.loop_trip for o in feats if o.tiles_output_dim), default=1)
     loop_ns = (p.c_loop_ns * red_trip if red_trip > 1 else 0.0) + (
-        p.c_loop_pointwise_ns * pw_trip if pw_trip > 1 else 0.0)
+        p.c_loop_pointwise_ns * pw_trip if pw_trip > 1 else 0.0
+    )
     # Matmul compute term (additive).
     mm_us, mm_lines = 0.0, []
     for o in feats:
@@ -463,16 +482,23 @@ def _print_model(feats: list) -> float:
     print(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
     for ln in mm_lines:
         print(ln)
-    blab = (f"R/{p.mm_bw_read_gbps:.0f}+W/{p.mm_bw_write_gbps:.0f}" if is_mm
-            else f"(R+W)/{p.bw_peak_gbps:.0f}")
+    blab = (
+        f"R/{p.mm_bw_read_gbps:.0f}+W/{p.mm_bw_write_gbps:.0f}"
+        if is_mm
+        else f"(R+W)/{p.bw_peak_gbps:.0f}"
+    )
     print(f"MODEL   base = {blab} = {base / 1000:.2f} us")
-    print(f"MODEL   turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(r, w)} "
-          f"= {turn / 1000:.2f} us")
+    print(
+        f"MODEL   turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(r, w)} "
+        f"= {turn / 1000:.2f} us"
+    )
     if eff < 1.0:
-        rf = p.underfill_pass_rows * p.underfill_target_passes_pointwise
-        print(f"MODEL   eff_underfill = min(1,({eff_rows:.1f}/{rf:.0f})"
-              f"**{p.underfill_exponent}) = {eff:.3f} "
-              f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us")
+        print(
+            f"MODEL   eff_underfill = min({p.coarse_underfill_cap},"
+            f"({eff_rows:.1f}/{p.coarse_underfill_rfull:.0f})"
+            f"**{p.coarse_underfill_exp}) = {eff:.3f} "
+            f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
+        )
     if loop_ns > 0:
         lab = f"c_loop*{red_trip}" if red_trip > 1 else f"c_loop_pw*{pw_trip}"
         print(f"MODEL   loop = {lab} = {loop_ns / 1000:.2f} us")
