@@ -297,6 +297,51 @@ def _mm_workload():
     return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
 
 
+def _softmax_noexp_row_tiling():
+    """MATCHED CONTROL for the softmax double-count/exp test: identical NROW-tiled fused
+    structure as ``_softmax_row_tiling`` -- 2 reductions (amax, sum) + 3 pointwise (sub,
+    MUL, div) -- but with the transcendental ``exp`` REPLACED by a cheap ``mul``. Same
+    tiling, same fusion depth, same LX-resident intermediates; the ONLY difference is exp.
+    So (softmax_time - softmax_noexp_time) at matched [ROWS,COLS,TILES] isolates the exp
+    cost -- the design-review-mandated control that an untiled copy cannot provide."""
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    nrow, ncol = ROWS, COLS
+    x_cpu = torch.randn(nrow, ncol, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("NROW", nrow)
+        pnd.declare_tensor_dim("NCOL", ncol)
+
+    _declare()
+
+    def _sm_noexp(x):  # amax, sub, mul (<- exp), sum, div : softmax minus the exp
+        y = x - x.amax(dim=-1, keepdim=True)
+        z = y * 0.5  # cheap pointwise stand-in for exp (same pipeline stage, no exp)
+        return z / z.sum(dim=-1, keepdim=True)
+
+    if TILES >= 2:
+
+        def fn(x):
+            pnd.name_tensor_dims(x, ["NROW", "NCOL"])
+            with spyre_hint(num_tiles_per_dim={"NROW": TILES}):
+                return _sm_noexp(x)
+
+        _PREPARE = _declare
+    else:
+
+        def fn(x):
+            return _sm_noexp(x)
+
+    fn(x_cpu)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (x_cpu.to(DEVICE),)
+
+
 def _matmul_row_tiling():
     """Matmul ``a @ b`` COARSE-TILED over the M (row) dim via
     spyre_hint(num_tiles_per_dim={"M": TILES}) -- mirrors
@@ -366,6 +411,8 @@ def make_workload():
         return _chain_workload()
     if OP == "softmax_row_tiling":  # softmax(dim=-1) NROW-tiled -> 5 ops fuse in LX
         return _softmax_row_tiling()
+    if OP == "softmax_noexp_row_tiling":  # matched control: softmax structure, exp->mul
+        return _softmax_noexp_row_tiling()
     if OP == "matmul_row_tiling":  # a@b coarse-tiled over M (num_tiles, not core split)
         return _matmul_row_tiling()
     if OP == "mm":  # matmul [M=ROWS, K=COLS] @ [K=COLS, N=BENCH_N]: a Reduction over K
@@ -386,6 +433,7 @@ def make_workload():
             "write",
             "chain",
             "softmax_row_tiling",
+            "softmax_noexp_row_tiling",
             "matmul_row_tiling",
             "mm",
             "mmwd",

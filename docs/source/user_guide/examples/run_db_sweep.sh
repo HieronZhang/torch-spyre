@@ -78,6 +78,11 @@ DB_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null)"
   # dropped `chain` CH and the deferred matmul_row MR).
   run_one run_softmax_terms_sweep.sh
   run_one run_coarse_terms_sweep.sh "SM"
+  # Decoupler sweeps (2026-07-09, design-review-vetted) -- upgrade the HYPOTHESIS terms:
+  run_one run_pointwise_ratio_sweep.sh   # BW_peak vs alpha (read/write asymmetry test)
+  run_one run_matmul_gamma_sweep.sh      # peak/gamma off the ridge + BW_r/BW_w rank-2 grid
+  run_one run_nonpow2_n_sweep.sh         # per-core-tile stick-padding sawtooth
+  run_one run_softmax_floor_sweep.sh     # double-count vs exp (matched no-exp control)
 } 2>&1 | tee "$DB_LOG"
 
 echo
