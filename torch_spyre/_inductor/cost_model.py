@@ -208,6 +208,45 @@ class OpFeatures:
         return sum(a.elems for a in self.args if a.mem == "lx") * self.dtype_bytes
 
 
+def op_to_dict(op: "OpFeatures") -> dict:
+    """Serialize one OpFeatures (incl. its ArgTraffic list) to a plain JSON-able dict.
+
+    This is the model's INPUT feature vector. Dumped next to the measured kernel time so
+    a NEW model version can be scored OFFLINE (predict_ops on the stored features) without
+    re-running on hardware -- the measurement is version-independent, only the prediction
+    changes. See notes/eval_model.py.
+    """
+    return dataclasses.asdict(op)
+
+
+def op_from_dict(d: dict) -> "OpFeatures":
+    """Rebuild an OpFeatures from :func:`op_to_dict` output. Robust to schema drift:
+    unknown keys are ignored and missing ones fall back to the dataclass defaults, so an
+    old dataset still loads against a newer OpFeatures/ArgTraffic definition."""
+    afields = {f.name for f in dataclasses.fields(ArgTraffic)}
+    args = [
+        ArgTraffic(**{k: v for k, v in a.items() if k in afields})
+        for a in d.get("args", [])
+    ]
+    ofields = {f.name for f in dataclasses.fields(OpFeatures)}
+    kw = {k: v for k, v in d.items() if k in ofields and k != "args"}
+    return OpFeatures(args=args, **kw)
+
+
+def ops_to_json(ops: list) -> str:
+    """Serialize a fused bundle (list of OpFeatures) to a single JSON string."""
+    import json
+
+    return json.dumps([op_to_dict(o) for o in ops], separators=(",", ":"))
+
+
+def ops_from_json(s: str) -> list:
+    """Deserialize a bundle serialized by :func:`ops_to_json`."""
+    import json
+
+    return [op_from_dict(d) for d in json.loads(s)]
+
+
 @dataclasses.dataclass
 class CostParams:
     """Fittable parameters for ``T = fill + (R+W)/BW_PEAK + alpha*min(R,W)``.

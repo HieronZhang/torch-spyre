@@ -29,7 +29,7 @@ Form: `T = compute + HBM/eff − γ·min(compute, HBM/eff)` (see presentation §
 | `bw_restickify / stick_scatter / reduce_outer_gbps` | **116 / 60 / 113** (NEW) | ✅ HW-validated |
 | `pointwise_arity_derate` | **0.075** (NEW) | ✅ add3/add4 |
 | matmul `pt_eff` (`r_full=64`, `exp 0.35`) | matmul only | ✅ unchanged |
-| `coarse_underfill` (`r_full 13`, `exp 0.68`, `cap 0.95`) | coarse/softmax only (2026-07-09) | ✅ re-fit, softmax RMS 7.3% |
+| `coarse_underfill` (`r_full 13`, `exp 0.68`, `cap 0.95`) | coarse/softmax only (2026-07-09) | ✅ HW: softmax non-spill RMS 7.2% (spill regime deferred) |
 | `psum_per_elem_ns` | **0.14, GATED off matmul** (2026-07-08) | ✅ bug fixed (was +489% on forced `WD_K>1`) |
 
 All matmul + per-op changes are **implemented in cost_model.py + dump_cost_model.py**.
@@ -46,11 +46,12 @@ file is gone** (records survive only in the CSV). So the earlier "HW-validated �
 claims are **not backed by current-model records**. Only the measured `kernel_us` is version-
 independent and trustworthy.
 
-Parser now stamps provenance: `model_sha` (from each sweep's `git:` header), `log_date`, and
-`is_current` (= `model_sha == --current-sha`); `--drop-ops chain` retires `chain`. After the
-cleanup only **21 rows are `is_current`** (the `coarse_terms` coarse ops). **ACTION REQUIRED: a
-fresh `run_db_sweep.sh` on the current code is the only path to a clean current-model dataset**
-(the master runner now auto-stamps this run's sha as current and drops chain).
+Parser stamps provenance: `model_sha` (from each sweep's `git:` header), `log_date`, and
+`is_current` (= `model_sha == --current-sha`); `--drop-ops chain` retires `chain`.
+**RESOLVED 2026-07-09:** a fresh `run_db_sweep.sh` on the current code (sha `078922c`) landed →
+**185 `is_current` rows** are now the single clean current-model dataset (filter on `is_current`).
+The extractor false-positive fixes are **now confirmed on HW in-record**: `sumall` +2.8/+5.6%
+(was +37/+40%), `transpose_outer` −4.6/−14.9% (was +66/+49%), `sumcol` +7.4/−0.7%.
 
 ## Findings by category (all HW-validated unless noted)
 
@@ -125,26 +126,47 @@ run + addressed. Results (units: `us/1k-row/1k-col` ≈ per-byte cost):
   `rpc>32` "mild rise" (+7…+15%) is real vs that, but **cross-process/thermal variance is still
   unbounded** — bound it before trusting single-digit-% effects.
 
-**IMPLEMENTED 2026-07-09** (in cost_model.py; synthetic-validated, HW re-run pending):
+**IMPLEMENTED + HW-VALIDATED 2026-07-09** (cost_model.py; confirmed in the sha-`078922c` re-run):
 + (a) **Fused-kernel HBM counts each distinct external input ONCE** — `_fused_hbm_bytes(ops)`
   dedups `arg`-named HBM inputs across the bundle (softmax `arg0` read by `amax`+`sub` → once).
   Fixes the ~25% floor over-count. Non-softmax ops unaffected (no `arg` reused across ops).
 + (b) **Re-fit `rpc` underfill, decoupled from matmul** — new `coarse_underfill_eff` +
-  `coarse_underfill_{rfull=13,exp=0.68,cap=0.95}`; matmul `pt_eff` untouched. Softmax now
-  RMS 7.3% (was ~20%): floor ±2%; residual is rpc≤8 (+8–10%) and rpc≥64 (−7…−14%, the mild
-  rise the cap doesn't model).
+  `coarse_underfill_{rfull=13,exp=0.68,cap=0.95}`; matmul `pt_eff` untouched. **HW: softmax
+  non-spill RMS 7.2%** (n=44, was ~20%), floor (rpc16–32) ±0.6%; residual rpc≤8 (+8–10%) and
+  rpc≥64 (−7…−14%, the mild rise the cap omits) — matches the synthetic fit exactly.
 + (c) **NO categorical spill term** — the plan said add one, but the IR check showed the
   extractor **already counts spilled bytes**: when a per-core tile overflows LX (~1–2 MB/core)
   the compiler moves intermediates to HBM and the IR reflects it (LX total collapses,
   `io_hbm_bytes` jumps). A predicted-knee term would double-count. The real residual is that
-  spilled traffic runs slower than modeled (−34% at the one spill point) — a RATE effect,
-  1 data point, DEFERRED until the finer knee sweep.
+  spilled traffic runs slower than modeled — the HW re-run now shows the spill regime
+  (rpc≥160) at RMS 24% (−18…−40%, 7 pts) vs 7.2% non-spill — a RATE effect, DEFERRED until
+  the finer knee sweep gives >1 point to fit the spilled-traffic rate.
 
-Remaining softmax decouplers for the report (not yet run): pure-copy vs softmax floor (settles
-the double-count mechanism vs a compute-bound floor); finer spill knee at C4096
-`rpc∈{160,192,208,224,240,256}` (fit the spilled-traffic rate); cross-process repeats (bound
-noise); cross-COLS at a 2nd ROWS (strengthen rows-vs-bytes). `chain` DROPPED (per user).
-`matmul_row_tiling` deferred (needs `pt_eff` keyed on coarse-tile `M/tiles`).
+Remaining softmax decouplers: finer spill knee at C4096 `rpc∈{160,192,208,224,240,256}` (fit the
+spilled-traffic rate); cross-process repeats (bound noise); cross-COLS at a 2nd ROWS. `chain`
+DROPPED (per user). `matmul_row_tiling` deferred (needs `pt_eff` keyed on coarse-tile `M/tiles`).
+
+### Decoupler sweeps — WRITTEN + design-review-vetted 2026-07-09 (added to `run_db_sweep.sh`)
+
+Four new sweeps to upgrade the HYPOTHESIS terms; each design was adversarially challenged and
+the flaws fixed BEFORE writing (memory: conservative-claims-adversarial-check). Not yet run.
++ `run_pointwise_ratio_sweep.sh` — BW_peak vs α. Vetting reframed it as an explicit **read/write
+  asymmetry test**: fit `R/BW_read + W/BW_write + α·min(R,W)` and CHECK BW_read==BW_write (a
+  symmetric 2-param fit can never surface the misspecification the 105/138–147/150 tension hints
+  at). Adds a streaming `read` probe next to the (circular) reduction anchor; sweeps ROWS for the
+  plateau; `write` at small COLS is a flagged low-confidence write anchor.
++ `run_matmul_gamma_sweep.sh` — peak/γ + BW_r/BW_w. Vetting confirmed the compute-dom cores-scan
+  recovers peak via a **γ-independent slope** (escapes the ridge); FIXED the γ scan to a
+  **spill-free small shape** (M=N=512/768, K=64, per-core tile <448) so spill can't drift into
+  the γ slope. BW section is a **rank-2 (R,W) grid** with min(R,W) on both sides (the naive
+  fixed-M K-sweep was BROKEN: W constant → BW_w unidentifiable, BW_r/α collinear).
++ `run_nonpow2_n_sweep.sh` — the stick-padding sawtooth is in the **per-core tile N/n**, not full
+  N (the naive N∈{2048..8192} step 1024 was BROKEN: all stick-aligned → sawtooth invisible; 8192
+  broke the MNK cap). FIXED: forced 4×8×1, N stepped 64 so N/8 sweeps 512→576 across a stick edge.
++ `run_softmax_floor_sweep.sh` — double-count vs exp-compute. Vetting rejected the untiled-copy
+  control (tiling-overhead confound); added a NEW matched harness op **`softmax_noexp_row_tiling`**
+  (softmax structure, `exp`→`mul`) so `T(softmax) − T(noexp)` at matched [ROWS,COLS,TILES]
+  isolates exp by **wall-clock time** (not effBW, which presupposes the byte-count answer).
 
 ## Methodology (do NOT repeat past mistakes)
 
@@ -169,8 +191,18 @@ noise); cross-COLS at a 2nd ROWS (strengthen rows-vs-bytes). `chain` DROPPED (pe
 + **Parser** `notes/parse_sweep_logs.py` → `notes/sweep_records.{json,csv}` (merge by
   `log:lineno`, idempotent). Carries per-op split/model-term breakdown + **provenance**:
   `model_sha` (from `git:` header), `log_date`, `is_current`. Flags: `--drop-ops chain`,
-  `--current-sha <sha>` (default: newest parsed log's sha). Filter analysis on `is_current`
-  to avoid mixing model versions.
+  `--current-sha <sha>` (default: newest parsed log's sha). Also captures `feats` (the
+  serialized `OpFeatures`) from each run's `MODEL FEATS` line.
++ **Offline scorer** `notes/eval_model.py` — **recompute accuracy WITHOUT hardware** (the
+  measured `kernel_us` is version-independent; only the prediction changes). The harness now
+  dumps `MODEL FEATS <json>` (the model's exact input) per run for free, so a new model version
+  is scored by `predict_ops(feats)` in pure Python (`cost_model.py` has no torch dep → runs
+  locally). `--params k=v,...` re-scores with overridden params instantly; `--verify` checks
+  feature fidelity; `--update` writes recomputed `pred_us` back. Rows lacking `feats` (the
+  pre-2026-07-09 grand sweep) are reconstructed from the stored `io` block and **self-validated
+  against their stored `pred_us`** (mismatches excluded; matmul needs a `feats` re-run — 119/185
+  reconstruct today). THE model-iteration loop: edit params/form → `eval_model.py` → new
+  accuracy, no Spyre. (`cost_model.op_to_dict`/`op_from_dict`/`ops_to_json` do the (de)serialize.)
 + **Extractor** `dump_cost_model.py`: `_matmul_features` (MACs, M/m, N/n, |A|, |B|, k),
   `_hbm_pattern` (restickify / stick_scatter / reduce_outer from IR index+layout).
 

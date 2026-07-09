@@ -551,6 +551,11 @@ def _print_model(feats: list) -> float:
         lab = f"c_loop*{red_trip}" if red_trip > 1 else f"c_loop_pw*{pw_trip}"
         print(f"MODEL   loop = {lab} = {loop_ns / 1000:.2f} us")
     print(f"MODEL   => T_model = {t / 1000:.2f} us")
+    # Machine-readable feature vector (the model's INPUT) so a NEW model version can be
+    # scored OFFLINE against the stored measured time -- no hardware re-run. Prefixed
+    # `MODEL ` so the sweeps' `^MODEL ` grep already captures it; parse_sweep_logs.py
+    # pulls it into the record's `feats`. See notes/eval_model.py.
+    print(f"MODEL FEATS {cost_model.ops_to_json(feats)}")
     return t / 1000
 
 

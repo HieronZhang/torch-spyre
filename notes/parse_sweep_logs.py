@@ -76,6 +76,9 @@ _IO_TENSOR = re.compile(
     r"\s+\(hbm counted: (\d+) B\)(.*)$"
 )
 _IO_TOTAL = re.compile(r"=> HBM I/O total = (\d+) B\s+\(lx (\d+) B")
+_FEATS = re.compile(
+    r"^MODEL FEATS (.+)$"
+)  # serialized OpFeatures bundle (offline scoring)
 
 
 def _num(s):
@@ -176,7 +179,7 @@ def parse_log(path):
     log_date = f"{dm[1]}_{dm[2]}" if dm else ""
     model_sha = ""  # set by the first ``git: <sha>`` header line (sweep provenance)
     section = label = None
-    splits, io_lines, model_lines = {}, [], []
+    splits, io_lines, model_lines, feats_json = {}, [], [], None
     with open(path, encoding="utf-8", errors="replace") as f:
         for lineno, raw in enumerate(f, 1):
             line = raw.rstrip("\n")
@@ -196,6 +199,8 @@ def parse_log(path):
                 splits = {k: int(v) for k, v in g}
             elif line.startswith("IO "):
                 io_lines.append(line)
+            elif g := _FEATS.match(line):  # MODEL FEATS <json> (before generic MODEL)
+                feats_json = g[1]
             elif line.startswith("MODEL "):
                 model_lines.append(line)
             elif line.startswith("SUMMARY"):
@@ -216,8 +221,19 @@ def parse_log(path):
                     ops, total = _parse_io(io_lines)
                     rec["io"] = ops
                     rec["io_totals"] = total
+                if feats_json:
+                    try:
+                        rec["feats"] = json.loads(feats_json)
+                    except json.JSONDecodeError:
+                        rec["feats"] = None
                 yield _derive(rec)
-                label, splits, io_lines, model_lines = None, {}, [], []
+                label, splits, io_lines, model_lines, feats_json = (
+                    None,
+                    {},
+                    [],
+                    [],
+                    None,
+                )
 
 
 _CSV_COLS = [

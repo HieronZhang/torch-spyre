@@ -56,9 +56,9 @@ Constants: `BW_peak=150`, `α=0.00574 ns/B`, matmul `BW_r=143 / BW_w=156`,
 | transport (`transpose` `cat0` `cat1` `transpose_outer`) | 13 | R×C 512–8192 | −15…+5% | 5% |
 | **matmul, balanced split** | 44 | MNK 2e9–3.4e10 | −43…+29% | **8%** (≈8% on power-of-2 shapes) |
 | broadcast (`bcast` `bcastcol` `write`) ⚠ | 12 | C 16384 | −62…+27% | 24% |
-| coarse `softmax_row_tiling` ⚠ | 18 | 1–32 tiles | −34…+31% | ~20% |
-| coarse `chain` ⚠ | 12 | 1–64 tiles | −22…+3% | ~11% |
-| coarse `matmul_row_tiling` ⚠ | 9 | 1–16 tiles | −38…+7% | ~20% |
+| coarse `softmax_row_tiling` (non-spill) | 44 | rpc 2–512 | −14…+11% | **7.2%** |
+| coarse `softmax_row_tiling` (LX-spill) ⚠ | 7 | rpc ≥160 | −40…−18% | 24% (spilled-traffic rate, deferred) |
+| coarse `matmul_row_tiling` ⚠ | 9 | 1–16 tiles | −38…+9% | ~20% (deferred: `pt_eff` on M/tiles) |
 
 **Representative points:**
 
