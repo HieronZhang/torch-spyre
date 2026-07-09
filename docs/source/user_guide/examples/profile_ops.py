@@ -554,8 +554,12 @@ def _print_model(feats: list) -> float:
     # Machine-readable feature vector (the model's INPUT) so a NEW model version can be
     # scored OFFLINE against the stored measured time -- no hardware re-run. Prefixed
     # `MODEL ` so the sweeps' `^MODEL ` grep already captures it; parse_sweep_logs.py
-    # pulls it into the record's `feats`. See notes/eval_model.py.
-    print(f"MODEL FEATS {cost_model.ops_to_json(feats)}")
+    # pulls it into the record's `feats`. See notes/eval_model.py. Best-effort: a
+    # serialization hiccup must NEVER fail the run (the kernel_us is what matters).
+    try:
+        print(f"MODEL FEATS {cost_model.ops_to_json(feats)}")
+    except Exception as exc:  # noqa: BLE001 - diagnostic only
+        print(f"MODEL FEATS_SKIPPED {type(exc).__name__}: {str(exc)[:120]}")
     return t / 1000
 
 

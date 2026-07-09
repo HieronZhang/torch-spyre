@@ -16,11 +16,36 @@ by `notes/plot_report.py` from `sweep_records.json`.*
 
 ### §1. Pointwise kernels are memory-I/O bound
 
-- **Observation:** kernel time grows linearly with the number of bytes moved, straight
-  through the origin (no fixed per-kernel cost).
-- **Model (baseline):** `T = bytes / BW`. No compute term. This is the reference every
-  later op is measured against.
-- **Figure:** measured time vs device bytes for `neg`/`gelu`/`exp`; linear fit, intercept ≈ 0.
+Pointwise ops are the simplest kernels on the device: read one or more tensors, apply an
+elementwise function, write one tensor. We use them to establish the reference every later
+op is measured against.
+
+**Observation 1 — time is linear in bytes, with no fixed cost.** Sweeping the balanced
+1-read/1-write op `neg` (and `gelu`, `exp`) across sizes, the kernel time is a straight
+line in the HBM bytes moved (device / stick-padded), passing through the origin:
+
+| op | R×C | HBM traffic | kernel |
+|---|---|---|---|
+| `neg` | 2048×1024 | 8.4 MB | 77.6 µs |
+| `neg` | 2048×4096 | 33.6 MB | 320.8 µs |
+| `neg` | 4096×4096 | 67.1 MB | 646.6 µs |
+| `neg` | 2048×16384 | 134.2 MB | 1314.3 µs |
+
+A linear fit `T = a·bytes + b` over the 1R:1W set (16 points, 8.4–134 MB) gives
+**R² = 0.99996**, slope → **~102 GB/s**, and intercept **b = −7 µs ≈ 0** (−9 % of the
+smallest kernel — no *positive* per-kernel floor).
+
+![neg kernel time is linear in HBM bytes through the origin, no fixed cost](figures/fig1_pointwise_baseline.png)
+
+**Observation 2 — the arithmetic is free.** `gelu` and `exp` (a transcendental) land within
+~1 % of `neg` at every size (e.g. at 8.4 MB: 78.3 / 77.1 / 77.6 µs; at 134 MB:
+1312.7 / 1314.5 / 1314.3 µs). Doing real math costs the same as negating → **there is no
+compute term**; the kernel time is set entirely by moving bytes.
+
+**Model (baseline).** `T = bytes / BW` — no compute term, no fixed per-kernel cost. This
+is the gold reference. One thread is deliberately left for the next section: the fitted rate here is
+~102–108 GB/s, *below* the read-only peak (~150) — i.e. the effective BW is **not** a
+single constant; it depends on the read/write mix (§2).
 
 ### §2. The read/write ratio changes the effective bandwidth
 

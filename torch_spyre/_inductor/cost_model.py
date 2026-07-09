@@ -233,11 +233,25 @@ def op_from_dict(d: dict) -> "OpFeatures":
     return OpFeatures(args=args, **kw)
 
 
+def _jsonable(o):
+    """Fallback encoder: coerce non-native leaves (sympy ``Integer``/``Float`` from the
+    inductor size expressions, numpy scalars, …) to plain int/float so ``json`` accepts
+    them; anything else falls back to ``str``."""
+    try:
+        f = float(o)
+    except (TypeError, ValueError):
+        return str(o)
+    return int(f) if f.is_integer() else f
+
+
 def ops_to_json(ops: list) -> str:
-    """Serialize a fused bundle (list of OpFeatures) to a single JSON string."""
+    """Serialize a fused bundle (list of OpFeatures) to a single JSON string. Sizes coming
+    off the IR are often sympy ``Integer``, so a ``default`` coercer is required."""
     import json
 
-    return json.dumps([op_to_dict(o) for o in ops], separators=(",", ":"))
+    return json.dumps(
+        [op_to_dict(o) for o in ops], separators=(",", ":"), default=_jsonable
+    )
 
 
 def ops_from_json(s: str) -> list:
