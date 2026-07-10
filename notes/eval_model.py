@@ -65,10 +65,11 @@ cm = _load_cost_model()
 # op -> reporting category
 _CATEGORY = {}
 for _c, _ops in {
-    "pointwise": "neg copy gelu relu sigmoid exp mul add add3 add4".split(),
+    "pointwise": "neg gelu relu sigmoid exp mul add add3 add4".split(),
     "reduction": "sumrow sumcol sumall amax mean read".split(),
     "transport": "transpose transpose_outer cat0 cat1".split(),
-    "broadcast": "bcast mulbcast bcastcol write".split(),
+    # copy (x+1.0) is really a broadcast op -- an add with a resident broadcast constant.
+    "broadcast": "copy bcast mulbcast bcastcol write".split(),
     "matmul": "mm mmwd".split(),
     "matmul_row": ["matmul_row_tiling"],
     "softmax": ["softmax_row_tiling", "softmax_noexp_row_tiling"],
@@ -78,11 +79,15 @@ for _c, _ops in {
         _CATEGORY[_o] = _c
 
 # hbm_pattern the extractor assigns per bench op -- used ONLY for I/O reconstruction of
-# old rows, and every use is self-validated against the row's stored pred_us.
+# old rows (feats, when present, carry the exact value). Cross-row (dim0) reductions --
+# sumcol and the coarse ct* variants -- fold turnaround into the reduce_outer rate.
 _HBM_PATTERN_BY_OP = {
     "transpose": "restickify",
     "cat0": "stick_scatter",
     "sumcol": "reduce_outer",
+    "ctsum": "reduce_outer",
+    "ctamax": "reduce_outer",
+    "ctamin": "reduce_outer",
 }
 _NO_RECONSTRUCT = {"mm", "mmwd", "matmul_row_tiling"}  # need `feats`
 
@@ -157,22 +162,32 @@ def reconstruct_from_io(rec):
 
 
 def features_for(rec, default_params, tol=0.02):
-    """Return (ops, source) for a record, or (None, reason). ``source`` is 'feats' or
-    'io(verified)'. I/O reconstruction is accepted only if predicting it with the DEFAULT
-    params reproduces the stored pred_us within ``tol`` (the stored pred came from the
-    current model, so a faithful reconstruction must match it)."""
+    """Return (ops, source) for a record, or (None, reason). Reconstruction is gated two
+    ways: (1) the HBM byte totals (R, W) must match the stored ones -- a MODEL-INDEPENDENT
+    check, so it holds even when the model is changed; and (2) for ops whose model term is
+    UNCHANGED since the row was logged, the reconstructed prediction must also reproduce the
+    stored ``pred_us`` -- this catches pattern/tile reconstruction errors that bytes alone
+    miss. The exception is any op affected by a model term added THIS cycle (the broadcast
+    rate): its prediction legitimately differs from the logged one, so it is byte-checked
+    only. (When ``feats`` are present none of this applies -- they are exact.)"""
     if rec.get("feats"):
         return [cm.op_from_dict(d) for d in rec["feats"]], "feats"
     ops = reconstruct_from_io(rec)
     if ops is None:
         return None, "no-feats"
-    stored = rec.get("pred_us")
-    if not stored:
+    m = rec.get("model") or {}
+    R, W = m.get("R"), m.get("W")
+    if R is None or W is None:
         return None, "no-oracle"
-    got = cm.predict_ops(ops, default_params) / 1000.0
-    if abs(got - stored) / stored > tol:
-        return None, f"io-mismatch({got:.1f}vs{stored:.1f})"
-    return ops, "io(verified)"
+    r, w = cm._fused_hbm_bytes(ops)
+    if abs(r - R) > 0.01 * max(R, 1) or abs(w - W) > 0.01 * max(W, 1):
+        return None, f"io-mismatch(bytes R {r}v{R} W {w}v{W})"
+    stored = rec.get("pred_us")
+    if stored and not any(cm._is_broadcast_op(o) for o in ops):
+        got = cm.predict_ops(ops, default_params) / 1000.0
+        if abs(got - stored) / stored > tol:
+            return None, f"io-mismatch(pred {got:.1f}v{stored:.1f})"
+    return ops, "io"
 
 
 def main():
@@ -207,7 +222,11 @@ def main():
 
     rows = [r for r in records if not r.get("failed") and r.get("kernel_us")]
     if not args.all:
-        rows = [r for r in rows if r.get("is_current")]
+        # Score every row that CAN be scored against the current model: any row carrying
+        # `feats` (its exact input, recomputed with the current model regardless of which
+        # version logged it) OR an `is_current` row (reconstructed from its I/O block).
+        # This spans measurement runs at different SHAs (feats are version-independent).
+        rows = [r for r in rows if r.get("feats") or r.get("is_current")]
     if args.category:
         rows = [r for r in rows if category(r.get("op")) == args.category]
     if args.op:

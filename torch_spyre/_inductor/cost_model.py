@@ -69,9 +69,11 @@ provably <=~4.5ns, i.e. effectively inert.
 MATMUL (reduction_type batchmatmul) adds a compute term that OVERLAPS the HBM term:
 ``T = compute + HBM - gamma*min(compute, HBM)``, with
 ``compute = MACs / cores / (mac_peak * pt_eff)`` (MACs = M*N*K, mac_peak=1140 SUSTAINED,
-gamma=0.46). The matmul HBM is two-rate (reads 143 / writes 156) plus an operand RE-READ
-"tile spill": ``|A|*f(M/m) + |B|*f(N/n)`` at the read rate, f a saturating log (a per-core
-operand tile past ~448 rows/cols no longer stays on-chip). Fanout is NOT a term. K is
+gamma=0.46). The matmul HBM uses a SINGLE rate = the copy peak (150; the old two-rate
+143/156 is retired, 156>150 was an unphysical artifact) plus an operand RE-READ
+"tile spill": ``|A|*f(M/m) + |B|*f(N/n)`` at that rate, f a saturating log (a per-core
+operand tile past ~448 rows/cols no longer stays on-chip). Fanout is NOT separately
+identified (the falsification sweeps were confounded). K is
 always kept whole (WD_K=1) so the K-split psum ring term is 0. Fit on the db_sweep +
 decouple/re-read sweeps: ~8% RMS across cores 4->32, MNK 2e9..3.4e10. Isolation order and
 per-term data: notes/cost_model_presentation.md.
@@ -100,9 +102,12 @@ rate): "restickify" transpose (stick swapped -> ~116, FASTER), "stick_scatter" c
 partition dim (fine sub-stick interleave -> ~60), "reduce_outer" sumcol (cross-row reduce
 -> ~113). Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) get a
 ``pointwise_arity_derate`` (~7.5%/extra op). All land within ~4% after these.
-KNOWN residual biases (not yet modeled): broadcast pointwise (bcast) ~17% FASTER (off the
-V-curve; cause open); write-only ~16% (double-broadcast `write` is pathological, effBW
-~55); transpose_outer at large size ~-14% (size-dependent).
+BROADCAST-operand ops (copy/bcast/bcastcol/mulbcast: a full input + a small broadcast
+operand) run ~118 GB/s -- ``bw_broadcast_gbps`` (mechanism open). ``write`` (b[1,C]+c[R,1],
+BOTH operands broadcast -> outer-product) is slow + super-linear; modeled by an EMPIRICAL
+extra-traffic term (``write_reread_*``: coef*ROWS^r*COLS^c, ~12% RMS, black-box).
+KNOWN residual (not yet modeled): transpose_outer at large size ~-14% (size-dependent);
+reductions ~-15% at large ROWS (stick-inflated scattered output write).
 
 CALIBRATION NOTE: the golden per-op measurement is the torch.profiler "Self SPYRE"
 (sdsc_fused) KERNEL device time -- NOT our old SPYRE_PROFILE_SYNC min (which folded in a
@@ -343,11 +348,14 @@ class CostParams:
     mm_spill_t0: float = 448.0  # per-core tile below which no spill
     mm_spill_slope: float = 1.10
     mm_spill_cap: float = 1.70
-    # Matmul HBM two-rate: reads (operand loads) run slower than writes (output store).
-    # CALIBRATED on the compute-free M1 sweep (thin-K write-dom / thin-M read-dom) + the
-    # balanced k=1 points, turnaround removed then re-added: fits all regimes to +/-4%.
-    mm_bw_read_gbps: float = 143.0
-    mm_bw_write_gbps: float = 156.0
+    # Matmul HBM: a SINGLE effective rate = the pointwise copy peak (150). The earlier
+    # two-rate fit (143 read / 156 write) is retired: 156 > 150 is unphysical (a write
+    # cannot beat the copy peak) and was a compute-free-fit artifact absorbing the overlap
+    # term. On the planner-realistic envelope a single 150 + turnaround + overlap scores
+    # RMS 6.9% vs 7.1% for the old two-rate -- equal-or-better AND physical. Read/write are
+    # not separately identifiable from these data. (Verified offline; see report §8.)
+    mm_bw_read_gbps: float = 150.0
+    mm_bw_write_gbps: float = 150.0
 
     # Access-pattern effective HBM BW (GB/s) for non-matmul ops whose stick layout is
     # reorganized -- these fold turnaround into the single rate (measured io/kernel on
@@ -359,6 +367,19 @@ class CostParams:
         60.0  # cat on partition dim: fine sub-stick interleave
     )
     bw_reduce_outer_gbps: float = 113.0  # cross-row (dim0) reduction (sumcol)
+    # Ops that stream a FULL input plus a small BROADCAST operand (loaded once) -- copy
+    # (x+const), bcast, bcastcol, mulbcast -- run FASTER than a plain 1R:1W op (~118 vs
+    # ~105 GB/s; mechanism open). NOT `write` (both operands broadcast, no full input).
+    bw_broadcast_gbps: float = 118.0
+    # `write` (b[1,C] + c[R,1]: BOTH operands broadcast -> an outer-product write) is slow
+    # and SUPER-LINEAR: the operands are re-read in the outer-product and the cost grows
+    # steeply with COLS (and, more weakly, ROWS). No clean mechanism yet; the extra HBM
+    # traffic is fit EMPIRICALLY on the write sweep -- extra_bytes = coef * ROWS^r * COLS^c,
+    # charged at bw_peak. ~12% RMS over the sweep (worst ~-30% at mid sizes). Black-box,
+    # to be replaced when the mechanism is understood (see report §4).
+    write_reread_coef: float = 2.148e-7
+    write_reread_r_exp: float = 1.60
+    write_reread_c_exp: float = 2.20
     # Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) run slower per
     # byte -- ~7.5% per extra op beyond the first. Fit on the arity sweep (add/add3/add4).
     pointwise_arity_derate: float = 0.075
@@ -444,6 +465,44 @@ def _fused_hbm_bytes(ops: list) -> tuple:
     return r, w
 
 
+def _is_broadcast_op(o) -> bool:
+    """True for an op that streams a FULL HBM input AND a small BROADCAST operand (loaded
+    once): copy (x+const), bcast, bcastcol, mulbcast. These run at ``bw_broadcast_gbps``,
+    faster than a plain 1R:1W op. Excludes matmul/reduction and ``write`` (both operands
+    broadcast -> no full input, and a different, super-linear regime)."""
+    if getattr(o, "is_matmul", False) or o.is_reduction:
+        return False
+    ins = [a for a in o.args if a.role == "input" and a.mem == "hbm"]
+    return any(a.broadcast for a in ins) and any(not a.broadcast for a in ins)
+
+
+def _is_outer_broadcast(o) -> bool:
+    """True for a `write`-like op where EVERY HBM input is a broadcast operand (no full
+    streamed input) -- an outer-product write ``b[1,C] + c[R,1]``. Its cost is slow and
+    super-linear (empirical ``write_reread_*`` term)."""
+    if getattr(o, "is_matmul", False) or o.is_reduction:
+        return False
+    ins = [a for a in o.args if a.role == "input" and a.mem == "hbm"]
+    return bool(ins) and all(a.broadcast for a in ins)
+
+
+def _outer_broadcast_extra_bytes(o, p) -> float:
+    """Empirical extra HBM bytes for an outer-product write (see CostParams). 0 if the
+    output's logical [R, C] shape is unavailable."""
+    out = next(
+        (
+            a
+            for a in o.args
+            if a.role == "output" and a.mem == "hbm" and len(a.logical) >= 2
+        ),
+        None,
+    )
+    if out is None:
+        return 0.0
+    rows, cols = out.logical[-2], out.logical[-1]
+    return p.write_reread_coef * rows**p.write_reread_r_exp * cols**p.write_reread_c_exp
+
+
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
     """Predicted device latency (ns) for a bundle of ops (one fused kernel).
 
@@ -460,15 +519,24 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     """
     p = params or CostParams()
     r, w = _fused_hbm_bytes(ops)
-    # HBM. Matmul uses a TWO-RATE read/write model (reads run slower than writes:
-    # BW_read~138, BW_write~149 GB/s), calibrated on the compute-free M1 thin-K/thin-M
-    # sweep (fits +/-3%); the turnaround adds balanced-traffic contention. Pointwise/
-    # reduction/transport keep the single-BW turnaround model.
+    # HBM. Matmul uses a SINGLE effective rate (mm_bw_read==mm_bw_write==150, the copy
+    # peak) plus the read/write turnaround -- same form as pointwise. The old two-rate
+    # read<write model is retired (156>150 was unphysical, a compute-free-fit artifact).
+    # Pointwise/reduction/transport keep the single-BW turnaround model.
     _pat_bw = {
         "restickify": p.bw_restickify_gbps,
         "stick_scatter": p.bw_stick_scatter_gbps,
         "reduce_outer": p.bw_reduce_outer_gbps,
     }
+
+    def _eff_bw(o):  # per-op effective-BW override, or None -> default turnaround
+        pat = getattr(o, "hbm_pattern", "")
+        if pat in _pat_bw:
+            return _pat_bw[pat]
+        if _is_broadcast_op(o):
+            return p.bw_broadcast_gbps
+        return None
+
     if any(getattr(o, "is_matmul", False) for o in ops):
         # Operand re-read: |A| re-streamed as its per-core tile (M/m) spills, |B| as N/n
         # spills. Read-rate bytes. (Fanout was proven NOT a term by the re-read sweep.)
@@ -484,13 +552,14 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
             + spill / p.mm_bw_read_gbps
             + p.rw_turnaround_ns_per_byte * min(r, w)
         )
-    elif any(getattr(o, "hbm_pattern", "") in _pat_bw for o in ops):
-        # Per-op access-pattern effective BW (these ops fold turnaround into the rate);
-        # ops without a pattern keep the default single-BW + turnaround.
+    elif any(_eff_bw(o) is not None for o in ops):
+        # Per-op effective BW (access-pattern transports OR a broadcast operand); these
+        # fold turnaround into the rate. Ops without an override keep the default
+        # single-BW + turnaround.
         mem = 0.0
         for o in ops:
             ro, wo = o.read_bytes(), o.write_bytes()
-            bw = _pat_bw.get(getattr(o, "hbm_pattern", ""), 0.0)
+            bw = _eff_bw(o)
             if bw:
                 mem += (ro + wo) / bw
             else:
@@ -510,6 +579,12 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         )
         if n_pw > 1:
             mem *= 1.0 + p.pointwise_arity_derate * (n_pw - 1)
+    # `write` outer-product re-read: empirical extra HBM traffic, super-linear in the
+    # output shape (both operands broadcast, no full input). Charged at bw_peak.
+    mem += (
+        sum(_outer_broadcast_extra_bytes(o, p) for o in ops if _is_outer_broadcast(o))
+        / p.bw_peak_gbps
+    )
     # OUTPUT-dim (pointwise) coarse-tiling underfill: a short per-core tile underfills
     # the streaming pipeline, derating the bandwidth term. The smallest tile in the
     # bundle governs (worst underfill). 1.0 (no derate) when nothing is output-tiled.

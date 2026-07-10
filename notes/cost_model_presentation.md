@@ -28,7 +28,7 @@ T = compute + HBM/eff − γ·min(compute, HBM/eff)
 | term | form | meaning |
 |---|---|---|
 | `HBM` (default) | `(R+W)/BW_peak + α·min(R,W)` | bandwidth + read↔write bus **turnaround** |
-| `HBM` (access-pattern op) | `(R+W)/BW_eff` | per-op effective BW (`transpose`/`cat0`/`sumcol`) |
+| `HBM` (access-pattern op) | `(R+W)/BW_eff` | per-op effective BW (`transpose`/`cat0`/`sumcol`; also broadcast-operand ops `copy`/`bcast`/`bcastcol`/`mulbcast`) |
 | `HBM` (matmul) | `R/BW_r + W/BW_w + α·min(R,W) + spill` | two-rate reads/writes + operand re-read |
 | `compute` (matmul only) | `MACs / cores / peak` | `MACs=M·N·K`, cores = split product; else `compute=0` |
 | **`eff`** (underfill) | `min(0.95, (rpc / 13)^0.68)`, `rpc = ROWS/(cores·tiles)` | **coarse-tiling only**: a short per-core tile (rpc rows) underfills the streaming pipeline → derates HBM. Keys on ROWS (rpc), not tile bytes (cross-COLS control). `=1` untiled. Separate from the matmul `pt_eff` |
@@ -37,7 +37,11 @@ T = compute + HBM/eff − γ·min(compute, HBM/eff)
 | n-ary derate | `× (1 + 0.075·(n_ops−1))` | multi-pass pointwise chain (`add3/add4`, HBM intermediates) |
 
 Constants: `BW_peak=150`, `α=0.00574 ns/B`, matmul `BW_r=143 / BW_w=156`,
-`peak=1140 MAC/ns/core`. K is always kept whole (`WD_K=1`); K-split is never used.
+`peak=1140 MAC/ns/core`. Per-op effective BW: `restickify=116`, `stick_scatter=60`,
+`reduce_outer=113`, `broadcast=118` (an op streaming a full input + a broadcast operand,
+e.g. `copy=x+1.0`, runs above the plain 1R:1W rate). `write` (both operands broadcast →
+outer-product) adds an empirical extra HBM term `2.15e-7·ROWS^1.6·COLS^2.2` (black-box).
+K is always kept whole (`WD_K=1`).
 
 > **Coarse-tiling (§5):** a coarse-tiled op is ONE *fused* kernel (intermediates stay in LX).
 > `R`,`W` therefore count each distinct **external** input once + outputs once (`_fused_hbm_bytes`):

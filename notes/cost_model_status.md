@@ -27,6 +27,8 @@ Form: `T = compute + HBM/eff − γ·min(compute, HBM/eff)` (see presentation §
 | `overlap_gamma` | **0.46** (NEW) | ✅ jointly fit w/ peak, RMS 1.7% |
 | `mm_spill_t0 / slope / cap` | **448 / 1.10 / 1.70** (NEW) | ✅ decouple+reread sweeps |
 | `bw_restickify / stick_scatter / reduce_outer_gbps` | **116 / 60 / 113** (NEW) | ✅ HW-validated |
+| `bw_broadcast_gbps` | **118** (2026-07-09) | ✅ copy/bcast/bcastcol/mulbcast; pointwise RMS 5.1→2.0% |
+| `write_reread_coef/r_exp/c_exp` | **2.15e-7 / 1.60 / 2.20** (2026-07-10) | ⚠️ EMPIRICAL outer-product term; broadcast 19→7.7% (black-box) |
 | `pointwise_arity_derate` | **0.075** (NEW) | ✅ add3/add4 |
 | matmul `pt_eff` (`r_full=64`, `exp 0.35`) | matmul only | ✅ unchanged |
 | `coarse_underfill` (`r_full 13`, `exp 0.68`, `cap 0.95`) | coarse/softmax only (2026-07-09) | ✅ HW: softmax non-spill RMS 7.2% (spill regime deferred) |
@@ -66,10 +68,16 @@ Downgrades: `BW_peak=150`/`α` are a soft decomposition — only the combination
 from pointwise, and the 2:1 `add`/`mul` ratio prefers `BW_peak≈138–147` (150 imported from
 read-only reductions). `cat0=60` (2 square pts, drifts 63→59) and `sumcol reduce_outer=113` (rows
 never varied) are HYPOTHESIS. Arity `0.075` fit from 2 arities; per-op derate is 0.06→0.094
-(superlinear); decisive test = add3/add4 with LX on. `copy` runs +12–14% faster than `neg` (both
-1R1W) — unmodeled. **`write` is not a V-curve anomaly**: it degrades super-linearly in C (to
-−62%) — a turnaround term on `min(R,W)` mathematically cannot produce that; looks like operand-
-spill-in-C. `cat0`/`cat1` are 2:1 write-heavy, not the "R=W byte-copy" the doc states.
+(superlinear); decisive test = add3/add4 with LX on. **`copy` FIXED (2026-07-09):** it is not
+1R1W — `x+1.0` lowers to an `add` with a resident broadcast operand, so it is a broadcast op
+(`copy`/`bcast`/`bcastcol`/`mulbcast` run ~118 GB/s vs `neg` ~105). New `bw_broadcast_gbps=118`
+(applied to ops with a broadcast operand + a full input, via `_is_broadcast_op`; NOT `write`)
+→ pointwise RMS 5.1→2.0%, clean broadcast points ±3%. Mechanism empirical. **`write`**
+(b[1,C]+c[R,1], both broadcast → outer-product) is slow + super-linear in COLS: operands are
+tiny (b=C elems, c stick-inflated R×64), so NOT an operand spill — the cost is in the
+outer-product output write. No clean mechanism; modeled by an **empirical** `write_reread`
+term (coef·ROWS^1.6·COLS^2.2, 12% RMS, black-box) → broadcast category 19→7.7%.
+`cat0`/`cat1` are 2:1 write-heavy, not the "R=W byte-copy" the doc states.
 
 **Matmul (k=1) — ~8% on the calibration envelope, NOT "done".** `compute(peak=1140) + two-rate
 HBM + tile-spill`, with compute/HBM `overlap γ=0.46`. Isolation order: HBM (compute-free) →
@@ -81,10 +89,21 @@ grows with *large* tiles (so it is NOT misattributed underfill — right sign). 
 tiny matmuls +54% (fixed-overhead floor), extreme *forced* splits, non-pow2-N (model even
 *inverts* the 6144-vs-8192 ranking).
 
+**RESOLVED (2026-07-10, offline eval): drop the two-rate HBM, use a SINGLE rate = 150.** On the
+planner-realistic envelope (k=1, fanout ≤8, non-tiny, pow2-N; n=34) the current two-rate 143/156
+scores RMS 7.10%; collapsing to a single `mm_bw_read=mm_bw_write=150` with γ=0.45 scores **6.87%**
+— equal-or-better AND physically respects the 150 copy peak. The compute-free dominant-operand
+rates are ~118–148 (write corners) / ~123–136 (read corners): overlapping, both <150, no distinct
+write rate. `BW_w=156` was a fit artifact absorbing overlap. Report §8 documents + recommends the
+single-rate form; the shipped params still carry 143/156 (change pending user OK). Also captured:
+honest matmul regime table — realistic 7.1%, forced K-split −40% (unmodeled combine, planner
+avoids), skewed >8 −23%, tiny +2.5 (floor), non-pow2 −16%. γ pinned by the balanced aggregate,
+NOT the small-shape GH sweep (GH alone prefers γ=0; floor-contaminated). See report §7–§12.
+
 Adversarial review (2026-07-08) downgraded several matmul terms to HYPOTHESIS pending the re-run
 + decouplers: (a) `BW_w=156 > 150` one-directional peak is physically impossible → the "compute-
 free" M1 fit absorbed compute-overlap; re-fit BW_r/BW_w on the FULL model (subtract γ), not raw
-bytes/time. (b) `peak=1140 / γ=0.46` sit on a non-identifiable ridge — (1190,0.40)/(1220,0.30)
+bytes/time. *(Now resolved — see the RESOLVED note above.)* (b) `peak=1140 / γ=0.46` sit on a non-identifiable ridge — (1190,0.40)/(1220,0.30)
 fit equal or better OOS; γ is pinned by ~one shape → need an HBM-dominant cores-scan to pin γ
 alone. (c) overlap `min()` FORM untested (52/79 points cluster at compute≈HBM where all forms
 coincide). (d) spill log-curve fit from ~5 pts, cap from ~2, `RB` corrupted by non-pow2 N.
@@ -167,6 +186,10 @@ the flaws fixed BEFORE writing (memory: conservative-claims-adversarial-check). 
   control (tiling-overhead confound); added a NEW matched harness op **`softmax_noexp_row_tiling`**
   (softmax structure, `exp`→`mul`) so `T(softmax) − T(noexp)` at matched [ROWS,COLS,TILES]
   isolates exp by **wall-clock time** (not effBW, which presupposes the byte-count answer).
++ `run_broadcast_sweep.sh` (2026-07-09) — pins the **broadcast effBW** (`bw_broadcast=118`,
+  fit on one clean point/op) over COLS at ROWS=2048, AND confirms the **`write` spill**: a
+  write ROWS×COLS grid separates C-driven (row operand `b[1,C]` spills → super-linear in C)
+  from R-driven (`c[R,1]`). Report §4. `copy` is a broadcast op (increment `x+1.0`).
 
 ## Methodology (do NOT repeat past mistakes)
 
