@@ -304,171 +304,159 @@ few small-`ROWS` broadcast points where a fixed per-op rate slightly mis-serves 
 | `write` | 8192×4096 | 700.4 | 692.0 | −1.2 |
 | `write` | 8192×16384 | 6653.1 | 6690.5 | +0.6 |
 
-### §5. Reduction: read-dominated (with a large-ROWS residual)
+### §5. Reduction: read-bound, at a rate that falls with ROWS
 
-**Model.** A reduction over the last axis (`sum`/`amax`/`mean`, `x[R,C] → [R]`) reads the
-full input and writes only the small `[R]` result. Because almost nothing is written, the
-read↔write turnaround penalty of §2 — which is charged on the *smaller* of the read and
-write bytes — is essentially zero, so the kernel just runs at the peak read bandwidth,
-`T ≈ R / BW_peak`. This is the same reason read-only ops sit at the top of the §2 V-curve; a
-reduction needs no term of its own. At ROWS=2048 the four reductions land right on that rate
-(~150 GB/s, ±5 %).
+**Model.** A reduction over the last axis (`sum`/`amax`/`mean`, `x[R,C] → [R]`, plus the
+whole-tensor `sumall` and the pure `read`) reads the full input and writes an almost negligible
+output, so it is a **read at an effective bandwidth** — no turnaround term. That read bandwidth
+is not constant: it starts at the ~150 GB/s read peak for small inputs and **falls as ROWS
+grows** (the read pipeline degrades as each core streams more rows), saturating around
+~113 GB/s. A single curve fits it:
 
-**A residual at large ROWS.** At ROWS=8192 the effective BW drops to **~123 GB/s** (a ~15–18 %
-fall), consistently across COLS:
+```
+reduction read BW = min(150,  114 + 61·exp(−ROWS / 3700))   GB/s
+```
 
-| op | ROWS=2048 (64 rows/core) | ROWS=8192 (256 rows/core) |
-|---|---:|---:|
-| `read` | 148–152 | 123–125 |
-| `sumrow` | 145–153 | 122–128 |
-| `amax` / `mean` | 150–155 | — |
+**The falloff is op-independent and keyed on ROWS, not COLS.** All five reductions trace the
+*same* curve (figure): 149 → 134 → 121 → 115 GB/s at ROWS 2048 → 4096 → 8192 → 16384. Holding
+ROWS fixed and varying COLS leaves the rate flat (~119–125 GB/s across COLS 1024–4096 at
+ROWS 8192), confirming ROWS — not total bytes or COLS — is the driver.
 
-![§5 reductions on the read rate at ROWS=2048, dropping ~15% at ROWS=8192](figures/fig5_reduction.png)
+![§5 the reduction read rate falls with ROWS, the same for every reduction op](figures/fig5_reduction.png)
 
-**It is not the output.** The result `[R]` is stored **stick-inflated to `R × 64`** (each
-reduced value occupies its own 64-element stick), but that inflated device size is *already
-counted* in `W` — so the shortfall is not a missed output cost. And it is not the output for
-a second reason: the shortfall **grows with COLS** (at ROWS=8192 the gap is ~20 / 45 / 85 µs
-for COLS 1024 / 2048 / 4096) while the output stays a constant ~1 MB. It therefore tracks the
-**input read**, not the output write: the reduction's *read* effectively runs slower at
-256 rows/core (ROWS=8192) than at 64 (ROWS=2048). The mechanism is not identified, and the
-data is thin (only two ROWS values), so this is flagged, not modeled. The read-rate model is
-accurate for ROWS ≤ 2048 (±5 %); a dedicated ROWS sweep is needed to characterize the
-large-ROWS falloff.
+**`sumcol` is the exception.** A reduction over the *outer* axis (`sum(x, dim=0) → [C]`) walks
+memory differently and does not show the ROWS falloff; it keeps its own flat access-pattern
+rate (~113 GB/s, the `reduce_outer` rate of §6). A cross-core ring combine (when the reduced
+axis is split across cores) is provably tiny and carried but inert.
 
-**Cross-core combine.** When the reduced axis is split across cores there is a ring combine;
-it is provably tiny (bounded by ~`cores × per-elem`, sub-noise), so it is carried but inert.
-
-**§5 accuracy — every reduction data point.** RMS **7.9 %**, mean −1.8 %, over 24 points. The
-model is within ~5 % everywhere at ROWS = 2048; the entire error budget is the large-ROWS
-read slowdown (the six ROWS = 8192 rows, −11…−18 %) discussed above and flagged, not fit.
+**§5 accuracy.** RMS **2.6 %**, mean +1.3 %, over 58 points — within ~6 % everywhere, across the
+full ROWS range now that the falloff is modeled. Representative shapes (repeats omitted):
 
 | op | R×C | measured µs | predicted µs | err % |
 |---|---|---:|---:|---:|
-| `read` | 2048×1024 | 30.1 | 31.2 | +3.8 |
-| `read` | 2048×2048 | 57.6 | 59.2 | +2.8 |
-| `read` | 2048×2048 | 59.5 | 59.2 | −0.6 |
-| `read` | 2048×4096 | 112.8 | 115.1 | +2.1 |
-| `read` | 2048×8192 | 222.9 | 226.9 | +1.8 |
-| `read` | 8192×1024 | 144.7 | 124.9 | −13.7 |
-| `read` | 8192×2048 | 281.8 | 236.7 | −16.0 |
-| `read` | 8192×4096 | 545.1 | 460.4 | −15.5 |
-| `sumrow` | 2048×1024 | 30.6 | 31.2 | +1.9 |
-| `sumrow` | 2048×2048 | 58.8 | 59.2 | +0.7 |
-| `sumrow` | 2048×2048 | 59.0 | 59.2 | +0.3 |
-| `sumrow` | 2048×4096 | 111.4 | 115.1 | +3.3 |
-| `sumrow` | 2048×8192 | 220.5 | 226.9 | +2.9 |
-| `sumrow` | 8192×1024 | 139.8 | 124.9 | −10.7 |
-| `sumrow` | 8192×2048 | 277.0 | 236.7 | −14.5 |
-| `sumrow` | 8192×4096 | 559.7 | 460.4 | −17.7 |
+| `read` | 2048×1024 | 30.1 | 29.9 | −0.6 |
+| `read` | 2048×2048 | 57.6 | 58.0 | +0.8 |
+| `read` | 2048×2048 | 59.5 | 58.0 | −2.5 |
+| `read` | 2048×4096 | 112.8 | 114.3 | +1.4 |
+| `read` | 2048×8192 | 222.9 | 226.8 | +1.8 |
+| `read` | 4096×2048 | 128.2 | 129.0 | +0.6 |
+| `read` | 8192×1024 | 144.7 | 147.7 | +2.1 |
+| `read` | 8192×2048 | 281.8 | 286.8 | +1.8 |
+| `read` | 8192×4096 | 545.1 | 564.9 | +3.6 |
+| `read` | 16384×2048 | 600.9 | 603.2 | +0.4 |
+| `sumrow` | 2048×1024 | 30.6 | 29.9 | −2.4 |
+| `sumrow` | 2048×2048 | 58.8 | 58.0 | −1.3 |
+| `sumrow` | 2048×4096 | 111.4 | 114.3 | +2.6 |
+| `sumrow` | 2048×8192 | 220.5 | 226.8 | +2.9 |
+| `sumrow` | 4096×2048 | 127.2 | 129.0 | +1.4 |
+| `sumrow` | 8192×1024 | 139.8 | 147.7 | +5.7 |
+| `sumrow` | 8192×2048 | 277.0 | 286.8 | +3.5 |
+| `sumrow` | 8192×4096 | 534.5 | 564.9 | +5.7 |
+| `sumrow` | 16384×2048 | 610.6 | 603.2 | −1.2 |
+| `amax` | 2048×2048 | 57.6 | 58.0 | +0.8 |
+| `amax` | 2048×8192 | 219.7 | 226.8 | +3.3 |
+| `amax` | 4096×2048 | 128.9 | 129.0 | +0.1 |
+| `amax` | 8192×1024 | 146.6 | 147.7 | +0.8 |
+| `amax` | 8192×2048 | 291.4 | 286.8 | −1.6 |
+| `amax` | 8192×4096 | 556.8 | 564.9 | +1.4 |
+| `amax` | 16384×2048 | 612.7 | 603.2 | −1.6 |
+| `mean` | 2048×2048 | 58.8 | 58.0 | −1.4 |
+| `mean` | 2048×8192 | 218.9 | 226.8 | +3.6 |
+| `mean` | 4096×2048 | 127.9 | 129.0 | +0.8 |
+| `mean` | 8192×1024 | 145.6 | 147.7 | +1.4 |
+| `mean` | 8192×2048 | 280.6 | 286.8 | +2.2 |
+| `mean` | 8192×4096 | 546.7 | 564.9 | +3.3 |
+| `mean` | 16384×2048 | 609.6 | 603.2 | −1.0 |
+| `sumall` | 2048×2048 | 54.2 | 56.3 | +3.8 |
+| `sumall` | 2048×8192 | 212.2 | 225.1 | +6.1 |
+| `sumall` | 4096×2048 | 128.0 | 125.1 | −2.3 |
+| `sumall` | 8192×1024 | 139.4 | 139.0 | −0.3 |
+| `sumall` | 8192×2048 | 279.3 | 278.1 | −0.4 |
+| `sumall` | 8192×4096 | 548.7 | 556.2 | +1.4 |
+| `sumall` | 16384×2048 | 572.3 | 584.9 | +2.2 |
 | `sumcol` | 2048×2048 | 70.6 | 74.3 | +5.2 |
 | `sumcol` | 2048×8192 | 292.9 | 297.1 | +1.4 |
-| `amax` | 2048×2048 | 57.6 | 59.2 | +2.8 |
-| `amax` | 2048×8192 | 219.7 | 226.9 | +3.3 |
-| `mean` | 2048×2048 | 58.8 | 59.2 | +0.6 |
-| `mean` | 2048×8192 | 218.9 | 226.9 | +3.7 |
-| `sumall` | 2048×2048 | 54.2 | 55.9 | +3.2 |
-| `sumall` | 2048×8192 | 212.2 | 223.7 | +5.4 |
+| `sumcol` | 4096×2048 | 145.1 | 148.5 | +2.3 |
+| `sumcol` | 8192×2048 | 286.5 | 297.0 | +3.7 |
+| `sumcol` | 16384×2048 | 571.9 | 593.9 | +3.9 |
 
 ### §6. Transport ops are copies with an access-pattern effective bandwidth
 
-**Observation.** "Transport" ops rearrange data without doing arithmetic: `transpose`
-(`x.transpose(0,1)`), and concatenation `cat0`/`cat1` (`torch.cat([x, x], dim=0)` / `dim=1`).
-In the compiler's intermediate representation each of these lowers to the **exact same
-primitive as a plain copy** — a `clone` — with no compute. We verified this directly: the
-per-kernel operation name recorded for `transpose`, `cat0`, `cat1` (and the 3-D
-`transpose_outer`) is `clone`, identical to what a trivial copy emits, whereas `neg` records
-`neg`. So a transport op moves bytes and nothing else; the *only* thing that distinguishes it
-from a copy is **how it walks memory** — which input element lands in which output position.
+**Observation.** Transport ops — `transpose` and concatenation `cat0`/`cat1` — rearrange data
+without arithmetic. In the IR each lowers to a plain byte-copy (a `clone`, the same primitive a
+trivial copy emits; we confirmed the recorded op name is `clone`, versus `neg` for a real
+pointwise op). So the only thing that distinguishes a transport from a copy is *how it walks
+memory*, and that sets its effective bandwidth (the `(R+W)/time` of §4).
 
-**Question.** If they are all byte-copies, do they all run at the plain-copy bandwidth of
-§1–§2 (~105 GB/s effective), or does the memory-walk pattern change the effective bandwidth?
-
-**What the data shows.** Effective bandwidth here means the same `(R+W)/time` as §4 — total
-bytes read plus written, divided by kernel time. Two facts stand out (figure below):
+**What the data shows (figure).** `transpose` and `cat1` each run at a **stable effective
+bandwidth across every shape** — `transpose` ~116 GB/s (±1.5 %), `cat1` ~108. `cat0` and
+`transpose_outer` instead **fall with the row width `C`**: a shape sweep at *fixed total bytes*
+shows the effective BW drops sharply as `C` grows (e.g. `cat0` runs at 85 GB/s for an
+8192×512 operand but 53 for 512×8192 — same bytes, wide vs tall). More columns means more
+64-element blocks per row to scatter, and that dominates the cost.
 
 ![§6 transport ops are copies; the access pattern sets the effective bandwidth](figures/fig6_transport.png)
 
-- **A plain copy is not a single rate.** `neg` on large operands drifts between ~102 and
-  ~112 GB/s depending on shape (a tall-thin operand with few rows per core runs at the fast
-  end — the *same* rows-per-core sensitivity we will return to). So "the copy rate" is a
-  band, not a constant.
-- **`transpose` is unusually stable and fast: ~116 GB/s at *every* shape** we tested
-  (aspect ratios from 512×8192 through 8192×512, and sizes up to 4096×4096), varying by only
-  ±1.5 %. It sits at or just above the top of the copy band and — unlike a plain copy — does
-  not drift with shape. Note `transpose` is a *balanced* copy (it reads and writes the same
-  number of bytes), so this is not a read-vs-write-ratio artifact; it is a genuinely stable,
-  slightly-faster copy.
+**Model.** Each op gets the rate its access pattern implies, read from the IR:
 
-**Model.** Because `transpose`'s rate is both stable and distinct, we give it a **fixed
-effective bandwidth of 116 GB/s** — read from the IR (a transpose is recognizable as a copy
-whose write index swaps the innermost 64-element block with an outer axis). Throughout this
-report a **stick** is that 64-element block: the hardware stores tensors in 128-byte-aligned
-chunks of 64 half-precision values, and a row whose length is not a multiple of 64 is padded up
-to one. Everything else falls out of the copy band:
-
-| op | memory walk | effective BW (GB/s) | how it is modeled |
+| op | access pattern | effective BW (GB/s) | model |
 |---|---|---|---|
-| `transpose` | swaps the 64-elem block with a row axis | **116**, flat across all shapes | fixed 116 override |
-| `cat1` | concatenate on the outer (non-block) axis | ~108 | none — the default copy model (§2) |
-| `cat0` | concatenate on the block axis | 96 → 63 → 59 as size grows | provisional fixed 60 (see below) |
-| `transpose_outer` | 3-D swap of two outer axes | 100 → 89 as size grows | none — default copy model |
+| `transpose` | swaps the 64-block axis with a row axis | **116**, flat | fixed 116 |
+| `cat1` | concatenate on the outer axis | ~108, flat | default copy model (§2), ~7 % optimistic |
+| `cat0` | concatenate on the 64-block axis | ~110 → ~49, falls with `C` | `252 − 4·log₂R − 12.3·log₂C` (clamped 45–150) |
+| `transpose_outer` | 3-D swap of two outer axes | ~106 → ~85, falls with `C` | default copy model; flagged |
 
-**Why `transpose` might be faster is left open.** A stable +~10 % over a same-shape plain
-copy is real (it is well outside the ±1.5 % scatter), but we do **not** have a confirmed
-mechanism for *why* rearranging the block layout should be faster than a contiguous copy, so
-we commit only the measured number, not an explanation. (It is close to the ~118 GB/s "fast
-copy" rate seen for broadcast-operand ops in §4; whether these are the same underlying effect
-is an open question, not a claim.)
+`cat0`'s sub-block interleave slows as the row gets wider; a fit on the shape sweep
+(effective BW linear in `log₂C`, weakly in `log₂R`, R² 0.93 over 10 shapes) captures it and
+brings `cat0` from tens of percent off to within ~10 %. `transpose_outer` shows the *same*
+`C`-driven falloff, but — unlike `cat0` and `transpose` — it carries no access-pattern tag in
+the IR for the extractor to key a rate on, so it stays on the default copy model and is
+**flagged**: that model misses the falloff and under-predicts wide-`C` shapes by up to ~22 %.
+Tagging it (a compiler-side change) would let it reuse the same shape model.
 
-**Two honestly-thin cases.** `cat0` and `transpose_outer` are *not* flat — their effective
-bandwidth **falls as the operand grows** (`cat0` 96→59, `transpose_outer` 100→89), and each
-was measured at only two or three near-square shapes with no aspect-ratio sweep. They are on
-equal footing: both are size-dependent copies we have not yet characterized.
-
-- `cat0` (concatenate along the 64-element block axis) writes interleaved sub-block pieces;
-  we currently pin it to a **fixed 60 GB/s**, which fits the two large points (±7 %) but is
-  ~40 % too low at the smallest point. This is a provisional value, not a settled one.
-- `transpose_outer` is left on the default copy model; that over-predicts its bandwidth at
-  the largest size, giving the section's worst error (−15 % at 4096×4096). It is flagged, not
-  fit.
-
-A dedicated aspect-ratio × size sweep for both is queued (see the appendix) so `cat0` and
-`transpose_outer` can be modeled as size-dependent rates rather than a constant.
-
-**§6 accuracy — every transport data point.** RMS **5.6 %**, mean −1.8 %, over 13
-points. `transpose` is essentially exact everywhere; the error budget is entirely the two
-size-dependent copies.
+**§6 accuracy.** RMS **8.5 %**, mean −3.3 %, over 42 points. `transpose` is exact (±2 %); the
+residual is the shape-dependent copies — `cat0` (modeled, within ~11 % bar one +22 % point at
+8192²) and `transpose_outer` (unmodeled, up to −22 %). Representative shapes (repeats omitted):
 
 | op | R×C | measured µs | predicted µs | err % |
 |---|---|---:|---:|---:|
 | `transpose` | 512×8192 | 146.0 | 144.6 | −0.9 |
-| `transpose` | 1024×4096 | 144.9 | 144.6 | −0.2 |
 | `transpose` | 2048×2048 | 145.5 | 144.6 | −0.6 |
-| `transpose` | 2048×2048 | 145.3 | 144.6 | −0.5 |
 | `transpose` | 4096×1024 | 142.7 | 144.6 | +1.4 |
 | `transpose` | 4096×4096 | 575.6 | 578.5 | +0.5 |
 | `transpose` | 8192×512 | 143.7 | 144.6 | +0.7 |
+| `cat1` | 512×8192 | 243.2 | 215.9 | −11.2 |
 | `cat1` | 2048×2048 | 231.0 | 215.9 | −6.5 |
 | `cat1` | 4096×4096 | 935.0 | 863.7 | −7.6 |
-| `cat0` | 2048×2048 | 396.6 | 424.9 | +7.1 |
-| `cat0` | 4096×4096 | 1709.4 | 1754.1 | +2.6 |
+| `cat1` | 8192×512 | 237.1 | 215.9 | −8.9 |
+| `cat0` | 512×512 | 14.2 | 15.0 | +5.3 |
+| `cat0` | 1024×1024 | 66.9 | 71.1 | +6.3 |
+| `cat0` | 8192×512 | 294.8 | 284.2 | −3.6 |
+| `cat0` | 4096×1024 | 308.2 | 314.3 | +2.0 |
+| `cat0` | 2048×2048 | 396.6 | 351.6 | −11.3 |
+| `cat0` | 1024×4096 | 406.2 | 399.1 | −1.8 |
+| `cat0` | 512×8192 | 474.0 | 461.2 | −2.7 |
+| `cat0` | 4096×4096 | 1709.4 | 1861.2 | +8.9 |
+| `cat0` | 8192×8192 | 8219.3 | 10011.6 | +21.8 |
+| `transpose_outer` | 1024×1024 | 316.1 | 320.0 | +1.2 |
+| `transpose_outer` | 8192×512 | 1325.9 | 1280.0 | −3.5 |
 | `transpose_outer` | 2048×2048 | 1340.0 | 1280.0 | −4.5 |
+| `transpose_outer` | 4096×1024 | 1310.6 | 1280.0 | −2.3 |
+| `transpose_outer` | 1024×4096 | 1477.1 | 1280.0 | −13.3 |
+| `transpose_outer` | 512×8192 | 1635.7 | 1280.0 | −21.7 |
 | `transpose_outer` | 4096×4096 | 6010.8 | 5120.0 | −14.8 |
+| `transpose_outer` | 8192×8192 | 25324.2 | 20479.8 | −19.1 |
 
 ---
 
 ## Part III — Matmul: memory *and* compute
 
-A matrix multiply `A[M,K] @ B[K,N] → C[M,N]` is the first op in this report that is not a
-pure memory copy: it performs `M·N·K` multiply-accumulate operations ("MACs" — one multiply
-plus one add) on the **systolic array**, the accelerator's grid of compute lanes through which
-operands stream and accumulate, and it runs across many cores in parallel. The compiler
-component that decides how to spread the work — the **planner** — divides the output into a grid
-of `m × n` tiles (and *can*, in principle, also split the shared `K` dimension into `k`
-pieces, though as we will see it strongly avoids this); the number of cores used is `m·n·k`.
-Two quantities recur below: the **per-core tile** (the `M/m` rows by `N/n` columns of the output
-each core computes) and the **bytes read/written** (`R`, `W`) from off-chip memory (HBM).
+A matrix multiply `A[M,K] @ B[K,N] → C[M,N]` is the first op here that can be **compute-bound**
+rather than purely memory-bound, and the first with non-trivial dataflow across cores: it
+performs `M·N·K` multiply-accumulate operations (MACs) on the systolic array. The planner tiles
+the output into an `m × n` grid (it can also split the shared `K` into `k`, but strongly avoids
+it), using `m·n·k` cores. Two quantities recur below: the **per-core tile** (`M/m` rows × `N/n`
+columns each core computes) and the **HBM bytes read/written**, `R` and `W`.
 
 ### §7. Setup: matmul time is not explained by memory traffic alone
 
@@ -478,186 +466,374 @@ under the copy model, and the excess grows with `M·N·K` — the MAC count — 
 count. A `2048³` matmul moves the same order of bytes as a large copy but takes several times
 longer. So matmul needs a second term, a **compute** term, on top of memory.
 
+**Assumption.** We model matmul kernel time as a function of exactly two quantities: the compute
+work (the MAC count) and the HBM memory traffic (`R`, `W`) — `T = f(compute, memory)`. Sections
+§8–§11 pin down the form of `f`.
+
 **Question.** How do the memory term and the compute term **combine** into one kernel time —
 do they simply add, or does the accelerator do them at the same time?
 
-**Strategy (and an honest caveat).** We build the model one term at a time, each in a regime
-where that term dominates: first the memory term (on matmuls with almost no compute), then the
-compute rate (on matmuls that are almost all compute), then how the two overlap. This ordering
-is how the terms are *motivated* and is clean for the compute rate (§10), which is fixed by a
-slope that does not depend on the other terms. It is **not** a strict one-way isolation for the
-memory and overlap terms: as we show in §8 and §11, the memory rate and the overlap factor are
-**correlated** and were ultimately co-fit, not locked in sequence. We flag that explicitly
-where it matters rather than claim a false independence.
+**Strategy.** We build the model one term at a time, each in a regime where that term
+dominates: first the memory term (on matmuls with almost no compute), then the compute rate (on
+matmuls that are almost all compute), then how the two overlap. Only the compute rate (§9) is
+truly isolated — it is fixed by a slope that does not depend on the other terms. The memory rate
+(§8) and the overlap factor (§10) are correlated and were co-fit.
 
 ### §8. The memory term — measured on compute-free matmuls
 
-**Observation.** To see the memory term alone, we use matmuls where compute is negligible: a
-very thin `K` (the output `C[M,N]` dominates → the kernel is **write-heavy**), and a very thin
-`M` (a tiny output, large operands → **read-heavy**). In these corners the time tracks bytes,
-as in Part I.
+**Isolation.** To measure the memory term alone, use matmuls where compute is negligible: a
+very thin `K` (the output dominates → **write-heavy**) and a very thin `M` (large operands, tiny
+output → **read-heavy**).
 
-**What the data shows — one effective rate, at the copy peak, not two.** An earlier fit allowed
-reads and writes to run at *different* rates and returned `BW_read ≈ 143`, `BW_write ≈ 156`
-GB/s. We do **not** endorse those two numbers, for a concrete physical reason: **156 GB/s
-exceeds the 150 GB/s peak** established for a plain copy in §1, and a write cannot be faster
-than the memory system's peak. Re-examining the compute-free points, the dominant-operand rate
-(dominant bytes ÷ time) is ~118–148 GB/s for the write-heavy corners and ~123–136 GB/s for the
-read-heavy corners — **overlapping ranges, both entirely below 150**, with no sign of a distinct
-faster write rate. The apparent 156 was an **artifact**: the two rates were fit on *disjoint*
-shape sets and quietly absorbed a little of the compute-overlap that §11 handles properly.
-
-We verified this directly. Collapsing to a **single** matmul memory rate of 150 GB/s (the copy
-peak) and letting the overlap term (§11) do its job fits the realistic matmul regime *slightly
-better* than the two-rate model — RMS **6.9 %** vs 7.1 % — while respecting the physical peak.
-
-- **Model (recommended).** `memory = (R + W)/150 + α·min(R,W)` — the *same* form as §2 (peak
-  bandwidth plus the read/write turnaround `α = 0.00574 ns/B`), with no separate write rate.
-- **Note on the shipped parameters.** The current code still carries the two-rate `143 / 156`
-  values; this section documents that a single 150 GB/s rate is equal-or-better and physically
-  sound, and recommends adopting it. The read/write split is **not identifiable** from these
-  data and should not be presented as a measured hardware fact.
-
-![§8 compute-free matmuls: read-heavy and write-heavy corners both fall at/below the 150 GB/s copy peak — one rate, not two](figures/fig8_matmul_hbm.png)
-
-### §9. A split penalty: the per-core operand tile, re-read from memory
-
-**Observation.** With the memory and compute terms in place, balanced high-core matmuls leave a
-residual that **grows with the per-core tile size** (large `M/m` or `N/n`): each core's slice
-of the work costs more per byte as it gets bigger. Across a fixed-split size sweep, the measured
-time per output row rises about **18 %** from a small per-core tile to a large one and then
-**saturates** — a classic "you've run out of on-chip room" signature.
-
-**Question.** Is the extra cost driven by the *number of cores* an operand is broadcast to
-(fanout), or by the *size of each core's tile*?
-
-**What the data shows.** A per-core operand tile that no longer fits in on-chip memory must be
-re-streamed from HBM for reuse — extra traffic we call **spill** — and it saturates once the
-whole tile is being re-read. We model spill as a re-read of the operands past an on-chip
-capacity knee (the tile size at which reuse stops fitting):
+**Model.** In these compute-free corners the kernel runs at or below the §1 copy peak of
+150 GB/s, and the read and write corners do not separate into distinct rates. So the memory term
+is the §2 form with a single rate:
 
 ```
-spill = |A|·f(M/m) + |B|·f(N/n),   f(t) = min(1.70, 1.10·log₂(t / 448))
+memory = (R + W) / 150 + α·min(R,W)    (α = 0.00574 ns/B)
 ```
 
-charged at the read rate — a saturating (logarithmic, capped) growth with a knee near a
-per-core tile of ~448 rows/columns.
+![§8 baseline memory model vs measured on compute-free matmuls: within ~4% write-heavy, under-predicting the read-heavy large-N corner](figures/fig8_matmul_hbm.png)
 
-**Two honesty flags the challenge raised, kept in the open:**
+**Accuracy.** On the compute-free sweep (write-heavy `K ∈ {16,32,64}`, read-heavy `M ∈ {32,64}`,
+`N` up to 4096) this baseline predicts the **write-heavy** corner to within ~4 %, but
+**under-predicts the read-heavy corner — the large-`N`, thin-`M` shapes — by ~7–15 %** (figure):
+there the read runs a little below the copy peak, plus a small fixed floor at tiny `M`. That
+residual is minor next to the compute term that dominates real matmuls (§9), so it is carried
+in the memory term rather than fit away.
 
-- **Fanout is not cleanly ruled out.** The sweeps meant to falsify a fanout term varied fanout
-  and the matrix dimension *together* (more cores also meant a bigger matrix), so they confound
-  fanout with total work, and those particular runs lack the stored features needed to re-score.
-  We therefore state the weaker, honest claim: the residual **tracks per-core tile size**, and
-  fanout was **not separately identified** — not "fanout is proven irrelevant."
-- **There is a co-resident, opposite-sign residual.** While large per-core tiles are slightly
-  *under*-predicted (what `spill` corrects), *small* per-core tiles (e.g. `N/n = 128`) are
-  **over**-predicted by tens of percent — a small-tile floor from fixed per-kernel overhead and
-  **under-fill** (too few rows to keep every compute lane busy), which the spill term does not
-  address. On the decouple sweeps, adding the spill term barely changes overall
-  error because these two residuals pull in opposite directions. `spill` is thus a real
-  large-tile trend, carried but not claimed to be the whole story.
+### §9. The compute term — its form and rate
 
-![§9 per-output-row cost rises with the per-core tile and saturates — the operand re-read (spill) signature](figures/fig9_matmul_spill.png)
+**Observation.** With the memory term (§8) subtracted, the leftover time is the compute, and it
+scales as **`MACs / cores`** — the work each core does. Doubling the cores on a fixed matmul
+halves it; doubling `K` (hence the MACs) doubles it. That fixes the *form*:
 
-### §10. The compute rate — the one cleanly-isolated term
+```
+compute = MACs / cores / peak       (MACs = M·N·K,  cores = m·n·k)
+```
 
-**Observation.** With memory (§8) subtracted, the remaining time scales as `MACs / cores` —
-the work each core does. Doubling the cores on a fixed matmul halves this remaining time.
+where `peak` is the sustained MAC rate per core.
 
-**Model.** `compute = MACs / cores / peak`, where `peak` is the sustained MAC rate per core.
+**Time tracks cores, not the split.** The `cores` in the denominator is the *product* `m·n`
+(the planner keeps `K` whole), not the particular factoring. The figure confirms this directly:
+at 32 cores the balanced splits `4×8`, `8×4`, `2×16` land on the same ~385 µs.
 
-**Why this term is trustworthy.** `peak` is the **slope** of kernel time against `1/cores` at a
-fixed matmul — and a slope is insensitive to any constant offset, including the overlap term of
-§11. So unlike the memory rate, `peak` is pinned without circularity. Compute-dominant cores
-scans (cores 4→32, large `K`) give a clean straight line; the fitted `peak ≈ 1140–1160
-MAC/ns/core` predicts these runs to **2–3 %**. (Its absolute level is still *mildly* correlated
-with the overlap factor — `peak = 1200` with the same overlap fits nearly as well — so we quote
-a small range, not a spuriously exact number.)
+**Fitting `peak`, cleanly.** `peak` is the **slope** of kernel time against `1/cores` at a fixed
+matmul — and a slope is immune to any constant offset, including the overlap term of §10. So
+unlike the memory rate, `peak` is pinned without circularity. Two problem sizes (`K = 2048` and
+`4096` at `M=N=2048`) swept over cores 4→32 give straight lines through near-zero intercepts —
+and the `K=4096` slope is twice the `K=2048` slope, matching the 2× MAC count. The fitted
+`peak ≈ 1140–1160 MAC/ns/core` predicts these to **2–3 %**; its absolute level is *mildly*
+correlated with the overlap factor (`peak = 1200` with the same overlap fits nearly as well), so
+we quote a small range, not a spuriously exact number.
 
-![§10 compute-dominant matmuls: kernel time is linear in 1/cores; the slope is the per-core MAC rate](figures/fig10_matmul_peak.png)
+![§9 kernel time halves when cores double (time ∝ 1/cores); at equal cores the balanced m×n splits collapse to the same point](figures/fig9_matmul_peak.png)
 
-### §11. Compute and memory overlap — they do not simply add
+### §10. Compute and memory overlap — they do not simply add
 
-**Observation.** Adding compute and memory (`T = compute + memory`) **over-predicts** balanced
+**Observation.** Adding the two terms (`T = compute + memory`) **over-predicts** balanced
 high-core matmuls: the real kernel is faster than the sum of its parts. Turning the overlap off
-(setting the overlap factor to zero) inflates the error on the compute-dominant set from ~3 % to
-~15 % — so the effect is real, not fitting noise.
+(overlap factor = 0) inflates the error on the compute-dominant set from ~3 % to ~15 % — so the
+effect is real, not fitting noise.
 
 **Model.** `T = compute + memory − γ·min(compute, memory)` — the *smaller* of the two terms is
 partly hidden behind the larger, because the systolic array computes while operands stream. The
 fitted overlap fraction is `γ ≈ 0.45–0.46`.
 
-**Where γ actually comes from — an honest correction.** An earlier draft claimed γ was pinned by
-a dedicated small-shape sweep (`M=N=512/768, K=64`). It is not: **that sweep, taken alone,
-prefers γ = 0** (its error is lowest with no overlap and grows as γ increases), because those
-shapes are tiny (5–17 µs) and dominated by a fixed-overhead floor — one point even gets *slower*
-when cores double, which no overlap model can produce. We discard that sweep as a γ estimator.
-γ ≈ 0.46 is instead pinned by the **aggregate of balanced high-core matmuls**, where the
-additive model visibly over-predicts. And because γ trades off against the memory rate (§8),
-the honest statement is: **overlap is real and sizable; its exact fraction (~0.45) is
-correlated with the memory rate and pinned by the balanced-regime aggregate, not by any single
-clean sweep.**
+**Does one γ hold across shapes?** Yes, within the balanced regime. The figure plots the
+prediction error of every balanced (`k=1`) matmul — 24 configs, at cores 4→32 — against the
+**memory fraction** (`memory / (compute + memory)`). Each config's shape class is a marker:
+**square** (`M=N=K`), **fat-K** (`K ≥ 2·max(M,N)`, so compute-heavy), **thin M/N** (one of `M`,
+`N` at most half the other — a skinny matmul), and **rectangular** (everything else). Overlap
+only bites when memory is a meaningful fraction, and that is exactly what the data shows: the
+additive model (`γ=0`, open) is fine when compute dominates (left) but **over-predicts more and
+more as the memory fraction grows**, reaching +40 %. A single `γ ≈ 0.46` (filled) flattens that
+back to ≈ 0 across the whole range and all shape classes — so the overlap fraction is *not* a
+per-shape fudge.
 
-![§11 balanced matmuls run faster than compute+memory added; the overlap term closes the gap](figures/fig11_matmul_overlap.png)
+![§10 prediction error vs memory fraction: additive (γ=0) over-predicts as memory grows; γ=0.46 flattens it across shapes](figures/fig10_matmul_overlap.png)
+
+**What it does not fix (flagged for §12).** At the highest memory fractions (> ~0.5 — the most
+memory-dominated, thinnest shapes) the `γ=0.46` points scatter to ±15–30 %: overlap alone does
+not fully describe those, and they overlap with the read-heavy corner of §8 and the thin-shape
+residuals of §12. Within the compute-leaning bulk (memory fraction ≲ 0.45) a single γ holds to
+±10 %.
+
+### §11. A residual: the per-core operand tile, re-read from memory
+
+**Observation.** With the memory (§8), compute (§9), and overlap (§10) terms in place — the full
+base model, minus this section's term — balanced high-core matmuls still leave a residual that
+**grows with the per-core tile edge**. The figure isolates it with two `4×8`-split sweeps: one
+varies `M/m` (the tile's row count, holding `N/n = 256`), the other varies `N/n` (holding
+`M/m = 512`). In both, the residual (measured − base model) is slightly *negative* at a small
+tile and climbs steeply *positive* as the tile grows past ~448 — reaching +277 µs (+17 %) at
+`M/m = 2048`. That is the signature of running out of on-chip room.
+
+![§11 residual (measured − base model) grows with the per-core tile edge, past the ~448 knee](figures/fig11_matmul_spill.png)
+
+**Model.** A per-core operand tile that no longer fits on-chip must be re-streamed from HBM for
+reuse — extra traffic we call **spill** — saturating once the whole tile is re-read. We model it
+as a re-read of the operands past an on-chip capacity knee:
+
+```
+spill = |A|·f(M/m) + |B|·f(N/n),   f(t) = min(1.70, 1.10·log₂(t / 448))
+```
+
+charged at the read rate — a saturating (logarithmic, capped) growth with a knee near a per-core
+tile of ~448 rows/columns.
+
+**Two flags kept in the open:**
+
+- **The separable form is an approximation.** On-chip capacity bounds the per-core tile *as a
+  whole* — its area `M/m × N/n` (the output accumulator) — not each edge against an independent
+  448 knee. The separable `|A|·f(M/m) + |B|·f(N/n)` is therefore a convenience, not the physics.
+  Our data cannot yet settle the true 2-D form: the two decouple sweeps are 1-D slices (each fixes
+  one edge), and they show the residual is *not* a function of area alone — at equal area
+  `M/m·N/n = 262144`, an elongated `1024×256` tile costs +136 µs but a square `512×512` only +90 µs,
+  so the tile *shape* matters. A dedicated `M/m × N/n` grid (`run_matmul_tile_grid_sweep.sh`, see
+  the appendix) is queued to fit the real 2-D form.
+- **A co-resident, opposite-sign residual.** Large per-core tiles are slightly *under*-predicted
+  (what `spill` corrects), but *small* per-core tiles (e.g. `N/n = 128`) are **over**-predicted by
+  tens of percent — a small-tile floor from fixed per-kernel overhead and **under-fill** (too few
+  rows to keep every compute lane busy). The two residuals pull opposite ways, so `spill` is a
+  real large-tile trend, carried but not claimed to be the whole story.
 
 ### §12. Where the base model breaks: out-of-regime residuals
 
 The base model (§8–§11) predicts **planner-realistic** matmuls — those a real compiler would
-emit — to **RMS ~7 %** (mean ≈ 0). "Planner-realistic" means: the `K` dimension kept whole,
-balanced output tiling (each fanout ≤ 8), and non-tiny operands. Three specific departures from
-that envelope leave large, understood residuals; we flag rather than fit them.
+emit — to **RMS ~6.9 %** (mean ≈ 0). "Planner-realistic" means the `K` dimension kept whole (the
+planner never splits `K`), balanced output tiling (each fanout ≤ 8), and non-tiny operands. Two
+departures from that envelope leave larger errors; both sit outside what a planner emits, and we
+name the mechanism for each.
 
-- **§12a. Non-power-of-2 `N`.** Stepping `N` by 64 across a stick boundary makes measured time
-  **non-monotonic**, and the base model (which counts bytes on a stick-aligned full `N`) can
-  even invert the ranking of two nearby sizes. The cause is per-core-tile **padding**: when
-  `N/n` is not a multiple of the 64-element stick it rounds up, adding work the full-`N` byte
-  count misses. Thin data (a short `N` sweep); modeled qualitatively, flagged (~−16 %).
+- **§12a. Extreme splits (one fanout ≫ 8).** A very lopsided split makes the model
+  **under-predict by 40–47 %** (`16×2`, `32×1`, `1×32`). We tried to model it; here is what it is
+  and why the current term cannot capture it. The cost is an **operand re-read**: when a dimension
+  is split few ways, that operand's per-core tile is huge and is re-streamed from HBM by many
+  cores. Crucially it is **asymmetric** — a huge `N/n` (the inner/stick tile: `16×2`→`N/n = 1024`,
+  `32×1`→`2048`) breaks it, while a huge `M/m` (the row tile: `2×16`→`M/m = 4096`) is *fine*
+  (+1…−3 %), because extra rows just stream whereas a wide `N` tile must be re-read. The §11
+  log-spill term is symmetric and **saturating**, so it structurally cannot express this: raising
+  its cap only moves the mean error from −24 % to −16 % and then plateaus — the *form* is wrong
+  here, not just mis-tuned. A correct term needs the operand re-read as a function of *both* the
+  tile and the fanout; the queued 2-D grid plus a split sweep (`run_matmul_tile_grid_sweep.sh`,
+  extended) will supply the data to fit it. Flagged, not hacked — and it costs little in practice
+  because a planner keeps both fanouts moderate (a `2×16`-style split is already fine).
 
-- **§12b. Forced `K`-splits.** If the shared `K` dimension is split across cores, each core
-  produces a partial result and the partials are summed in a cross-core combine — a real cost
-  the model does **not** charge, because the compiler's own planner penalizes `K`-splits and
-  avoids them for these shapes (it is a strong preference, not an absolute prohibition). Forcing
-  a `K`-split by hand therefore makes the model **under-predict by ~40 %**. These runs are
-  deliberately out-of-planner-regime; the −40 % is a known, unmodeled cross-core-combine cost,
-  not a surprise.
-
-- **§12c. Tiny operands and skewed splits.** Very small matmuls (a few µs) sit on a
-  fixed-overhead floor the model omits (it over- or under-shoots by tens of percent), and
-  extreme lopsided splits (one fanout ≫ 8) under-fill the systolic array. Both are bounded and
-  flagged as outside the shapes a planner would choose.
+- **§12b. Tiny matmuls (a fixed-overhead floor).** Very small operands (e.g. `512×64×512`,
+  ≈ 5–8 µs) sit on a fixed per-kernel overhead the model sets to zero (§1); at low core counts the
+  model predicts below that floor and **under-predicts by up to −34 %**. This one *is* easy to
+  model — a small floor, `T = max(T_floor, model)` — but we left it out deliberately: the floor
+  only bites sub-10-µs kernels (negligible next to real matmuls), and a global floor would
+  slightly perturb the well-fit larger shapes. It is a known, bounded, one-line term, not a
+  mystery. (The same category also catches a few thin, memory-heavy shapes — small `M/m`, large
+  memory fraction, e.g. `512×2048×2048` at +48 % — which *over*-predict; those are the small-tile
+  and high-memory-fraction residuals already noted in §10 and §11, not a distinct effect.)
 
 **Part III accuracy — matmul, by regime.** On the planner-realistic envelope the model is
-within a few percent on the bulk, with residual tails at small per-core tiles and the
-skewed-split edge; the out-of-regime rows carry the large, understood errors above.
+within a few percent on the bulk (residual tails at small per-core tiles and the 8×4 edge); the
+out-of-regime rows carry the large, mechanism-named errors above.
 
 | regime | n | RMS % | mean % | err range | status |
 |---|---:|---:|---:|---|---|
-| planner-realistic (K whole, fanout ≤ 8, non-tiny, pow-2 `N`) | 34 | **7.1** | +0.5 | −16…+28 | modeled; tails at small `N/n` and 8×4 splits |
-| single effective rate (150 GB/s) — same rows, recommended form | 34 | **6.9** | +0.2 | −16…+27 | recommended (§8) |
-| forced `K`-split (`k ≥ 2`) | 9 | 40.7 | −40.5 | −48…−36 | out-of-regime; unmodeled K-combine (§12b) |
-| skewed split (fanout > 8) | 7 | 31.8 | −22.8 | −47…+6 | out-of-regime under-fill (§12c) |
-| tiny operands | 20 | 21.7 | +2.5 | −35…+52 | fixed-overhead floor (§12c) |
-| non-power-of-2 `N` | 1 | 16.1 | −16.1 | — | padding sawtooth, thin data (§12a) |
+| planner-realistic (K whole, fanout ≤ 8, non-tiny) | 34 | **6.9** | −0.2 | −17…+26 | modeled; tails at small `N/n` and 8×4 splits |
+| extreme split (one fanout ≫ 8 → huge tile) | 7 | 32.2 | −23.9 | −48…+4 | §12a: asymmetric operand re-read; log-spill can't fit |
+| tiny operands (few µs) | 20 | 21.1 | +2.6 | −34…+48 | §12b: fixed-overhead floor (easily added) |
 
 Representative planner-realistic points (the regime the model is built for):
 
 | M×K×N | split (m×n×k) | measured µs | predicted µs | err % |
 |---|---|---:|---:|---:|
-| 2048×2048×2048 | 2×2×1 (cores 4) | 2013.5 | 2085.3 | +3.6 |
-| 2048×2048×2048 | 2×4×1 (cores 8) | 1095.9 | 1108.5 | +1.1 |
-| 2048×2048×2048 | 4×8×1 (cores 32) | 384.4 | 360.6 | −6.2 |
-| 4096×2048×2048 | 4×8×1 (cores 32) | 806.1 | 788.1 | −2.2 |
-| 8192×2048×2048 | 4×8×1 (cores 32) | 1594.2 | 1608.5 | +0.9 |
-| 2048×4096×2048 | 4×8×1 (cores 32) | 4021.0 | 4115.5 | +2.4 |
-| 2048×2048×4096 | 4×8×1 (cores 32) | 668.0 | 666.1 | −0.3 |
+| 2048×2048×2048 | 2×2×1 (cores 4) | 2013.5 | 2079.6 | +3.3 |
+| 2048×2048×2048 | 2×4×1 (cores 8) | 1095.9 | 1104.5 | +0.8 |
+| 2048×2048×2048 | 4×8×1 (cores 32) | 384.4 | 358.5 | −6.8 |
+| 4096×2048×2048 | 4×8×1 (cores 32) | 806.1 | 777.0 | −3.6 |
+| 8192×2048×2048 | 4×8×1 (cores 32) | 1594.2 | 1584.8 | −0.6 |
+| 2048×4096×2048 | 4×8×1 (cores 32) | 667.1 | 660.7 | −1.0 |
+| 2048×2048×4096 | 4×8×1 (cores 32) | 764.0 | 693.1 | −9.3 |
+
+**Every matmul data point** (62 runs; `regime` = which row of the summary table above):
+
+| regime | M×K×N | split (m×n×k) | meas µs | pred µs | err % |
+|---|---|---|---:|---:|---:|
+| `realistic` | 1024×2048×1024 | 2×2×1 | 506.5 | 521.6 | +3.0 |
+| `realistic` | 1024×4096×1024 | 2×2×1 | 1006.3 | 1029.1 | +2.3 |
+| `realistic` | 2048×2048×1024 | 4×8×1 | 167.6 | 211.4 | +26.1 |
+| `realistic` | 1024×2048×2048 | 4×8×1 | 182.0 | 199.5 | +9.6 |
+| `realistic` | 2048×2048×2048 | 2×2×1 | 2013.5 | 2079.6 | +3.3 |
+| `realistic` | 2048×2048×2048 | 2×2×1 | 2014.9 | 2079.6 | +3.2 |
+| `realistic` | 2048×2048×2048 | 2×4×1 | 1095.9 | 1104.5 | +0.8 |
+| `realistic` | 2048×2048×2048 | 2×4×1 | 1093.8 | 1104.5 | +1.0 |
+| `realistic` | 2048×2048×2048 | 4×8×1 | 384.4 | 358.5 | −6.8 |
+| `realistic` | 2048×2048×2048 | 4×8×1 | 384.9 | 358.5 | −6.9 |
+| `realistic` | 2048×2048×2048 | 4×8×1 | 390.1 | 358.5 | −8.1 |
+| `realistic` | 2048×2048×2048 | 8×4×1 | 383.4 | 358.5 | −6.5 |
+| `realistic` | 2048×4096×2048 | 2×2×1 | 4021.0 | 4103.0 | +2.0 |
+| `realistic` | 2048×4096×2048 | 2×2×1 | 4021.2 | 4103.0 | +2.0 |
+| `realistic` | 2048×4096×2048 | 2×2×1 | 4022.1 | 4103.0 | +2.0 |
+| `realistic` | 2048×4096×2048 | 2×2×1 | 4024.2 | 4103.0 | +2.0 |
+| `realistic` | 2048×4096×2048 | 2×4×1 | 2123.7 | 2152.8 | +1.4 |
+| `realistic` | 2048×4096×2048 | 2×4×1 | 2125.0 | 2152.8 | +1.3 |
+| `realistic` | 2048×4096×2048 | 2×4×1 | 2125.7 | 2152.8 | +1.3 |
+| `realistic` | 2048×4096×2048 | 4×4×1 | 1093.4 | 1144.5 | +4.7 |
+| `realistic` | 2048×4096×2048 | 4×4×1 | 1094.5 | 1144.5 | +4.6 |
+| `realistic` | 2048×4096×2048 | 4×8×1 | 667.1 | 660.7 | −1.0 |
+| `realistic` | 2048×4096×2048 | 4×8×1 | 668.0 | 660.7 | −1.1 |
+| `realistic` | 4096×2048×2048 | 2×2×1 | 4027.0 | 4112.8 | +2.1 |
+| `realistic` | 2048×2048×4096 | 2×2×1 | 4026.8 | 4112.8 | +2.1 |
+| `realistic` | 4096×2048×2048 | 4×8×1 | 806.1 | 777.0 | −3.6 |
+| `realistic` | 4096×2048×2048 | 4×8×1 | 810.3 | 777.0 | −4.1 |
+| `realistic` | 4096×2048×2048 | 8×4×1 | 831.5 | 693.1 | −16.6 |
+| `realistic` | 2048×2048×4096 | 4×8×1 | 764.0 | 693.1 | −9.3 |
+| `realistic` | 2048×2048×4096 | 4×8×1 | 770.3 | 693.1 | −10.0 |
+| `realistic` | 2048×2048×4608 | 4×8×1 | 944.1 | 787.9 | −16.5 |
+| `realistic` | 8192×2048×2048 | 4×8×1 | 1594.2 | 1584.8 | −0.6 |
+| `realistic` | 8192×2048×2048 | 4×8×1 | 1594.3 | 1584.8 | −0.6 |
+| `realistic` | 8192×2048×2048 | 8×4×1 | 1614.7 | 1509.9 | −6.5 |
+| `realistic` | 4096×2048×4096 | 2×2×1 | 8045.1 | 8086.0 | +0.5 |
+| `extreme` | 2048×2048×2048 | 2×16×1 | 399.4 | 416.4 | +4.3 |
+| `extreme` | 4096×2048×2048 | 2×16×1 | 811.1 | 820.4 | +1.1 |
+| `extreme` | 8192×2048×2048 | 2×16×1 | 1632.6 | 1584.8 | −2.9 |
+| `extreme` | 4096×2048×2048 | 32×1×1 | 1202.7 | 725.3 | −39.7 |
+| `extreme` | 4096×2048×2048 | 1×32×1 | 1381.8 | 820.4 | −40.6 |
+| `extreme` | 4096×2048×2048 | 16×2×1 | 1222.8 | 713.6 | −41.6 |
+| `extreme` | 8192×2048×2048 | 16×2×1 | 2632.8 | 1382.9 | −47.5 |
+| `tiny` | 512×64×512 | 4×8×1 | 5.3 | 5.4 | +2.2 |
+| `tiny` | 512×64×512 | 4×4×1 | 7.5 | 5.6 | −24.7 |
+| `tiny` | 512×64×512 | 2×4×1 | 8.4 | 6.1 | −27.6 |
+| `tiny` | 768×64×768 | 2×4×1 | 14.1 | 12.5 | −11.0 |
+| `tiny` | 768×64×768 | 4×4×1 | 17.3 | 11.4 | −34.0 |
+| `tiny` | 512×512×1024 | 4×8×1 | 20.3 | 27.5 | +35.0 |
+| `tiny` | 256×2048×512 | 4×8×1 | 26.0 | 28.2 | +8.4 |
+| `tiny` | 1024×128×2048 | 4×8×1 | 31.5 | 41.7 | +32.5 |
+| `tiny` | 2048×16×2048 | 4×8×1 | 64.7 | 68.3 | +5.5 |
+| `tiny` | 2048×64×2048 | 4×8×1 | 56.6 | 66.8 | +18.1 |
+| `tiny` | 2048×32×2048 | 4×8×1 | 69.6 | 70.6 | +1.5 |
+| `tiny` | 512×2048×2048 | 4×8×1 | 86.2 | 127.7 | +48.2 |
+| `tiny` | 1792×2048×512 | 4×8×1 | 125.2 | 113.5 | −9.3 |
+| `tiny` | 2048×2048×512 | 4×8×1 | 107.4 | 139.6 | +30.0 |
+| `tiny` | 1792×64×3584 | 4×8×1 | 104.5 | 100.3 | −4.1 |
+| `tiny` | 4096×32×2048 | 4×8×1 | 131.8 | 133.9 | +1.6 |
+| `tiny` | 4096×32×4096 | 4×8×1 | 257.9 | 259.4 | +0.6 |
+| `tiny` | 64×4096×2048 | 1×32×1 | 127.9 | 126.5 | −1.0 |
+| `tiny` | 32×4096×4096 | 1×32×1 | 264.9 | 238.8 | −9.9 |
+| `tiny` | 64×4096×4096 | 1×32×1 | 276.4 | 249.6 | −9.7 |
 
 ---
 
-## Part IV — Coarse tiling *(next report — deferred)*
+## Part IV — Coarse tiling: fitting intermediates in on-chip memory
 
-Placeholder: the fused-kernel reframe (external input counted once), rows-driven underfill
-(`rpc`), and the categorical LX-spill. Already largely isolated; written up separately.
+A *coarse-tiled* program fuses a chain of ops into **one** kernel and tiles a dimension so that,
+within each tile, the intermediate tensors are small enough to live in on-chip scratchpad (LX)
+instead of off-chip memory (HBM). Two examples: `softmax(x)` (the chain `max → sub → exp → sum →
+div`) and a tiled `a @ b`. This part shows the cost of such a kernel needs **no new form** — it
+is the Parts I–III model applied to a byte count that depends on where each tensor lives.
+
+### §13. The whole model is one question: which tensors are in HBM, which in LX?
+
+The accelerator has two memories: **HBM** (off-chip — the bandwidth every Part so far has
+modeled) and **LX** (a small on-chip scratchpad). In the traffic model, an LX-resident tensor is
+**free** — it never crosses the HBM bus — while an HBM tensor is charged at the Part I–III rates.
+So a fused kernel's cost is set entirely by **which tensors sit in HBM**:
+
+```
+HBM bytes = every external input (counted once) + every output + every intermediate that spilled to HBM
+LX intermediates = free
+```
+
+The model reads this straight from the IR: each tensor carries its residency (HBM or LX). It
+sums the HBM ones — deduplicating a shared external input, which a fused kernel loads once and
+re-serves on-chip — and ignores the LX ones. That is the entire coarse-tiling model.
+
+**Why tiling helps — softmax, one shape, tile count swept.** Untiled, softmax's two big
+intermediates (the `sub` and `exp` results, each the size of the whole tensor) live in HBM, so
+the kernel makes ~7 passes over the data. Tile the rows finely enough and those intermediates
+fit in LX — only the input (once) and the output touch HBM, i.e. **2 passes** — and the model,
+counting bytes, follows the drop:
+
+| tiles | intermediates in | HBM passes | measured µs | predicted µs | err % |
+|---:|---|---:|---:|---:|---:|
+| 1 (untiled) | HBM | 7.0 | 9927 | 9861 | −1 |
+| 2 | HBM (partial) | 4.5 | 9735 | 5860 | **−40** |
+| 4 | LX | 2.0 | 3143 | 2695 | −14 |
+| 8 | LX | 2.0 | 2867 | 2695 | −5 |
+| 16 | LX | 2.0 | 2649 | 2695 | +2 |
+| 32 | LX | 2.0 | 2683 | 2695 | +0 |
+
+Once the intermediates are in LX (tiles ≥ ~8) the model is within a few percent. No new cost
+*form* is needed: a fused kernel with no matmul (softmax: `max→sub→exp→sum→div`) is priced as a
+memory-bound Part I–II kernel — no compute term — while a fused matmul carries the Part III
+compute terms on top of the same byte count. Two residuals remain, both about *when* the byte
+count and the underfill are right: the **LX-spill boundary** (§14, the −40 % row above) and the
+**per-tile underfill** (§15).
+
+### §14. The LX-spill boundary: an intermediate is free only if it fits on-chip
+
+**Observation.** The byte count is accurate at both ends — fully untiled (all intermediates in
+HBM, ~7 passes) and finely tiled (all in LX, 2 passes) — but **under-predicts by up to 40 % in
+the transition between them**. The error is not random: it grows with the per-core **working
+set** — the live intermediate bytes each core must hold — independent of the tile count or shape.
+Across three shapes (per-core working set = `2 intermediates × rows-per-core × COLS × 2 B`):
+
+| per-core working set | HBM passes (model) | err % | verdict |
+|---:|---:|---:|---|
+| ~4.2 MB | 4.5 | **−40** | spills; model counts it LX |
+| ~2.1 MB | 2.0 | −13…−18 | partial spill |
+| ~1.0 MB | 2.0 | −5…−13 | mostly fits |
+| ≤ 0.5 MB | 2.0 | −7…+4 | fits — model correct |
+
+![§14 softmax prediction error collapses onto the per-core working set; spills past ~1 MB/core](figures/fig12_coarse_spill.png)
+
+**Hypothesis.** The IR flips an intermediate's tag to LX as soon as tiling shrinks it, but the
+hardware only keeps it on-chip if the **per-core working set fits the scratchpad (~1 MB/core)**.
+Past that it silently spills to HBM and is re-read — traffic the LX tag hides — so the byte count
+is too low. The model should not trust the tag: it should count an LX intermediate as HBM
+whenever the per-core working set exceeds LX capacity.
+
+**Experiment / evidence.** The tile sweep above, repeated at three shapes, collapses onto the
+working set, not the tile count: −40 % at ~4 MB/core, fading through ~2 MB, within a few percent
+once ≲ 1 MB/core — the *same* threshold for every shape. That pins **LX capacity ≈ 1 MB/core**
+and turns the fix into a concrete term (spill an intermediate when `working_set/core > ~1 MB`),
+the same "does the tile fit on-chip" test as the matmul spill of §11. Verified offline: forcing
+the over-capacity intermediates back into the HBM count moves the −40 % `tiles=2` point to
+**−6 %**, without touching the well-tiled floor — most of the residual is this one mis-count.
+
+### §15. Underfill: a short per-core tile runs the pipeline below peak — the `eff` term
+
+**Observation.** Once the intermediates fit in LX (§14), a coarse-tiled kernel's speed still
+depends on the per-core tile height: with too few rows per core the streaming pipeline never
+fills. Sweeping the tile count on softmax (isolating the LX-fitting points), the effective
+bandwidth climbs from ~48 GB/s at `rpc = 2` rows-per-core to a ~150 GB/s plateau by `rpc ≈ 16`,
+then mildly declines (figure).
+
+![§15 the coarse underfill: softmax effective BW climbs with per-core rows, plateaus at rpc≈16](figures/fig13_coarse_eff.png)
+
+**Model (calibrated).** A pipeline-fill efficiency `eff ≤ 1` multiplies the memory term, keyed on
+per-core rows per tile `rpc = ROWS / (cores · tiles)`:
+
+```
+eff = min(0.95,  (rpc / 13)^0.68)        memory term = (R + W) / BW_eff / eff
+```
+
+It plateaus at 0.95 by `rpc ≈ 16` and derates below (≈0.45 at `rpc = 4`, ≈0.28 at `rpc = 2`). A
+cross-`COLS` control (same `rpc`, double the tile bytes → same per-byte cost) confirmed it keys
+on **rows (`rpc`), not tile bytes**. **On the softmax regime where the intermediates fit LX, this
+gives RMS 5.9 %** (mean −1.2 %, over 45 points) — the coarse-tiling model is accurate once §14's
+spill is set aside.
+
+**Two residuals.**
+
+- **Above `rpc ≈ 32` the efficiency mildly declines** (150 → 131 GB/s) while the model holds the
+  0.95 cap — a small, rows-driven droop left unmodeled (the shaded region in the figure).
+- **`matmul_row_tiling` needs its own underfill.** `eff` derates the *memory* term, right for the
+  memory-bound softmax; a tiled matmul underfills on *compute*. At a fixed shape its measured time
+  **grows with tile count** (`2048²` tiled 2 → 4 → 8: 341 → 440 → 652 µs) as each per-tile matmul
+  gets fewer rows — an implied efficiency ≈ **0.9 / 0.5 at 64 / 32 rows-per-core**, far steeper
+  than the standalone-matmul underfill (still ~1.0 at 64, since one big matmul accumulates across
+  all its rows and pays no per-tile fill). A steeper compute-underfill curve for tiled matmuls —
+  `eff = min(1, (rpc/72)^0.85)`, applied only to `tiles_output_dim` matmuls — is now in the model
+  and brings `matmul_row_tiling` from **~20 % to 14 %**; the residual is thin data (one shape,
+  three tile counts), so a tile-count sweep is queued to firm up the curve.
 
 ---
 
@@ -676,3 +852,6 @@ Placeholder: the fused-kernel reframe (external input counted once), rows-driven
     ops at one large ROWS).
   - `run_transport_shape_sweep.sh` — `cat0` and `transpose_outer` over size × aspect ratio, to
     replace the provisional fixed/default rates of §6 with size-dependent ones.
+  - `run_matmul_tile_grid_sweep.sh` — a full `M/m × N/n` grid (fixed `4×8` split) to settle the
+    2-D form of the spill term (§11), plus a split sweep (balanced → extreme at a fixed shape) to
+    fit the asymmetric operand-re-read that breaks extreme splits (§12a).

@@ -9,13 +9,13 @@ N fp16 rounds up to a multiple of the 64-elem stick); LX-resident intermediates 
 
 | group | ops | torch expression |
 |---|---|---|
-| pointwise | `neg` `gelu` `exp` `mul` `add` | `-x`, `gelu(x)`, `exp(x)`, `a*b`, `a+b` |
+| pointwise | `neg` `gelu` `exp` `mul` `add` `copy` | `-x`, `gelu(x)`, `exp(x)`, `a*b`, `a+b`, `x+1.0` (`copy` is a broadcast op) |
 | pointwise n-ary | `add3` `add4` | `a+b+c`, `a+b+c+d` (2 / 3 chained adds) |
-| reduction | `sumrow` `sumcol` `amax` | `sum(x,dim=1)`, `sum(x,dim=0)`, `amax(x)` |
-| broadcast | `bcast` `bcastcol` `write` | `a[R,C]+b[1,C]`, `a[R,C]+b[R,1]`, `b[1,C]+c[R,1]` |
-| transport | `transpose` `cat0` `cat1` | `x.transpose(0,1).contiguous()`, `cat([x,x],dim=0/1)` |
+| reduction | `sumrow` `sumcol` `amax` `mean` `sumall` `read` | `sum(x,dim=1)`, `sum(x,dim=0)`, `amax(x)`, `mean(x,dim=1)`, `sum(x)`, `x` (pure read) |
+| broadcast | `bcast` `mulbcast` `bcastcol` `write` | `a[R,C]+b[1,C]`, `a[R,C]*b[1,C]`, `a[R,C]+b[R,1]`, `b[1,C]+c[R,1]` |
+| transport | `transpose` `transpose_outer` `cat0` `cat1` | `x.transpose(0,1).contiguous()`, 3-D outer swap, `cat([x,x],dim=0/1)` |
 | matmul | `mm` `mmwd` | `a@b` (planner split / forced `WD_M×WD_N×WD_K` split) |
-| coarse-tiling | `softmax_row_tiling` `matmul_row_tiling` `chain` | `softmax(x,dim=-1)`, `a@b`, `(a+b)*c` — tiled so an intermediate stays in LX |
+| coarse-tiling | `softmax_row_tiling` `matmul_row_tiling` | `softmax(x,dim=-1)`, `a@b` — tiled so an intermediate stays in LX |
 
 ## (1) Model — math form
 
@@ -28,20 +28,26 @@ T = compute + HBM/eff − γ·min(compute, HBM/eff)
 | term | form | meaning |
 |---|---|---|
 | `HBM` (default) | `(R+W)/BW_peak + α·min(R,W)` | bandwidth + read↔write bus **turnaround** |
+| `HBM` (row-reduction) | `(R+W)/BW_red(ROWS)` | read-bound; rate `BW_red = min(150, 114+61·e^(−ROWS/3700))` falls with ROWS (op-independent) |
 | `HBM` (access-pattern op) | `(R+W)/BW_eff` | per-op effective BW (`transpose`/`cat0`/`sumcol`; also broadcast-operand ops `copy`/`bcast`/`bcastcol`/`mulbcast`) |
-| `HBM` (matmul) | `R/BW_r + W/BW_w + α·min(R,W) + spill` | two-rate reads/writes + operand re-read |
-| `compute` (matmul only) | `MACs / cores / peak` | `MACs=M·N·K`, cores = split product; else `compute=0` |
-| **`eff`** (underfill) | `min(0.95, (rpc / 13)^0.68)`, `rpc = ROWS/(cores·tiles)` | **coarse-tiling only**: a short per-core tile (rpc rows) underfills the streaming pipeline → derates HBM. Keys on ROWS (rpc), not tile bytes (cross-COLS control). `=1` untiled. Separate from the matmul `pt_eff` |
+| `HBM` (matmul) | `(R+W)/BW_peak + α·min(R,W) + spill` | single-rate (= copy peak) + operand re-read |
+| `compute` (matmul only) | `MACs / cores / (peak · pt_eff)` | `MACs=M·N·K`, cores = split product; else `compute=0`. `pt_eff` = systolic-array fill |
+| **`eff`** (coarse memory underfill) | `min(0.95, (rpc/13)^0.68)`, `rpc = ROWS/(cores·tiles)` | **coarse-tiling**, memory-bound (softmax): a short per-core tile underfills the streaming pipeline → derates HBM. Keys on ROWS, not tile bytes. `=1` untiled |
+| `pt_eff` (matmul fill) | standalone: `min(1,(rows/64)^0.35)`; **tiled**: `min(1,(rows/72)^0.85)` | systolic-array fill (rows = per-core rows). A coarse-**tiled** matmul (`matmul_row_tiling`) underfills far steeper per tile than one big matmul |
 | `γ·min(compute,HBM)` | `γ=0.46` | compute/HBM **overlap** (memory hides behind compute) |
 | `spill` | `|A|·f(M/m) + |B|·f(N/n)`, `f(t)=min(1.7, 1.1·log₂(t/448))` | matmul per-core operand **re-read** past on-chip capacity |
 | n-ary derate | `× (1 + 0.075·(n_ops−1))` | multi-pass pointwise chain (`add3/add4`, HBM intermediates) |
 
-Constants: `BW_peak=150`, `α=0.00574 ns/B`, matmul `BW_r=143 / BW_w=156`,
-`peak=1140 MAC/ns/core`. Per-op effective BW: `restickify=116`, `stick_scatter=60`,
+Constants: `BW_peak=150`, `α=0.00574 ns/B`, matmul HBM `= single 150` (the old two-rate
+`143/156` was retired — `156>150` is unphysical, a compute-free-fit artifact),
+`peak=1140 MAC/ns/core`. Per-op effective BW: `restickify=116`, `stick_scatter` shape-dependent
+(cat0: `252−4·log2R−12.3·log2C` clamped [45,150], falls with row width C),
 `reduce_outer=113`, `broadcast=118` (an op streaming a full input + a broadcast operand,
 e.g. `copy=x+1.0`, runs above the plain 1R:1W rate). `write` (both operands broadcast →
 outer-product) adds an empirical extra HBM term `2.15e-7·ROWS^1.6·COLS^2.2` (black-box).
-K is always kept whole (`WD_K=1`).
+Standalone row-reductions (`sum`/`amax`/`mean`/`sumall`/`read` over the last axis) read at a
+ROWS-derated rate `min(150, 114+61·exp(−ROWS/3700))` (op-independent; `sumcol` keeps
+`reduce_outer=113`). K is always kept whole (`WD_K=1`).
 
 > **Coarse-tiling (§5):** a coarse-tiled op is ONE *fused* kernel (intermediates stay in LX).
 > `R`,`W` therefore count each distinct **external** input once + outputs once (`_fused_hbm_bytes`):
@@ -54,12 +60,11 @@ K is always kept whole (`WD_K=1`).
 
 | category (ops) | n | tested range | err range | RMS |
 |---|---|---|---|---|
-| pointwise (`neg` `gelu` `exp` `mul` `add` `copy`) | 25 | C 512–16384 | −3…+15% | 5% |
-| pointwise n-ary (`add3` `add4`) | 6 | C 1024–16384 | −3…+2% | 2% |
-| reduction (`sumrow` `sumcol` `amax` `mean` `sumall` `read`) | 12 | C 2048–8192 | −2…+6% | 3% |
-| transport (`transpose` `cat0` `cat1` `transpose_outer`) | 13 | R×C 512–8192 | −15…+5% | 5% |
-| **matmul, balanced split** | 44 | MNK 2e9–3.4e10 | −43…+29% | **8%** (≈8% on power-of-2 shapes) |
-| broadcast (`bcast` `bcastcol` `write`) ⚠ | 12 | C 16384 | −62…+27% | 24% |
+| pointwise (`neg` `gelu` `exp` `mul` `add`) | 43 | C 512–16384 | −6…+6% | 2.2% |
+| reduction (`sumrow` `sumcol` `amax` `mean` `sumall` `read`) | 58 | ROWS 2048–16384 | −2…+6% | 2.6% (ROWS-derated) |
+| transport (`transpose` `cat0` `cat1` `transpose_outer`) | 42 | R×C 512–8192 | −22…+22% | 8.5% (cat0 shape-modeled; t_outer flagged) |
+| **matmul, planner-realistic** | 34 | MNK 2e9–3.4e10 | −17…+26% | **6.9%** (K whole, fanout ≤8, pow-2 N) |
+| broadcast (`copy` `bcast` `bcastcol` `mulbcast` `write`) | 51 | R×C to 16384 | −24…+14% | 7.7% |
 | coarse `softmax_row_tiling` (non-spill) | 44 | rpc 2–512 | −14…+11% | **7.2%** |
 | coarse `softmax_row_tiling` (LX-spill) ⚠ | 7 | rpc ≥160 | −40…−18% | 24% (spilled-traffic rate, deferred) |
 | coarse `matmul_row_tiling` ⚠ | 9 | 1–16 tiles | −38…+9% | ~20% (deferred: `pt_eff` on M/tiles) |
@@ -74,9 +79,9 @@ K is always kept whole (`WD_K=1`).
 | `sumcol` | 2048×8192 | — | 297 | 298 | −0.3% |
 | `transpose` | 2048×2048 | — | 145 | 145 | −0.1% |
 | `cat0` | 2048×2048 | — | 419 | 401 | +4.7% |
-| `mmwd` (compute-bound) | 2048×2048×2048 | 2×2×1 | 2081 | 2018 | +3.2% |
-| `mmwd` (cores=32) | 2048×4096×2048 | 4×8×1 | 665 | 667 | −0.3% |
-| `mmwd` (spill, big M) | 8192×2048×2048 | 4×8×1 | 1590 | 1586 | +0.2% |
+| `mmwd` (compute-bound) | 2048×2048×2048 | 2×2×1 | 2080 | 2014 | +3.3% |
+| `mmwd` (cores=32) | 2048×4096×2048 | 4×8×1 | 661 | 667 | −1.0% |
+| `mmwd` (spill, big M) | 8192×2048×2048 | 4×8×1 | 1585 | 1594 | −0.6% |
 
 ⚠ = **open items**: `bcast`/`write` (broadcast operand faster than the V-curve / write-only
 slower); tiny matmuls (fixed-overhead floor); extreme *forced* splits (not what a planner
@@ -88,9 +93,11 @@ mis-calibrated, so error grows with tile count.
 Each term is fit in a regime where it **dominates**, subtracting only terms already
 validated (never model-minus-model on an unvalidated term):
 
-1. **HBM (`BW_r`, `BW_w`)** — use compute-free matmuls: thin K (K≤64 → output ≫ operands,
+1. **HBM (single rate)** — use compute-free matmuls: thin K (K≤64 → output ≫ operands,
    write-dominated) and thin M (M≤64 → tiny output, read-dominated). Compute <10%, so
-   `kernel ≈ HBM`; fit the two rates from bytes. → 143 / 156.
+   `kernel ≈ HBM`. The dominant-operand rate is ~118–148 (write corners) / ~123–136 (read
+   corners) — overlapping, both **below** the 150 copy peak → a **single 150** rate (an
+   earlier two-rate 143/156 fit was retired; `156>150` was an unphysical overlap artifact).
 2. **compute (`peak`) + overlap (`γ`)** — force **low core counts** (4–8) so compute is
    80–90 % of the kernel; subtract the byte-based HBM → `peak≈1140`. A single peak
    over-predicts cores=32, so add `γ` (memory overlaps compute) and fit both jointly on
@@ -103,8 +110,11 @@ validated (never model-minus-model on an unvalidated term):
    "psum" ring term is now **gated off matmul**: forcing `WD_K>1` made it explode (+489%), and
    since K is never split it contributes nothing in practice.)
 
-Result: **≈8–12 % RMS across the balanced matmul range** (cores 4→32, MNK 2e9→3.4e10;
-≈8 % on power-of-2 shapes, the −40 % tail is non-power-of-2 N stick-padding, unmodeled).
+Result: **≈6.9 % RMS on the planner-realistic envelope** (K whole, fanout ≤8, non-tiny,
+pow-2 N; cores 4→32, MNK 2e9→3.4e10). Out-of-regime rows are flagged, not fit: **forced
+K-splits −41 %** (unmodeled cross-core combine; the planner avoids K-splits), skewed splits
+(fanout >8) −24 %, tiny operands (fixed-overhead floor), non-power-of-2 N ≈ −16 %
+(stick-padding). See report §12 for the full regime table.
 
 ## (4) Transport ops are just copies
 
@@ -119,12 +129,14 @@ reordered. The model therefore treats them exactly like a copy: `T=(R+W)/BW_eff`
 | `neg` | contiguous copy | 106 | baseline |
 | `transpose` | swaps stick ↔ row | **116** | +10 % (restickify pays less turnaround) |
 | `cat1` | concat on the outer dim | 108 | ≈ same |
-| `transpose_outer` | 3-D outer swap, stick kept | 101 | ≈ same |
-| `cat0` | concat on the **stick** dim | **63** | −40 % (fine sub-stick scatter) |
+| `transpose_outer` | 3-D outer swap, stick kept | 106→85 (falls with C) | flagged (no IR tag) |
+| `cat0` | concat on the **stick** dim | 110→49 (falls with C) | shape-modeled |
 
-So a plain copy (`neg`) and most transports share the ~105–116 balanced rate; the two
-outliers (`transpose` faster, `cat0` slower) get a per-op `BW_eff` that the extractor
-reads straight from the IR (stick-var coefficient in the load index / device layout).
+So a plain copy (`neg`) and most transports share the ~105–116 balanced rate; the outliers get a
+per-op `BW_eff` the extractor reads from the IR: `transpose` a fixed 116 (faster), `cat0` a
+shape-dependent rate `252−4·log2R−12.3·log2C` (falls with row width C, R²0.93 over 10 shapes).
+`transpose_outer` shows the SAME C-falloff (−22% at wide C) but carries no IR pattern tag, so it
+stays on the default copy model, flagged.
 
 ## (5) Coarse tiling — a fused kernel, NOT a sum of kernels
 

@@ -22,11 +22,12 @@ Form: `T = compute + HBM/eff − γ·min(compute, HBM/eff)` (see presentation §
 | param | value | status |
 |---|---|---|
 | `bw_peak_gbps` / `rw_turnaround_ns_per_byte` | 150 / 0.00574 | ✅ pointwise/reduction ±5% |
-| `mm_bw_read_gbps` / `mm_bw_write_gbps` | 143 / 156 | ✅ M1 compute-free sweep |
+| `mm_bw_read_gbps` / `mm_bw_write_gbps` | 150 / 150 | ✅ single-rate (see DONE note §Matmul) |
 | `mac_peak_per_core_ns` | **1140** (was 1536) | ✅ compute-dominant low-core fit |
 | `overlap_gamma` | **0.46** (NEW) | ✅ jointly fit w/ peak, RMS 1.7% |
 | `mm_spill_t0 / slope / cap` | **448 / 1.10 / 1.70** (NEW) | ✅ decouple+reread sweeps |
-| `bw_restickify / stick_scatter / reduce_outer_gbps` | **116 / 60 / 113** (NEW) | ✅ HW-validated |
+| `bw_restickify / stick_scatter / reduce_outer` | **116 / shape-dep / 113** | cat0 = 252−4·log2R−12.3·log2C (shape sweep, R²0.93) |
+| reduction read rate | **min(150, 114+61·e^(−ROWS/3700))** | ✅ reduction-rows sweep (op-independent, 2.6% RMS) |
 | `bw_broadcast_gbps` | **118** (2026-07-09) | ✅ copy/bcast/bcastcol/mulbcast; pointwise RMS 5.1→2.0% |
 | `write_reread_coef/r_exp/c_exp` | **2.15e-7 / 1.60 / 2.20** (2026-07-10) | ⚠️ EMPIRICAL outer-product term; broadcast 19→7.7% (black-box) |
 | `pointwise_arity_derate` | **0.075** (NEW) | ✅ add3/add4 |
@@ -60,14 +61,24 @@ The extractor false-positive fixes are **now confirmed on HW in-record**: `sumal
 **Pointwise / reduction / broadcast / transport** — ±5% on anchors, but the adversarial review
 (2026-07-08) found several claims thinner than presented. Per-op effective-BW overrides
 (extractor `_hbm_pattern` from the IR index/layout): `transpose`→`restickify` 116, `cat0`→
-`stick_scatter` 60, `sumcol`→`reduce_outer` 113; `add3/add4` get the arity derate. The
+`stick_scatter` (size-dependent, see below), `sumcol`→`reduce_outer` 113; `add3/add4` get the
+arity derate. The
 false-positive fixes (`reduce_outer` requires a **kept stick dim**, excl. `sumall`;
 `stick_scatter` requires a **concat dim**, excl. `transpose_outer`) are **in code but NOT in the
 current records** (db_sweep predates them → still +37/+66% there); re-run needed to confirm.
 Downgrades: `BW_peak=150`/`α` are a soft decomposition — only the combination is identifiable
 from pointwise, and the 2:1 `add`/`mul` ratio prefers `BW_peak≈138–147` (150 imported from
-read-only reductions). `cat0=60` (2 square pts, drifts 63→59) and `sumcol reduce_outer=113` (rows
-never varied) are HYPOTHESIS. Arity `0.075` fit from 2 arities; per-op derate is 0.06→0.094
+read-only reductions). **`cat0` FIXED (2026-07-10, transport-shape sweep):** effBW is
+SHAPE-dependent (falls with row width C, weakly R) — `252 − 4·log2R − 12.3·log2C` clamped
+[45,150], R²0.93 over 10 shapes (the earlier io-based exp was WRONG: same bytes give 53–85 GB/s
+by aspect). `transpose_outer` shows the SAME C-falloff (−22% at wide C) but carries no IR
+pattern tag, so it stays on the default copy model, flagged — tagging it (extractor change)
+would let it reuse the cat0 shape model. **Reduction large-ROWS residual FIXED (2026-07-10,
+reduction-rows sweep):** the read rate falls op-independently with ROWS (149→115 GB/s over
+ROWS 2048→16384, flat across COLS) — `min(150, 114+61·exp(−ROWS/3700))` on standalone
+row-reductions (NOT fused softmax: gated on len(ops)==1 so input-dedup isn't broken; NOT sumcol:
+reduce_outer). Reduction category 7.9%→**2.6%**. `sumcol reduce_outer=113` (rows never varied)
+is still HYPOTHESIS. Arity `0.075` fit from 2 arities; per-op derate is 0.06→0.094
 (superlinear); decisive test = add3/add4 with LX on. **`copy` FIXED (2026-07-09):** it is not
 1R1W — `x+1.0` lowers to an `add` with a resident broadcast operand, so it is a broadcast op
 (`copy`/`bcast`/`bcastcol`/`mulbcast` run ~118 GB/s vs `neg` ~105). New `bw_broadcast_gbps=118`
@@ -89,13 +100,14 @@ grows with *large* tiles (so it is NOT misattributed underfill — right sign). 
 tiny matmuls +54% (fixed-overhead floor), extreme *forced* splits, non-pow2-N (model even
 *inverts* the 6144-vs-8192 ranking).
 
-**RESOLVED (2026-07-10, offline eval): drop the two-rate HBM, use a SINGLE rate = 150.** On the
-planner-realistic envelope (k=1, fanout ≤8, non-tiny, pow2-N; n=34) the current two-rate 143/156
-scores RMS 7.10%; collapsing to a single `mm_bw_read=mm_bw_write=150` with γ=0.45 scores **6.87%**
-— equal-or-better AND physically respects the 150 copy peak. The compute-free dominant-operand
+**DONE (2026-07-10): dropped the two-rate HBM, now a SINGLE rate = 150 (user approved).** On the
+planner-realistic envelope (k=1, fanout ≤8, non-tiny, pow2-N; n=34) the old two-rate 143/156
+scored RMS 7.10%; single `mm_bw_read=mm_bw_write=150` (γ unchanged at 0.46) scores **6.9%** —
+equal-or-better AND physically respects the 150 copy peak. The compute-free dominant-operand
 rates are ~118–148 (write corners) / ~123–136 (read corners): overlapping, both <150, no distinct
-write rate. `BW_w=156` was a fit artifact absorbing overlap. Report §8 documents + recommends the
-single-rate form; the shipped params still carry 143/156 (change pending user OK). Also captured:
+write rate. `BW_w=156` was a fit artifact absorbing overlap. **Shipped**: `mm_bw_read_gbps =
+mm_bw_write_gbps = 150.0` in cost_model.py (comments/docstrings updated). Report §8 rewritten as
+"adopted". Also captured:
 honest matmul regime table — realistic 7.1%, forced K-split −40% (unmodeled combine, planner
 avoids), skewed >8 −23%, tiny +2.5 (floor), non-pow2 −16%. γ pinned by the balanced aggregate,
 NOT the small-shape GH sweep (GH alone prefers γ=0; floor-contaminated). See report §7–§12.

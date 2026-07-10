@@ -59,12 +59,13 @@ Model (per fused bundle / single-op kernel):
 
 Byte counts use each arg's DEVICE layout (stick-padded ``device_size``), not the torch
 logical shape -- so a reduction's reduced input is naturally full-sized and stick
-rounding is captured. REDUCTIONS need no special bandwidth: a reduction is just a kernel
-with a tiny WRITE (the small output), so the turnaround penalty vanishes (min(R,W)~0)
-and T ~= R / BW_PEAK -- the read-only rate -- automatically. ``is_reduction`` survives
-only to add a cross-core ring-combine term (``psum_per_elem_ns``) when the reduced axis
-is split across cores; that term is GATED to genuine reductions (never matmul) and is
-provably <=~4.5ns, i.e. effectively inert.
+rounding is captured. REDUCTIONS are a tiny WRITE + a full READ, so they run at a read
+rate. That rate is NOT flat: it falls with ROWS (op-independent -- read/sum/amax/mean/
+sumall collapse to one curve), ``reduction_read_bw = min(150, 114+61*exp(-ROWS/3700))``,
+applied to a STANDALONE row-reduction (single op; a fused softmax stays on bw_peak so its
+input dedup is not broken; ``sumcol`` uses reduce_outer). ``is_reduction`` also adds a
+cross-core ring-combine term (``psum_per_elem_ns``) when the reduced axis is split across
+cores; GATED to genuine reductions (never matmul), provably <=~4.5ns, effectively inert.
 
 MATMUL (reduction_type batchmatmul) adds a compute term that OVERLAPS the HBM term:
 ``T = compute + HBM - gamma*min(compute, HBM)``, with
@@ -99,7 +100,8 @@ the IR, but spilled traffic runs slower than modeled (~-34% at the one spill poi
 ACCESS-PATTERN effective-BW overrides (db_sweep; ``OpFeatures.hbm_pattern``, set by the
 extractor from the LoopLevel IR index/layout -- these fold turnaround into one measured
 rate): "restickify" transpose (stick swapped -> ~116, FASTER), "stick_scatter" cat on a
-partition dim (fine sub-stick interleave -> ~60), "reduce_outer" sumcol (cross-row reduce
+partition dim (fine sub-stick interleave -> SIZE-DEPENDENT: ~96 small operand falling to a
+~59 floor for large, floor+amp*exp(-bytes/scale)), "reduce_outer" sumcol (cross-row reduce
 -> ~113). Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) get a
 ``pointwise_arity_derate`` (~7.5%/extra op). All land within ~4% after these.
 BROADCAST-operand ops (copy/bcast/bcastcol/mulbcast: a full input + a small broadcast
@@ -340,6 +342,12 @@ class CostParams:
     # RMS 1.7% across cores 4->32. pt_eff reuses the underfill derate (~1 for M/m>=64).
     mac_peak_per_core_ns: float = 1140.0  # MAC/ns/core (sustained; compute-isolate fit)
     underfill_target_passes_matmul: float = 8.0  # matmul full-fill ~8 passes (=64 rows)
+    mm_tiled_fill_rows: float = (
+        72.0  # coarse-tiled matmul: full-fill threshold (rows/core)
+    )
+    mm_tiled_fill_exp: float = (
+        0.85  # steeper per-tile underfill than a standalone matmul
+    )
     overlap_gamma: float = 0.46  # compute/HBM overlap: min(compute,HBM) partly hidden
     # Matmul operand RE-READ (tile spill): a per-core operand tile past ~t0 rows/cols no
     # longer stays on-chip and is re-streamed from HBM. reread = |A|*f(M/m) + |B|*f(N/n),
@@ -363,10 +371,22 @@ class CostParams:
     bw_restickify_gbps: float = (
         116.0  # transpose: stick swapped, LESS turnaround (faster)
     )
-    bw_stick_scatter_gbps: float = (
-        60.0  # cat on partition dim: fine sub-stick interleave
-    )
+    # cat on the partition (64-elem block) dim: fine sub-stick interleave. Its effective
+    # BW is SHAPE-dependent -- it falls mainly with the row width C (more sticks per row to
+    # scatter), weakly with R. Fit on the transport-shape sweep (R2=0.93 over 10 shapes):
+    # effBW = intercept - rows_coef*log2(R) - cols_coef*log2(C), clamped to [floor, peak].
+    bw_stick_scatter_intercept: float = 252.0
+    bw_stick_scatter_rows_coef: float = 4.0
+    bw_stick_scatter_cols_coef: float = 12.3
+    bw_stick_scatter_floor_gbps: float = 45.0  # large-C saturation clamp
     bw_reduce_outer_gbps: float = 113.0  # cross-row (dim0) reduction (sumcol)
+    # Row-reduction READ rate falls with ROWS (the read pipeline degrades as each core
+    # streams more rows), op-independent, saturating. Fit on the reduction-rows sweep
+    # (read/sumrow/amax/mean/sumall collapse to one curve): effBW = floor + amp*exp(-ROWS/
+    # scale), clamped to peak. sumcol (reduce_outer) is exempt -- different access pattern.
+    red_read_bw_floor_gbps: float = 114.0
+    red_read_bw_amp_gbps: float = 61.0
+    red_read_bw_scale_rows: float = 3700.0
     # Ops that stream a FULL input plus a small BROADCAST operand (loaded once) -- copy
     # (x+const), bcast, bcastcol, mulbcast -- run FASTER than a plain 1R:1W op (~118 vs
     # ~105 GB/s; mechanism open). NOT `write` (both operands broadcast, no full input).
@@ -503,6 +523,52 @@ def _outer_broadcast_extra_bytes(o, p) -> float:
     return p.write_reread_coef * rows**p.write_reread_r_exp * cols**p.write_reread_c_exp
 
 
+def _logical_rc(o):
+    """(rows, cols) from the op's output logical [.., R, C], or None."""
+    out = next(
+        (
+            a
+            for a in o.args
+            if a.role == "output" and a.mem == "hbm" and len(a.logical) >= 2
+        ),
+        None,
+    )
+    return (out.logical[-2], out.logical[-1]) if out else None
+
+
+def stick_scatter_bw(o, p):
+    """cat-on-block-dim (cat0) effective BW: falls with row width C, weakly with R."""
+    rc = _logical_rc(o)
+    if rc is None:
+        return p.bw_stick_scatter_floor_gbps
+    rows, cols = rc
+    bw = (
+        p.bw_stick_scatter_intercept
+        - p.bw_stick_scatter_rows_coef * math.log2(max(2, rows))
+        - p.bw_stick_scatter_cols_coef * math.log2(max(2, cols))
+    )
+    return min(p.bw_peak_gbps, max(p.bw_stick_scatter_floor_gbps, bw))
+
+
+def _reduction_rows(o):
+    """ROWS of a reduction's input (governs its read rate), from the largest HBM input."""
+    ins = [
+        a
+        for a in o.args
+        if a.role == "input" and a.mem == "hbm" and len(a.logical) >= 2
+    ]
+    return max(ins, key=lambda a: a.elems).logical[-2] if ins else 0
+
+
+def reduction_read_bw(rows, p):
+    """Row-reduction read rate: peak at small ROWS, falling+saturating as ROWS grows."""
+    return min(
+        p.bw_peak_gbps,
+        p.red_read_bw_floor_gbps
+        + p.red_read_bw_amp_gbps * math.exp(-rows / p.red_read_bw_scale_rows),
+    )
+
+
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
     """Predicted device latency (ns) for a bundle of ops (one fused kernel).
 
@@ -525,13 +591,14 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     # Pointwise/reduction/transport keep the single-BW turnaround model.
     _pat_bw = {
         "restickify": p.bw_restickify_gbps,
-        "stick_scatter": p.bw_stick_scatter_gbps,
         "reduce_outer": p.bw_reduce_outer_gbps,
     }
 
     def _eff_bw(o):  # per-op effective-BW override, or None -> default turnaround
         pat = getattr(o, "hbm_pattern", "")
-        if pat in _pat_bw:
+        if pat == "stick_scatter":  # cat0: shape-dependent rate (falls with C)
+            return stick_scatter_bw(o, p)
+        if pat in _pat_bw:  # restickify (transpose), reduce_outer (sumcol)
             return _pat_bw[pat]
         if _is_broadcast_op(o):
             return p.bw_broadcast_gbps
@@ -566,6 +633,18 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
                 mem += (ro + wo) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(
                     ro, wo
                 )
+    elif (
+        len(ops) == 1
+        and ops[0].is_reduction
+        and not getattr(ops[0], "is_matmul", False)
+        and not ops[0].tiles_output_dim
+    ):
+        # A STANDALONE row-reduction (sum/amax/mean/read over the last axis, or sumall)
+        # reads at a rate that FALLS with ROWS. The rate is fit as (R+W)/time, so it
+        # already includes the read/write turnaround -- do NOT add it again. sumcol takes
+        # the reduce_outer path above; a FUSED coarse kernel (len>1, e.g. softmax) stays on
+        # bw_peak below so its input dedup is not broken.
+        mem = (r + w) / reduction_read_bw(_reduction_rows(ops[0]), p)
     else:
         mem = (r + w) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(r, w)
         # Multi-pass pointwise chain (add3/add4): intermediates round-trip HBM, so the
@@ -597,9 +676,19 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     compute = 0.0
     for o in ops:
         if o.is_matmul and o.matmul_macs > 0 and o.cores > 0:
-            pt_eff = underfill_eff(
-                o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
-            )
+            if o.tiles_output_dim:
+                # COARSE-TILED matmul: each per-tile matmul is short (M/tiles rows) and
+                # underfills the array far more than one big matmul -- it pays a per-tile
+                # fill/drain. Steeper curve (measured eff ~0.9/0.5 at 64/32 rows/core).
+                pt_eff = min(
+                    1.0,
+                    (o.matmul_rows_per_core / p.mm_tiled_fill_rows)
+                    ** p.mm_tiled_fill_exp,
+                )
+            else:
+                pt_eff = underfill_eff(
+                    o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
+                )
             compute += o.matmul_macs / o.cores / (p.mac_peak_per_core_ns * pt_eff)
     # compute/HBM OVERLAP: memory transfers pipeline with the systolic compute, so the
     # smaller of the two is partly hidden (gamma=0.46). For a non-matmul bundle compute=0
