@@ -19,17 +19,17 @@ LoopLevel IR to guide higher-level optimization. Deliberately NOT a simulator.
 
 Model (per fused bundle / single-op kernel):
 
-    T = fill + [ (R + W) / BW_PEAK + alpha * min(R, W) ] / eff_underfill
-            + combine + c_loop * L
+    T = compute + HBM/eff - gamma*min(compute, HBM/eff) + c_loop * L
+
+    HBM = [ (R+W)/BW + alpha*min(R,W) ] * (1 + arity_derate*(n-1)) + spill + write_extra
 
   where R = HBM bytes READ (inputs), W = HBM bytes WRITTEN (outputs). LX-resident
-  traffic is treated as ~free. ``eff_underfill`` (<=1) derates the bandwidth term for
-  OUTPUT-dim (pointwise) coarse-tiling that shrinks each core's per-tile height (see
-  the coarse-tiling bullet below); ``combine`` is the reduction ring term; and
-  ``c_loop * L`` is the per-iteration coarse-tiling loop overhead (L = trip count). The
-  derate and c_loop*L are DISTINCT mechanisms -- a per-tile-SIZE throughput loss vs a
-  per-ITERATION fixed cost -- so both can apply to one tiled loop. For a normal untiled
-  kernel eff_underfill = 1, combine = 0, L = 1, so this reduces to the bandwidth model.
+  traffic is treated as ~free. ``eff`` (<=1) derates the MEMORY term for OUTPUT-dim
+  (pointwise) coarse-tiling that shrinks each core's per-tile height; ``c_loop * L`` is
+  the per-iteration coarse-tiling loop overhead (L = trip count). ``compute`` is nonzero
+  only for matmul (see below). A genuine-reduction cross-core ring term once lived here
+  but is provably <=~5ns (sub-noise), so it is dropped. For a normal untiled non-matmul
+  kernel eff = 1, compute = 0, L = 1, so this reduces to the bandwidth model.
 
 - ``fill`` ~= 0: the golden kernel has no fixed term (section-A intercept ~0; the old
   ~20us "fixed" was a separate non-deterministic Memset/host-setup bucket, not kernel).
@@ -63,9 +63,8 @@ rounding is captured. REDUCTIONS are a tiny WRITE + a full READ, so they run at 
 rate. That rate is NOT flat: it falls with ROWS (op-independent -- read/sum/amax/mean/
 sumall collapse to one curve), ``reduction_read_bw = min(150, 114+61*exp(-ROWS/3700))``,
 applied to a STANDALONE row-reduction (single op; a fused softmax stays on bw_peak so its
-input dedup is not broken; ``sumcol`` uses reduce_outer). ``is_reduction`` also adds a
-cross-core ring-combine term (``psum_per_elem_ns``) when the reduced axis is split across
-cores; GATED to genuine reductions (never matmul), provably <=~4.5ns, effectively inert.
+input dedup is not broken; ``sumcol`` uses reduce_outer). (A cross-core ring-combine term
+for a split reduced axis was dropped as sub-noise -- provably <=~5ns on us kernels.)
 
 MATMUL (reduction_type batchmatmul) adds a compute term that OVERLAPS the HBM term:
 ``T = compute + HBM - gamma*min(compute, HBM)``, with
@@ -99,10 +98,10 @@ the IR, but spilled traffic runs slower than modeled (~-34% at the one spill poi
 
 ACCESS-PATTERN effective-BW overrides (db_sweep; ``OpFeatures.hbm_pattern``, set by the
 extractor from the LoopLevel IR index/layout -- these fold turnaround into one measured
-rate): "restickify" transpose (stick swapped -> ~116, FASTER), "stick_scatter" cat on a
-partition dim (fine sub-stick interleave -> SIZE-DEPENDENT: ~96 small operand falling to a
-~59 floor for large, floor+amp*exp(-bytes/scale)), "reduce_outer" sumcol (cross-row reduce
--> ~113). Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) get a
+rate): "restickify" transpose (stick swapped -> ~116, FASTER), "stick_scatter" cat0 on a
+partition dim (fine sub-stick interleave -> SHAPE-dependent, falls with row width C:
+clamp(intercept - rows_coef*log2(R) - cols_coef*log2(C), floor, bw_peak)), "reduce_outer"
+sumcol (cross-row reduce -> ~113). Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) get a
 ``pointwise_arity_derate`` (~7.5%/extra op). All land within ~4% after these.
 BROADCAST-operand ops (copy/bcast/bcastcol/mulbcast: a full input + a small broadcast
 operand) run ~118 GB/s -- ``bw_broadcast_gbps`` (mechanism open). ``write`` (b[1,C]+c[R,1],
@@ -298,7 +297,6 @@ class CostParams:
     # only when out_elems<cores, so it is bounded by ~cores*psum (<=~4.5ns) -- effectively
     # inert (kept for structure). The matmul K-split PSUM ring is deliberately NOT modeled:
     # the planner keeps K whole (WD_K=1), and forcing WD_K>1 made this term explode (+489%).
-    psum_per_elem_ns: float = 0.14
     # REDUCTION-DIM coarse-tiling per-iteration loop overhead (ns/iteration). CALIBRATED
     # ~860 ns/tile from the P2a K-sweep (ctsum B=2048 D=512, tiles 2..16): unmodeled =
     # (kernel - pred) fits 1.88us + 0.864*K, so the K-slope is the loop overhead (the
@@ -694,15 +692,9 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     # smaller of the two is partly hidden (gamma=0.46). For a non-matmul bundle compute=0
     # -> min(0, mem_t)=0 -> t = mem_t (unchanged).
     t = compute + mem_t - p.overlap_gamma * min(compute, mem_t)
-    for o in ops:
-        # Cross-core ring-combine, genuine reductions ONLY. NOT matmul: the planner never
-        # K-splits (WD_K=1), and forcing it makes reduction_cores=k with out_elems=M*N
-        # (the whole output) -> the term explodes (+489% on forced WD_K>1). For a genuine
-        # reduction it fires only when out_elems<cores, so it is bounded by ~cores*psum
-        # (<=~4.5ns) -- below noise. See _matmul path: is_matmul carries k_split separately.
-        if o.is_reduction and not o.is_matmul:
-            combine = max(0, o.reduction_cores - 1) * o.out_elems * p.psum_per_elem_ns
-            t += combine * o.loop_trip
+    # (A genuine-reduction cross-core ring-combine term once lived here; it is provably
+    # bounded by ~cores * a tiny per-elem cost <= ~5 ns -- below run-to-run noise --
+    # so it is dropped as inert. K is never split for matmul, so there is no matmul analogue.)
     # Coarse-tiling per-iteration LOOP overhead (distinct from the per-tile-SIZE
     # underfill derate above; both can apply). Op-structure dependent: REDUCTION-dim
     # tiling pays c_loop_ns (calibrated 860); OUTPUT-dim (pointwise) tiling pays
@@ -727,14 +719,9 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     lines = []
     for o in ops:
         r, w, lx = o.read_bytes(), o.write_bytes(), o.lx_bytes()
-        if o.is_reduction and not o.is_matmul:
-            combine = max(0, o.reduction_cores - 1) * o.out_elems * p.psum_per_elem_ns
-            red = f" [reduction: combine {combine:.0f}ns (k={o.reduction_cores})]"
-        else:
-            red = ""
         loop = f" loop_trip={o.loop_trip}" if o.loop_trip > 1 else ""
         pat = f" [{o.hbm_pattern}]" if getattr(o, "hbm_pattern", "") else ""
-        lines.append(f"  {o.name:<12} read={r}B write={w}B lx={lx}B{loop}{red}{pat}")
+        lines.append(f"  {o.name:<12} read={r}B write={w}B lx={lx}B{loop}{pat}")
         for a in o.args:
             bc = " broadcast (loaded once)" if a.broadcast else ""
             lf = f" xL={a.loop_factor}" if a.loop_factor > 1 else ""
