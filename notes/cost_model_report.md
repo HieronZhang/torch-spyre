@@ -35,10 +35,11 @@ Per kernel, with `R`, `W` = HBM bytes read / written. Every term is shown; each 
 does not apply. The right column names the section where it is derived.
 
 ```text
-T = compute + HBM/eff − γ·min(compute, HBM/eff)
+T   = compute + mem − γ·min(compute, mem)          mem = HBM / (eff · s_lx)
 
   HBM     = [ (R+W)/BW + α·min(R,W) ] · (n-ary derate)  +  spill  +  write_extra
   compute = MACs / cores / (peak · pt_eff)
+  s_lx    = min(1, (512KB / ws)^0.15)   for a coarse-tiled kernel with ws > 512KB   (else 1)
 ```
 
 | term | form | derived in |
@@ -51,6 +52,7 @@ T = compute + HBM/eff − γ·min(compute, HBM/eff)
 | `compute` | `MACs / cores / (peak · pt_eff)`, `peak = 1140 MAC/ns/core`; 0 for non-matmul | §9 |
 | `pt_eff` (derates **compute**) | systolic-array fill: `min(1,(rows/64)^0.35)` (`rows` = per-core rows); a coarse-tiled matmul's extra per-tile underfill is flagged, not modeled (`pt_eff=1`) | §9, §15 |
 | `eff` (derates **memory**) | `min(0.95, (h/13)^0.68)`, `h = per-core tile height = ROWS/(cores·tiles)` — streaming-pipeline fill, coarse memory-bound | §15 |
+| `s_lx` (derates **memory**) | `min(1, (512KB/ws)^0.15)` for `ws > 512KB` (coarse-tiled), `ws = 2·(rows/core)·COLS·2B` — per-core working set overflows LX; spilled traffic runs slower | §14 |
 | `γ·min(compute,HBM)` | `γ = 0.46` — compute/HBM **overlap** (0 when `compute=0`) | §10 |
 
 Per-op `BW_eff`: `restickify` (transpose) `=116`; `stick_scatter` (cat0) shape-dependent
@@ -774,51 +776,58 @@ HBM (2 passes). The byte-counting model follows the drop:
 | tiles | intermediates in | HBM passes | measured µs | predicted µs | err % |
 |---:|---|---:|---:|---:|---:|
 | 1 (untiled) | HBM | 7.0 | 9927 | 9861 | −1 |
-| 2 | HBM (partial) | 4.5 | 9735 | 5860 | **−40** |
-| 4 | LX | 2.0 | 3143 | 2695 | −14 |
-| 8 | LX | 2.0 | 2867 | 2695 | −5 |
+| 2 | HBM (spilled) | 4.5 | 9735 | 8006 | −18 |
+| 4 | LX | 2.0 | 3143 | 3318 | +6 |
+| 8 | LX | 2.0 | 2867 | 2990 | +4 |
 | 16 | LX | 2.0 | 2649 | 2695 | +2 |
 | 32 | LX | 2.0 | 2683 | 2695 | +0 |
 
-### §14. The LX-spill boundary: an intermediate is free only if it fits on-chip
+(The `tiles=2` row still carries the deepest residual, and the `§14` bandwidth derate is what
+lifts its prediction from the old −40 % toward −18 %.)
+
+### §14. The LX-spill boundary: spilled traffic runs slower than peak
 
 **Observation.** The byte count is accurate at both ends — fully untiled (all intermediates in
 HBM, ~7 passes) and finely tiled (all in LX, 2 passes) — but **under-predicts by up to 40 % in
 the transition between them**. The error is not random: it grows with the per-core **working
-set** — the live intermediate bytes each core must hold — independent of the tile count or shape.
-Across three shapes (per-core working set = `2 intermediates × rows-per-core × COLS × 2 B`):
+set** — the live intermediate bytes each core holds, `≈ 2 × (rows/core) × COLS × 2 B`.
 
-| per-core working set | HBM passes (model) | err % | verdict |
+| per-core working set | effective BW | err % | verdict |
 |---:|---:|---:|---|
-| ~4.2 MB | 4.5 | **−40** | spills; model counts it LX |
-| ~2.1 MB | 2.0 | −13…−18 | partial spill |
-| ~1.0 MB | 2.0 | −5…−13 | over capacity — mild spill |
-| ≤ 0.5 MB | 2.0 | −7…+4 | fits — model correct |
+| ~4.2 MB | ~62 GB/s | **−40** | spills; runs at ~⅔ peak |
+| ~2.1 MB | ~84 GB/s | −13…−18 | partial spill |
+| ~1.0 MB | ~90 GB/s | −5…−13 | over capacity — mild |
+| ≤ 0.5 MB | ~100 GB/s | −7…+4 | fits — model correct |
 
 ![§14 softmax prediction error collapses onto the per-core working set; spills past ~512 KB/core](figures/fig12_coarse_spill.png)
 
-**Hypothesis.** The IR flips an intermediate's tag to LX as soon as tiling shrinks it, but the
-hardware only keeps it on-chip if the **per-core working set fits the practically available LX
-space**. Past that it silently spills to HBM and is re-read — traffic the LX tag hides — so the
-byte count is too low.
+**It is a rate effect, not a byte miss.** The tempting story is that the spilled intermediates go
+uncounted. They do not: at the spilling end the extractor already tags them **HBM** and counts
+them (the ~4 MB/core case reads + writes ~600 MB). Yet the model still over-predicts the
+*bandwidth* — it assumes the ~100 GB/s balanced-softmax rate, but the **effective bandwidth falls
+as the working set overflows**, down to ~62 GB/s. So the spilled bytes are right; they just run
+slower. (The untiled `tiles=1` case, with the largest working set of all, fits to −1 % — because
+it is HBM *by design* and streams at the normal rate; only the *tiled-but-overflowing* regime is
+slow.)
 
-**Experiment / evidence.** The tile sweep above, repeated at three shapes, collapses onto the
-working set, not the tile count: −40 % at ~4 MB/core, fading through ~2 MB, clean (within a few
-percent) only once **≲ 0.5 MB/core** — the *same* threshold for every shape. That places the knee
-near **~512 KB/core**, which matches the **practically available** LX space independently (the
-raw scratchpad may be larger, but only ~512 KB/core is usable before spill overhead kicks in).
+**Experiment / evidence.** The tile sweep, repeated at three shapes, collapses onto the working
+set: effective BW is ~100 GB/s while it fits and falls smoothly once past **~512 KB/core** — the
+*same* threshold for every shape. That threshold matches the **practically available** LX
+independently (the raw scratchpad may be larger, but only ~512 KB/core is usable before spill
+overhead).
 
-**Model.** The accurate fix is to read the **actual LX allocation from the IR** — the loop-level
-IR should carry the LX address region reserved for each tensor, which is the ground truth of what
-is resident vs spilled, no threshold needed. (Open question: it is unclear this per-tensor LX
-allocation is exposed for *coarse-tiled* kernels; that needs checking.) Absent it, a **proxy** on
-the working set reproduces the boundary — count an LX intermediate as HBM once the per-core
-working set overflows the available space:
+**Model.** Derate the bandwidth for a coarse-tiled kernel whose per-core working set overflows LX
+(`cap ≈ 512 KB`); the bytes stay counted, only the rate drops:
 
 ```
-working_set/core = 2 · (rows/core) · COLS · 2 B ;
-if working_set/core > LX_avail (~512 KB), count that intermediate in HBM, not LX.
+ws/core = 2 · (rows/core) · COLS · 2 B ;
+BW  ×=  min(1, (cap / ws)^0.15)          for ws > cap   (else 1)
 ```
+
+This cuts the coarse-tiling (softmax) error from **RMS 11.0 % to 5.7 %** and the worst spill point
+from −40 % to −18 %. It is calibrated on softmax and gated to non-matmul coarse tiling; the
+residual −18 % at the deepest overflow (8× capacity) is the one point the single exponent
+under-derates.
 
 ### §15. Underfill: a short per-core tile runs the pipeline below peak — the `eff` term
 
@@ -876,28 +885,28 @@ Both coarse ops, all current-image runs (`softmax_row_tiling` fits the §13–§
 | `softmax` | 4096×2048 | 8 | 1 | 359 | 337 | -6 |
 | `softmax` | 4096×2048 | 16 | 1 | 400 | 445 | +11 |
 | `softmax` | 4096×2048 | 32 | 1 | 646 | 713 | +10 |
-| `softmax` | 4096×4096 | 2 | 1 | 711 | 674 | -5 |
+| `softmax` | 4096×4096 | 2 | 1 | 711 | 747 | +5 |
 | `softmax` | 4096×4096 | 4 | 1 | 675 | 674 | -0 |
 | `softmax` | 4096×4096 | 8 | 1 | 691 | 674 | -2 |
-| `softmax` | 6144×4096 | 2 | 1 | 1160 | 1011 | -13 |
-| `softmax` | 8192×2048 | 2 | 1 | 762 | 674 | -12 |
+| `softmax` | 6144×4096 | 2 | 1 | 1160 | 1192 | +3 |
+| `softmax` | 8192×2048 | 2 | 1 | 762 | 747 | -2 |
 | `softmax` | 8192×2048 | 4 | 2 | 730 | 674 | -8 |
 | `softmax` | 8192×2048 | 8 | 8 | 667 | 674 | +1 |
 | `softmax` | 8192×2048 | 16 | 2 | 679 | 674 | -1 |
 | `softmax` | 8192×2048 | 32 | 1 | 856 | 890 | +4 |
-| `softmax` | 8192×4096 | 2 | 1 | 1574 | 1347 | -14 |
-| `softmax` | 10240×4096 | 2 | 1 | 2020 | 1684 | -17 |
-| `softmax` | 12288×4096 | 2 | 1 | 2487 | 2021 | -19 |
+| `softmax` | 8192×4096 | 2 | 1 | 1574 | 1659 | +5 |
+| `softmax` | 10240×4096 | 2 | 1 | 2020 | 2144 | +6 |
+| `softmax` | 12288×4096 | 2 | 1 | 2487 | 2644 | +6 |
 | `softmax` | 16384×2048 | 1 | 1 | 4956 | 4930 | -1 |
-| `softmax` | 16384×2048 | 2 | 1 | 1653 | 1347 | -18 |
-| `softmax` | 16384×2048 | 4 | 3 | 1541 | 1347 | -13 |
+| `softmax` | 16384×2048 | 2 | 1 | 1653 | 1659 | +0 |
+| `softmax` | 16384×2048 | 4 | 3 | 1541 | 1495 | -3 |
 | `softmax` | 16384×2048 | 8 | 3 | 1444 | 1347 | -7 |
 | `softmax` | 16384×2048 | 16 | 4 | 1340 | 1347 | +1 |
 | `softmax` | 16384×2048 | 32 | 2 | 1384 | 1347 | -3 |
 | `softmax` | 16384×4096 | 1 | 1 | 9927 | 9861 | -1 |
-| `softmax` | 16384×4096 | 2 | 2 | 9735 | 5860 | -40 |
-| `softmax` | 16384×4096 | 4 | 2 | 3143 | 2695 | -14 |
-| `softmax` | 16384×4096 | 8 | 2 | 2867 | 2695 | -6 |
+| `softmax` | 16384×4096 | 2 | 2 | 9735 | 8006 | -18 |
+| `softmax` | 16384×4096 | 4 | 2 | 3143 | 3318 | +6 |
+| `softmax` | 16384×4096 | 8 | 2 | 2867 | 2990 | +4 |
 | `softmax` | 16384×4096 | 16 | 3 | 2649 | 2695 | +2 |
 | `softmax` | 16384×4096 | 32 | 1 | 2683 | 2695 | +0 |
 

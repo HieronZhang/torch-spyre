@@ -963,64 +963,66 @@ def fig_matmul_overlap(_recs):
 
 
 # ============================================================================
-# §14 -- coarse tiling LX-spill: softmax prediction error vs the per-core WORKING
-# SET (live intermediate bytes/core). Error collapses onto the working set across
-# shapes -- big at >~512 KB/core (intermediate spills, model counts it LX), ~0 below.
+# §14 -- coarse tiling LX-spill: the spilled bytes ARE counted (HBM), but the
+# EFFECTIVE BANDWIDTH falls once the per-core working set overflows LX (~512 KB).
+# Measured effBW = (R+W)/time per config; the model derates BW past the knee.
 # ============================================================================
 def fig_coarse_spill(_recs):
     cm = _cost_model()
     recs = _load(current_only=False)
-    shapes = {
+    palette = {
         (16384, 4096): "#d62728",
         (16384, 2048): "#1f77b4",
         (8192, 2048): "#2ca02c",
+        (4096, 4096): "#ff7f0e",
+        (4096, 2048): "#8c564b",
+        (2048, 2048): "#9467bd",
     }
-    fig, ax = plt.subplots(figsize=(6.0, 4.3))
-    ax.axhline(0, color="0.6", lw=1.0, zorder=1)
+    fig, ax = plt.subplots(figsize=(6.2, 4.4))
     ax.axvspan(0.5, 100, color="#f2dede", alpha=0.5, zorder=0)
     ax.axvline(
         0.5, ls="--", color="0.4", lw=1.2, zorder=1, label="usable LX ≈ 512 KB/core"
     )
-    for (R, C), col in shapes.items():
-        pts = {}
-        for r in recs:
-            if (
-                r.get("op") != "softmax_row_tiling"
-                or r.get("rows") != R
-                or r.get("cols") != C
-            ):
-                continue
-            if not r.get("feats"):
-                continue
-            t = r.get("tiles")
-            if (
-                t is None or t < 2
-            ):  # untiled (tiles=1) keeps all in HBM -> correct, not a spill case
-                continue
-            ws = 2 * (R / t / 32) * C * 2 / 1e6  # 2 intermediates × rows/core × C × 2B
-            f = r["feats"]
-            f = f if isinstance(f, list) else json.loads(f)
-            ops = cm.ops_from_json(json.dumps(f))
-            err = 100 * (cm.predict_ops(ops) / 1e3 - r["kernel_us"]) / r["kernel_us"]
-            pts.setdefault(round(ws, 2), []).append(err)
-        xs = sorted(pts)
-        ys = [sum(pts[x]) / len(pts[x]) for x in xs]
-        ax.plot(xs, ys, "-o", color=col, ms=5, label=f"softmax {R}×{C}")
-    ax.set_xscale("log", base=2)
-    ax.set_xlabel("per-core working set  (MB;  2 intermediates × rows/core × COLS)")
-    ax.set_ylabel("prediction error  (%)")
-    ax.set_title("§14  Softmax error tracks the working set, not the tile count")
-    ax.annotate(
-        "> ~512 KB/core: intermediate spills to HBM,\nbut the model still counts it as free LX\n→ under-predicts (up to −40%)",
-        xy=(0.97, 0.05),
-        xycoords="axes fraction",
-        va="bottom",
-        ha="right",
-        fontsize=7.2,
-        color="0.3",
-        bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"),
+    seen = set()
+    for r in recs:
+        if r.get("op") != "softmax_row_tiling" or not r.get("feats"):
+            continue
+        R, C, t = r.get("rows"), r.get("cols"), r.get("tiles")
+        if not (R and C and t) or t < 2:  # tiles=1 untiled = HBM by design, not a spill
+            continue
+        f = r["feats"]
+        f = f if isinstance(f, list) else json.loads(f)
+        ops = cm.ops_from_json(json.dumps(f))
+        Rb, Wb = cm._fused_hbm_bytes(ops)
+        effbw = (Rb + Wb) / 1e3 / r["kernel_us"]  # GB/s
+        ws = 2 * (R / t / 32) * C * 2 / 1e6  # MB/core
+        col = palette.get((R, C), "0.4")
+        ax.scatter(
+            ws, effbw, s=42, color=col, zorder=3, edgecolors="white", linewidths=0.4
+        )
+        if (R, C) not in seen:
+            ax.scatter([], [], color=col, s=42, label=f"softmax {R}×{C}")
+            seen.add((R, C))
+    # model: effBW = balanced-softmax peak (~100) * spill derate past the knee
+    wsx = np.logspace(np.log2(0.06), np.log2(9), 60, base=2)
+    peak = 100.0
+    model = [peak * min(1.0, (0.5 / w) ** 0.15) if w > 0.5 else peak for w in wsx]
+    ax.plot(
+        wsx,
+        model,
+        "-",
+        color="0.35",
+        lw=1.5,
+        label="model: 100·min(1,(0.5/ws)$^{0.15}$)",
     )
-    ax.legend(loc="lower left", fontsize=7.4, framealpha=0.9)
+    ax.set_xscale("log", base=2)
+    ax.set_xlabel("per-core working set  (MB;  ≈ 2 · rows/core · COLS · 2 B)")
+    ax.set_ylabel("effective BW  (R+W)/time   (GB/s)")
+    ax.set_title(
+        "§14  Spilled bytes are counted (HBM); the effective BW just falls past LX"
+    )
+    ax.set_ylim(40, 115)
+    ax.legend(loc="lower left", fontsize=7.2, framealpha=0.9)
     _save(fig, "fig12_coarse_spill")
 
 
