@@ -1,9 +1,10 @@
 # Spyre Cost Model — Status / Handoff (2026-07-07)
 
-Living status + detail doc — **read this first on resume**. The concise model write-up is
-[cost_model_presentation.md](cost_model_presentation.md) (the MAIN doc; keep it short). This
-file holds the details that don't belong there: implementation state, open work, methodology,
-tooling, next steps. Keep the two in sync — if a number changes here, update the presentation.
+Living status + detail doc — **read this first on resume**. The full model write-up is
+[cost_model_report.md](cost_model_report.md) (the MAIN doc — the long-form derivation of every
+term, with figures and accuracy). This file holds the details that don't belong there:
+implementation state, open work, methodology, tooling, next steps. Keep the two in sync — if a
+number changes here, update the report.
 
 Goal: a HIGH-LEVEL **relative** cost model over the after-pre-scheduling LoopLevel IR, to
 guide optimization (LX placement, coarse-tiling). Bar: correct ranking + ±15-20%. No local HW —

@@ -269,14 +269,28 @@ def fig_pointwise_arity(recs):
 # (copy/bcast/bcastcol/mulbcast) run ~118 GB/s, above plain 1R:1W neg (~105).
 # Small-ROWS points are underfilled (2-8 rows/core) and unreliable -> flagged.
 # ============================================================================
-def fig_broadcast_effbw(recs):
-    # neg (1R:1W) baseline from the records; broadcast ops from the dedicated COLS sweep.
+def fig_broadcast_effbw(_recs):
+    # measured times are version-independent -> use all records (not just is_current,
+    # which the newest-log SHA can shrink). neg (1R:1W) baseline + the broadcast ops.
+    recs = _load(current_only=False)
     neg = [
         int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"]
         for r in recs
         if r["op"] == "neg" and r.get("io_hbm_bytes")
     ]
-    blog = _broadcast_log_rows()
+    # all broadcast points at ROWS=2048 from the records (includes the small-COLS sweep)
+    from collections import defaultdict
+
+    brec = defaultdict(lambda: defaultdict(list))
+    for r in _load(current_only=False):
+        if (
+            r.get("op") in ("copy", "bcast", "bcastcol", "mulbcast")
+            and r.get("rows") == 2048
+            and r.get("io_hbm_bytes")
+        ):
+            brec[r["op"]][r["cols"]].append(
+                int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"]
+            )
     colors = {
         "copy": "#d62728",
         "bcast": "#2ca02c",
@@ -300,21 +314,21 @@ def fig_broadcast_effbw(recs):
         lw=1.1,
         label=f"neg mean ≈ {np.mean(neg):.0f}",
     )
-    ax.axhline(118, ls="--", color="0.5", lw=1.0, label="broadcast rate = 118")
+    ax.axhline(
+        118, ls="--", color="0.5", lw=1.0, label="broadcast rate = 118 (large-size)"
+    )
     for op, c in colors.items():
-        pts = sorted(
-            (C, io / 1e3 / k) for o, R, C, io, k in blog if o == op and R == 2048
-        )
+        pts = sorted((C, sum(v) / len(v)) for C, v in brec[op].items())
         if pts:
             xs, ys = zip(*pts)
             ax.plot(xs, ys, "-o", color=c, ms=4.5, label=op)
     ax.set_xscale("log", base=2)
-    ax.set_xticks([1024, 2048, 4096, 8192, 16384])
-    ax.set_xticklabels(["1k", "2k", "4k", "8k", "16k"])
-    ax.set_xlabel("COLS  (ROWS = 2048, well-filled)")
+    ax.set_xticks([256, 512, 1024, 2048, 4096, 8192, 16384])
+    ax.set_xticklabels(["256", "512", "1k", "2k", "4k", "8k", "16k"])
+    ax.set_xlabel("COLS  (ROWS = 2048)")
     ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
-    ax.set_title("§4  Broadcast-operand ops run ~118 GB/s, flat across size")
-    ax.set_ylim(100, 138)
+    ax.set_title("§4  Broadcast ops: ~118 at large size, rising to ~130 when small")
+    ax.set_ylim(100, 140)
     ax.legend(loc="upper right", fontsize=7.5, framealpha=0.9, ncol=2)
     _save(fig, "fig4_broadcast_effbw")
 
@@ -405,31 +419,45 @@ def _broadcast_log_rows():
 # C (the b[1,C] row operand) AND with R -> C-dominant but not a clean single spill.
 # ============================================================================
 def fig_write_spill(_recs):
-    rows = [r for r in _broadcast_log_rows() if r[0] == "write"]
-    fig, ax = plt.subplots(figsize=(5.0, 3.7))
+    # effective BW = HBM bytes moved / time -- collapses as the op does far more work
+    # (the outer-product write) than its counted bytes suggest. Use ALL write records
+    # (version-independent measured times), averaging repeats, for denser coverage.
+    from collections import defaultdict
+
+    recs = _load(current_only=False)
+    agg = defaultdict(lambda: defaultdict(list))
+    for r in recs:
+        if r.get("op") == "write" and r.get("io_hbm_bytes") and r.get("cols"):
+            agg[r.get("rows")][r["cols"]].append(
+                int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"]
+            )
+    fig, ax = plt.subplots(figsize=(5.2, 3.8))
     colors = {512: "#1f77b4", 2048: "#ff7f0e", 8192: "#d62728"}
     for R in (512, 2048, 8192):
-        pts = sorted((C, k / (R * C * 2 / 1e6)) for op, Rr, C, io, k in rows if Rr == R)
+        pts = sorted((c, sum(v) / len(v)) for c, v in agg.get(R, {}).items())
         if pts:
             xs, ys = zip(*pts)
             ax.plot(xs, ys, "-o", color=colors[R], ms=5, label=f"ROWS={R}")
+    ax.axhline(
+        118, ls="--", color="0.5", lw=1.0, label="broadcast rate 118 (small-op start)"
+    )
     ax.set_xscale("log", base=2)
-    ax.set_xticks([1024, 4096, 16384])
-    ax.set_xticklabels(["1024", "4096", "16384"])
+    ax.set_xticks([1024, 2048, 4096, 8192, 16384])
+    ax.set_xticklabels(["1k", "2k", "4k", "8k", "16k"])
     ax.set_xlabel("COLS")
-    ax.set_ylabel("time per MB of output  (µs/MB)")
-    ax.set_title("§4  write: per-output cost rises with COLS (and weakly ROWS)")
+    ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
+    ax.set_title("§4  write: effective BW falls with ROWS and COLS")
     ax.annotate(
-        "fast at small size;\nper-output cost rises\nwith COLS (and, weakly, ROWS)",
-        xy=(0.03, 0.97),
+        "starts near ~118 at small size;\ncollapses as ROWS and COLS grow",
+        xy=(0.03, 0.05),
         xycoords="axes fraction",
-        va="top",
+        va="bottom",
         ha="left",
         fontsize=8,
         color="0.3",
         bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"),
     )
-    ax.legend(loc="upper center", fontsize=8.5, framealpha=0.9)
+    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
     _save(fig, "fig4b_write_spill")
 
 
@@ -439,57 +467,75 @@ def fig_write_spill(_recs):
 # transpose is flat-fast (116); cat0 and transpose_outer fall with size.
 # ============================================================================
 def fig_transport(_recs):
-    # transport times are version-independent, so use ALL records (not just
-    # is_current) for full size coverage; average repeats at each (op, bytes).
+    # transport times are version-independent -> use ALL records. Plot effBW vs COLS
+    # (the driver for cat0/transpose_outer), showing EVERY distinct shape (not averaged
+    # by total bytes, which would collapse aspect ratios into one dot). transpose and
+    # cat1 are flat across C; cat0 and transpose_outer fall with C.
     recs = _load(current_only=False)
 
-    def effbw(r):
-        return int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"]
-
-    def series(op):
+    def points(op):  # all distinct (C, R, effBW) shape points, averaging exact repeats
         agg = {}
         for r in recs:
-            if r["op"] == op and r.get("io_hbm_bytes"):
-                agg.setdefault(int(r["io_hbm_bytes"]), []).append(effbw(r))
-        return sorted((b, sum(v) / len(v)) for b, v in agg.items())
+            if r["op"] == op and r.get("io_hbm_bytes") and r.get("cols"):
+                key = (r["cols"], r.get("rows"))
+                agg.setdefault(key, []).append(
+                    int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"]
+                )
+        return [(c, rw, sum(v) / len(v)) for (c, rw), v in agg.items()]
 
-    # baseline: plain copy at large operands (>=16 MB); the sub-16 MB tail runs
-    # artificially fast and would not be a fair copy reference for these sizes.
-    neg = [
-        effbw(r)
-        for r in recs
-        if r["op"] == "neg"
-        and r.get("io_hbm_bytes")
-        and int(r["io_hbm_bytes"]) >= 16 << 20
-    ]
     styles = {
-        "transpose": ("#2ca02c", "o", "transpose (stick-swap copy)"),
-        "cat1": ("#1f77b4", "s", "cat1 (outer-dim concat)"),
-        "cat0": ("#d62728", "^", "cat0 (stick-dim concat)"),
-        "transpose_outer": ("#9467bd", "D", "transpose_outer (3-D outer swap)"),
+        "transpose": ("#2ca02c", "o", "transpose (flat ~116)"),
+        "cat1": ("#1f77b4", "s", "cat1 (flat ~108)"),
+        "cat0": ("#d62728", "^", "cat0 (falls with C)"),
+        "transpose_outer": ("#9467bd", "D", "transpose_outer (falls with C)"),
     }
-    fig, ax = plt.subplots(figsize=(5.6, 3.9))
-    ax.axhspan(
-        min(neg),
-        max(neg),
-        color="0.6",
-        alpha=0.18,
-        zorder=0,
-        label=f"neg copy baseline (large operands): {min(neg):.0f}–{max(neg):.0f}",
-    )
+    fig, ax = plt.subplots(figsize=(6.4, 4.3))
     for op, (c, m, lab) in styles.items():
-        pts = series(op)
-        if pts:
-            xs, ys = zip(*pts)
-            ax.plot(xs, ys, "-", color=c, lw=1.0, alpha=0.6)
-            ax.scatter(xs, ys, color=c, marker=m, s=34, label=lab, zorder=3)
-    ax.axhline(116, ls="--", color="#2ca02c", lw=0.9)
+        pts = points(op)
+        if not pts:
+            continue
+        xs = [p[0] for p in pts]
+        ys = [p[2] for p in pts]
+        ax.scatter(
+            xs,
+            ys,
+            color=c,
+            marker=m,
+            s=36,
+            label=f"{lab}  (n={len(pts)})",
+            zorder=3,
+            edgecolors="white",
+            linewidths=0.4,
+        )
+        # label each point with its ROWS config -> explains the several points per COLS
+        for cc_, rw, y in pts:
+            ax.annotate(
+                f"R{rw}",
+                (cc_, y),
+                textcoords="offset points",
+                xytext=(4, 2),
+                fontsize=5.6,
+                color=c,
+            )
+    # cat0 model curve at a representative ROWS (2048): 252 - 4*log2(R) - 12.3*log2(C)
+    cc = np.array([256, 512, 1024, 2048, 4096, 8192, 16384], dtype=float)
+    ax.plot(
+        cc,
+        np.clip(252 - 4 * np.log2(2048) - 12.3 * np.log2(cc), 45, 150),
+        "--",
+        color="#d62728",
+        lw=1.1,
+        alpha=0.8,
+        label="cat0 model (R=2048)",
+    )
     ax.set_xscale("log", base=2)
-    ax.set_xlabel("bytes moved  (R + W, log scale)")
+    ax.set_xticks([512, 1024, 2048, 4096, 8192])
+    ax.set_xticklabels(["512", "1k", "2k", "4k", "8k"])
+    ax.set_xlabel("COLS  (row width C)")
     ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
-    ax.set_title("§6  Transport ops are copies; access pattern sets the rate")
-    ax.set_ylim(50, 130)
-    ax.legend(loc="lower left", fontsize=7.2, framealpha=0.9)
+    ax.set_title("§6  Transport: transpose/cat1 flat; cat0/transpose_outer fall with C")
+    ax.set_ylim(40, 130)
+    ax.legend(loc="lower left", fontsize=7.0, framealpha=0.9, ncol=1)
     _save(fig, "fig6_transport")
 
 
@@ -584,15 +630,15 @@ def fig_matmul_hbm(_recs):
 
 def fig_matmul_spill(_recs):
     # THE OBSERVATION: with spill OFF, the base model leaves a residual (measured - base)
-    # that grows with the per-core tile edge. Two balanced (4x8) decouple sweeps isolate
-    # one tile edge each: DC2 varies M/m (rows, N/n=256 fixed), DC1 varies N/n (cols,
-    # M/m=512 fixed). Residual is NEGATIVE at small tiles (over-predict floor) and climbs
-    # positive as the tile grows past ~448 (the re-read). The spill term (line) captures
-    # the positive climb. Every point labeled with its varied edge.
+    # that grows with the per-core OUTPUT-tile AREA (M/m)*(N/n). Two balanced (4x8) decouple
+    # sweeps grow the tile: DC2 varies M/m (N/n=256 fixed), DC1 varies N/n (M/m=512 fixed) --
+    # both trace the SAME area axis. Residual is ~0/negative below the on-chip capacity knee
+    # (~64K elems) and climbs positive above it (the re-read). The spill term (dashed) is one
+    # area-driven curve. Every point labeled with its full 2-D per-core tile M/m x N/n.
     cm = _cost_model()
     p0 = cm.CostParams(mm_spill_slope=0.0)  # base model, spill OFF
 
-    def collect(section, edge):  # edge: 'row' -> vary M/m ; 'col' -> vary N/n
+    def collect(section):
         out = []
         for r in _mm_rows(section):
             feats = r["feats"]
@@ -600,18 +646,26 @@ def fig_matmul_spill(_recs):
             ops = cm.ops_from_json(json.dumps(feats))
             mm = next(o for o in ops if getattr(o, "is_matmul", False))
             rpc, cpc = mm.matmul_rows_per_core, mm.matmul_cols_per_core
-            tile = rpc if edge == "row" else cpc  # the VARIED edge -> x-axis
+            area = rpc * cpc * 2  # per-core output-tile size in BYTES (fp16) -> x-axis
             base = cm.predict_ops(ops, p0) / 1e3
             resid = r["kernel_us"] - base
             spill = cm.predict_ops(ops) / 1e3 - base  # modeled spill effect
-            out.append((tile, resid, spill, rpc, cpc))
+            out.append((area, resid, spill, rpc, cpc))
         return sorted(out)
 
-    dc2 = collect("DC2", "row")  # vary M/m (N/n held at 256)
-    dc1 = collect("DC1", "col")  # vary N/n (M/m held at 512)
+    dc2 = collect("DC2")  # vary M/m (N/n held at 256)
+    dc1 = collect("DC1")  # vary N/n (M/m held at 512)
+    knee = cm.CostParams().mm_spill_area0 * 2  # elems -> bytes (fp16)
     fig, ax = plt.subplots(figsize=(6.2, 4.4))
     ax.axhline(0, color="0.6", lw=1.0, zorder=1)
-    ax.axvline(448, ls="--", color="0.5", lw=1.1, zorder=1, label="on-chip knee ≈ 448")
+    ax.axvline(
+        knee,
+        ls="--",
+        color="0.5",
+        lw=1.1,
+        zorder=1,
+        label="on-chip capacity ≈ 128 KB",
+    )
     for data, col, lab in [
         (dc2, "#8c564b", "vary M/m  (N/n = 256 fixed, split 4×8)"),
         (dc1, "#1f77b4", "vary N/n  (M/m = 512 fixed, split 4×8)"),
@@ -628,11 +682,11 @@ def fig_matmul_spill(_recs):
             label=f"residual: {lab}",
         )
         ax.plot(xs, [d[2] for d in data], "--", color=col, lw=1.1, alpha=0.7, zorder=2)
-        for tile, resid, spill, rpc, cpc in data:
+        for area, resid, spill, rpc, cpc in data:
             # label EVERY point with the full 2-D per-core tile  M/m × N/n
             ax.annotate(
                 f"{rpc:.0f}×{cpc:.0f}",
-                (tile, resid),
+                (area, resid),
                 textcoords="offset points",
                 xytext=(5, 3),
                 fontsize=6.2,
@@ -640,11 +694,27 @@ def fig_matmul_spill(_recs):
             )
     ax.plot([], [], "--", color="0.5", lw=1.1, label="modeled spill (dashed)")
     ax.set_xscale("log", base=2)
-    ax.set_xlabel("varied per-core tile edge   (labels show full tile  M/m × N/n)")
+    # Label ticks in plain element counts (32K, 64K, ...) not 2^n -- more legible, and the
+    # 64K tick lines up with the "on-chip capacity" knee.
+    import matplotlib.ticker as _mt
+
+    ticks = [65536, 131072, 262144, 524288, 1048576]
+    ax.set_xticks(ticks)
+    ax.xaxis.set_major_formatter(
+        _mt.FuncFormatter(
+            lambda v, _: f"{v / 1048576:.0f} MB"
+            if v >= 1048576
+            else f"{v / 1024:.0f} KB"
+        )
+    )
+    ax.xaxis.set_minor_formatter(_mt.NullFormatter())
+    ax.set_xlabel("per-core output-tile size   2·(M/m)·(N/n)   [bytes, fp16]")
     ax.set_ylabel("residual:  measured − base model (no spill)   (µs)")
-    ax.set_title("§11  Base model leaves a residual that grows with the per-core tile")
+    ax.set_title(
+        "§11  Base-model residual grows once the output tile overflows on-chip"
+    )
     ax.annotate(
-        "small tile → over-predict (floor)\nlarge tile → under-predict (re-read)",
+        "tile fits → residual ≈ 0\ntile overflows → under-predict (re-read)",
         xy=(0.03, 0.97),
         xycoords="axes fraction",
         va="top",
@@ -725,8 +795,10 @@ def fig_matmul_peak(_recs):
         "§9  Time halves when cores double; balanced splits at equal cores collapse"
     )
     ax.annotate(
-        "32 cores, K=2048:  4×8 / 8×4 / 2×16 → all ≈ 385 µs\n(time tracks cores, not the m×n split)",
-        xy=(0.30, 0.05),
+        "each point is labelled with its m×n core split (cores = m·n).\n"
+        "at 32 cores, K=2048 the splits 4×8 / 8×4 / 2×16 all ≈ 385 µs\n"
+        "→ time tracks the core COUNT, not how m×n is factored.",
+        xy=(0.28, 0.04),
         xycoords="axes fraction",
         va="bottom",
         ha="left",
@@ -791,7 +863,8 @@ def fig_matmul_overlap(_recs):
         )
 
     markers = {"square": "o", "fat-K": "^", "thin M/N": "s", "rectangular": "D"}
-    fig, ax = plt.subplots(figsize=(6.4, 4.8))
+    neg_out = 0  # stagger labels of the (colliding) negative outliers
+    fig, ax = plt.subplots(figsize=(6.8, 5.0))
     ax.axhline(0, color="0.6", lw=1.0, zorder=1)
     ax.axhspan(-10, 10, color="0.9", zorder=0, label="±10 %")
     for frac, ea, eo, asp, M, N, K in rows:
@@ -817,6 +890,36 @@ def fig_matmul_overlap(_recs):
             edgecolors="white",
             linewidths=0.3,
         )
+        # Ring + label the residual outliers (|overlap err| > 12 %): these are all
+        # thin-M/N shapes at high memory fraction -- flagged here, explained in §12.
+        if abs(eo) > 12:
+            ax.scatter(
+                frac,
+                eo,
+                facecolors="none",
+                edgecolors="#7f00ff",
+                s=150,
+                marker="o",
+                lw=1.6,
+                zorder=4,
+            )
+            if eo > 0:
+                off = (6, 4)
+            else:
+                off = (8, -16 - 12 * neg_out)  # stagger colliding negative labels
+                neg_out += 1
+            ax.annotate(
+                f"{M}×{K}×{N}",
+                xy=(frac, eo),
+                xytext=off,
+                textcoords="offset points",
+                fontsize=6.5,
+                color="#5000a0",
+                zorder=5,
+                arrowprops=dict(arrowstyle="-", color="#7f00ff", lw=0.5)
+                if eo < 0
+                else None,
+            )
     # aspect legend (marker shape) + model legend (color)
     for asp, mk in markers.items():
         ax.scatter([], [], color="0.4", marker=mk, s=34, label=asp)
@@ -829,14 +932,24 @@ def fig_matmul_overlap(_recs):
         s=40,
         label="additive γ=0 (open)",
     )
+    ax.scatter(
+        [],
+        [],
+        facecolors="none",
+        edgecolors="#7f00ff",
+        s=60,
+        lw=1.6,
+        label="thin-M/N outlier (|err|>12%, see §12)",
+    )
     ax.set_xlabel("memory fraction   memory / (compute + memory)")
     ax.set_ylabel("prediction error  (%)")
     ax.set_title(
-        "§10  γ = 0.46 stays flat near 0 across shapes; γ = 0 over-predicts as memory grows"
+        "§10  γ=0.46 holds to ±10 % for the compute-leaning bulk;\n"
+        "thin-M/N shapes (ringed) scatter at high memory fraction — deferred to §12"
     )
-    ax.set_ylim(-20, 45)
+    ax.set_ylim(-25, 55)
     ax.annotate(
-        f"{len(rows)} balanced configs (k=1)",
+        f"{len(rows)} balanced configs (k=1, splits ≤8×8, K≥512)",
         xy=(0.03, 0.04),
         xycoords="axes fraction",
         va="bottom",
@@ -852,25 +965,37 @@ def fig_matmul_overlap(_recs):
 # ============================================================================
 # §14 -- coarse tiling LX-spill: softmax prediction error vs the per-core WORKING
 # SET (live intermediate bytes/core). Error collapses onto the working set across
-# shapes -- big at >~1 MB/core (intermediate spills, model counts it LX), ~0 below.
+# shapes -- big at >~512 KB/core (intermediate spills, model counts it LX), ~0 below.
 # ============================================================================
 def fig_coarse_spill(_recs):
     cm = _cost_model()
     recs = _load(current_only=False)
-    shapes = {(16384, 4096): "#d62728", (16384, 2048): "#1f77b4", (8192, 2048): "#2ca02c"}
+    shapes = {
+        (16384, 4096): "#d62728",
+        (16384, 2048): "#1f77b4",
+        (8192, 2048): "#2ca02c",
+    }
     fig, ax = plt.subplots(figsize=(6.0, 4.3))
     ax.axhline(0, color="0.6", lw=1.0, zorder=1)
-    ax.axvspan(1.0, 100, color="#f2dede", alpha=0.5, zorder=0)
-    ax.axvline(1.0, ls="--", color="0.4", lw=1.2, zorder=1, label="LX capacity ≈ 1 MB/core")
+    ax.axvspan(0.5, 100, color="#f2dede", alpha=0.5, zorder=0)
+    ax.axvline(
+        0.5, ls="--", color="0.4", lw=1.2, zorder=1, label="usable LX ≈ 512 KB/core"
+    )
     for (R, C), col in shapes.items():
         pts = {}
         for r in recs:
-            if r.get("op") != "softmax_row_tiling" or r.get("rows") != R or r.get("cols") != C:
+            if (
+                r.get("op") != "softmax_row_tiling"
+                or r.get("rows") != R
+                or r.get("cols") != C
+            ):
                 continue
             if not r.get("feats"):
                 continue
             t = r.get("tiles")
-            if t is None or t < 2:  # untiled (tiles=1) keeps all in HBM -> correct, not a spill case
+            if (
+                t is None or t < 2
+            ):  # untiled (tiles=1) keeps all in HBM -> correct, not a spill case
                 continue
             ws = 2 * (R / t / 32) * C * 2 / 1e6  # 2 intermediates × rows/core × C × 2B
             f = r["feats"]
@@ -886,9 +1011,14 @@ def fig_coarse_spill(_recs):
     ax.set_ylabel("prediction error  (%)")
     ax.set_title("§14  Softmax error tracks the working set, not the tile count")
     ax.annotate(
-        "> ~1 MB/core: intermediate spills to HBM,\nbut the model still counts it as free LX\n→ under-predicts (up to −40%)",
-        xy=(0.97, 0.05), xycoords="axes fraction", va="bottom", ha="right",
-        fontsize=7.2, color="0.3", bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"),
+        "> ~512 KB/core: intermediate spills to HBM,\nbut the model still counts it as free LX\n→ under-predicts (up to −40%)",
+        xy=(0.97, 0.05),
+        xycoords="axes fraction",
+        va="bottom",
+        ha="right",
+        fontsize=7.2,
+        color="0.3",
+        bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"),
     )
     ax.legend(loc="lower left", fontsize=7.4, framealpha=0.9)
     _save(fig, "fig12_coarse_spill")
@@ -901,40 +1031,71 @@ def fig_coarse_spill(_recs):
 # mild decline is unmodeled.
 # ============================================================================
 def fig_coarse_eff(_recs):
+    # One marker per CONFIG (not averaged): color = ROWS×COLS shape, label = tile count.
+    # x = per-core tile height h = ROWS/(cores·tiles); LX-fitting points only.
     from collections import defaultdict
 
     recs = _load(current_only=False)
-    agg = defaultdict(list)
+    pts = defaultdict(list)  # (R,C) -> [(h, effBW, tiles)]
     for r in recs:
-        if r.get("op") != "softmax_row_tiling" or not r.get("io_hbm_bytes") or not r.get("tiles"):
+        if (
+            r.get("op") != "softmax_row_tiling"
+            or not r.get("io_hbm_bytes")
+            or not r.get("tiles")
+        ):
             continue
         R, C, t = r.get("rows"), r.get("cols"), r.get("tiles")
         if not (R and C and t) or t < 2:
             continue
-        ws = 2 * (R / t / 32) * C * 2 / 1e6
+        h = R / t / 32
+        ws = 2 * h * C * 2 / 1e6
         if ws > 1.2:  # LX-fitting only (isolate underfill from §14 spill)
             continue
-        agg[R / t / 32].append(int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"])
-    xs = sorted(agg)
-    ys = [sum(agg[x]) / len(agg[x]) for x in xs]
-    plateau = max(ys)  # ~ the filled-pipeline effective BW
-    fig, ax = plt.subplots(figsize=(6.0, 4.3))
-    ax.scatter(xs, ys, s=48, color="#1f77b4", zorder=3, edgecolors="white", linewidths=0.5, label="softmax effective BW (measured)")
+        pts[(R, C)].append((h, int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"], t))
+    plateau = max(e for v in pts.values() for _, e, _ in v)  # filled-pipeline effBW
+    palette = {
+        (16384, 4096): "#d62728",
+        (16384, 2048): "#1f77b4",
+        (8192, 2048): "#2ca02c",
+        (8192, 4096): "#9467bd",
+        (4096, 4096): "#ff7f0e",
+        (4096, 2048): "#8c564b",
+    }
+    fig, ax = plt.subplots(figsize=(6.4, 4.5))
+    for (R, C), v in sorted(pts.items()):
+        col = palette.get((R, C), "0.4")
+        for h, eff, t in sorted(v):
+            ax.scatter(
+                h, eff, s=46, color=col, zorder=3, edgecolors="white", linewidths=0.5
+            )
+            ax.annotate(
+                f"{t}t",  # tile count identifies the config within a shape
+                (h, eff),
+                textcoords="offset points",
+                xytext=(4, 4),
+                fontsize=6.2,
+                color=col,
+            )
+        ax.scatter([], [], color=col, s=46, label=f"{R}×{C}  (ROWS×COLS)")
     rr = np.logspace(np.log2(1.5), np.log2(160), 60, base=2)
     model = plateau * np.minimum(0.95, (rr / 13) ** 0.68)
-    ax.plot(rr, model, "-", color="#d62728", lw=1.5, label="model: BW·min(0.95, (rpc/13)$^{0.68}$)")
-    ax.axvspan(32, 200, color="#f2dede", alpha=0.5, zorder=0)
-    ax.axvline(32, ls="--", color="0.5", lw=1.0, zorder=1)
-    ax.set_xscale("log", base=2)
-    ax.set_xlabel("rpc  =  ROWS / (cores · tiles)   (per-core rows per tile)")
-    ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
-    ax.set_title("§15  Underfill `eff`: BW climbs with the per-core tile, then plateaus")
-    ax.annotate(
-        "rpc > ~32: mild decline\n(unmodeled residual)",
-        xy=(0.97, 0.45), xycoords="axes fraction", va="center", ha="right",
-        fontsize=7.0, color="0.3", bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"),
+    ax.plot(
+        rr,
+        model,
+        "-",
+        color="0.4",
+        lw=1.5,
+        label="model: BW·min(0.95, (height/13)$^{0.68}$)",
     )
-    ax.legend(loc="lower right", fontsize=7.6, framealpha=0.9)
+    ax.set_xscale("log", base=2)
+    ax.set_xlabel(
+        "per-core tile height  =  ROWS / (cores × tiles)   [rows]   (label = tile count)"
+    )
+    ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
+    ax.set_title(
+        "§15  Underfill `eff`: BW climbs with the per-core tile, then plateaus"
+    )
+    ax.legend(loc="lower right", fontsize=7.0, framealpha=0.9)
     _save(fig, "fig13_coarse_eff")
 
 

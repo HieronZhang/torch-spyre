@@ -30,12 +30,12 @@ SPYRE_DUMP_IR=1 BENCH_OP=gelu BENCH_ROWS=512 BENCH_COLS=1024 \
     python docs/source/user_guide/examples/profile_ops.py
 ```
 
-## 2. Per-kernel device time via the PyTorch profiler 
+## 2. Per-kernel device time via the PyTorch profiler
 
 The golden measurement is the **`torch.profiler` "Self SPYRE" per-kernel device
 time** of each `sdsc_fused_*` kernel (needs the kineto-spyre wheel: [docs/source/user_guide/profiling/pytorch_profiler.md](../docs/source/user_guide/profiling/pytorch_profiler.md)).
 The separate **"Memset (Device)"** event is non-deterministic, size-scaling
-host/setup overhead — reported, but NOT kernel time. 
+host/setup overhead — reported, but NOT kernel time.
 
 Our `profile_ops.py`
 emits a parseable `SUMMARY … kernel_us=… pred_us=… bw_gbps=…` line per run;
@@ -58,68 +58,32 @@ python profile_test.py
 `SPYRE_DUMP_COST=1` extracts cost features from the after-pre-scheduling LoopLevel
 IR and prints, at compile time, the **per-tensor device-layout I/O**
 (dims · residency · byte calc · `hbm counted` / `xL` loop factor) and the
-**step-by-step prediction**:
+**step-by-step prediction**. The full model, per fused kernel (each term is 0 / 1
+when it does not apply; `R`, `W` = HBM bytes read / written):
 
 ```
-T = fill + (R + W) / BW_PEAK + α·min(R, W) + c_loop·L
+T = compute + HBM/eff − γ·min(compute, HBM/eff)
+
+  HBM     = [ (R + W)/BW + α·min(R, W) ] · (n-ary derate) + spill + write_extra
+  compute = MACs / cores / (peak · pt_eff)
 ```
 
-a single peak bandwidth (`BW_PEAK≈150 GB/s`) minus a read/write **turnaround**
-penalty on the overlap `min(R,W)` (`α≈0.0057 ns/B`), plus a coarse-tiling
-per-tile loop cost (`c_loop≈860 ns/tile`, `L` = tile trip count). LX-resident and
-broadcast operands are counted once / ~free. 
+| term | form | what it is |
+|---|---|---|
+| `(R+W)/BW` | `BW≈150 GB/s`; `BW_red(ROWS)` for row-reductions; per-op `BW_eff` for transport / broadcast | memory bandwidth (LX-resident and broadcast operands counted once / ~free) |
+| `α·min(R,W)` | `α≈0.0057 ns/B` | read↔write bus **turnaround** (0 for one-directional traffic) |
+| n-ary derate | `× (1 + 0.075·(n_ops−1))` | multi-pass pointwise chain (`add3`/`add4`) |
+| `spill` | `(A+B)·min(1.5, max(0, 0.45·log₂(area/65536)))`, `area=(M/m)·(N/n)` | matmul operand **re-read** when the per-core output tile overflows on-chip capacity |
+| `write_extra` | `2.148e-7·ROWS^1.6·COLS^2.2` | `write` outer-product (empirical) |
+| `compute` | `MACs/cores/(peak·pt_eff)`, `peak≈1140 MAC/ns/core` | **matmul** only (else 0) |
+| `pt_eff` | `min(1, (rows/64)^0.35)` | systolic-array fill (per-core rows) |
+| `eff` | `min(0.95, (h/13)^0.68)`, `h = ROWS/(cores·tiles)` | coarse-tiling streaming-pipeline fill (memory-bound) |
+| `γ·min(compute,HBM)` | `γ ≈ 0.46` | compute/HBM **overlap** (0 when `compute=0`) |
+
+The **full derivation of every term and its accuracy** are written up in
+**[cost_model_report.md](cost_model_report.md)**.
+
 ```bash
 SPYRE_DUMP_COST=1 BENCH_OP=gelu BENCH_ROWS=2048 BENCH_COLS=4096 \
     python docs/source/user_guide/examples/profile_ops.py
 ```
-
-### Reduction and broadcast kernels
-
-The harness covers reductions and broadcasts so the cost model can be checked on
-read-dominated and cached-operand traffic:
-
-```bash
-# REDUCTIONS (read-dominated): sumrow=dim-1, sumcol=dim-0, amax/mean, read
-BENCH_OP=sumrow BENCH_ROWS=2048 BENCH_COLS=4096 \
-    python docs/source/user_guide/examples/profile_ops.py
-# BROADCAST (operand loaded once): bcast=a[R,C]+b[1,C], bcastcol=a[R,C]+b[R,1]
-BENCH_OP=bcast  BENCH_ROWS=2048 BENCH_COLS=4096 \
-    python docs/source/user_guide/examples/profile_ops.py
-# COARSE-TILED dim0 reduction (loop-aware: fill + K×(reduce,combine)); LX on/off
-BENCH_OP=ctsum BENCH_TILES=8 LX_PLANNING=0 BENCH_ROWS=2048 BENCH_COLS=512 \
-    python docs/source/user_guide/examples/profile_ops.py
-```
-
-## One challenge: Mem access pattern changes effective bandwidth
-
-Two kernels can stream the **same** input yet hit very different DRAM bandwidth —
-the cost depends on the read/write *mix*, not the byte count alone. Run a
-**read-dominated** reduction and a **balanced** pointwise op on the same
-`[2048, 2048]` fp16 tensor, pinned to all 32 cores (`SENCORES=32`; the 2048 output
-rows give every core 64 independent rows for the reduction, and the full grid for
-the pointwise — so both fully utilize the device). Each command prints, in order,
-the **loop-level IR**, the **device-layout I/O calculation**, and the profiler's
-**`sdsc_fused` kernel time** (clear the inductor cache first — see the note at the
-top):
-
-```bash
-# read = x.sum(dim=-1): reduce the 2048 cols to a [2048] vector
-#   -> reads the full input once, writes an almost-empty output  (READ-DOMINATED)
-SENCORES=32 SPYRE_DUMP_IR=1 SPYRE_DUMP_COST=1 \
-    BENCH_OP=read BENCH_ROWS=2048 BENCH_COLS=2048 \
-    python docs/source/user_guide/examples/profile_ops.py
-# neg = -x: one full read + one full write of the same shape  (1R + 1W, BALANCED)
-SENCORES=32 SPYRE_DUMP_IR=1 SPYRE_DUMP_COST=1 \
-    BENCH_OP=neg  BENCH_ROWS=2048 BENCH_COLS=2048 \
-    python docs/source/user_guide/examples/profile_ops.py
-```
-
-Both commands read the **same full input**; only the write differs. `read` writes
-an almost-empty output, so its traffic is **one-directional** and the `bw_gbps` in
-its `SUMMARY` lands near the ~150 GB/s peak. `neg` writes a full output, so reads
-and writes must **interleave on the shared HBM bus**, which keeps turning around
-between the two directions — its `bw_gbps` collapses well below the peak (to around 105GB/s), *below*
-either pure direction. Same input, same compute, but the **write half of the
-access pattern costs a read/write turnaround penalty** that nearly halves the
-effective DRAM bandwidth. (This is the `α·min(R,W)` term in §3: the read/write
-overlap `min(R,W)` is ≈0 for `read` and maximal for `neg`.)

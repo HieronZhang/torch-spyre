@@ -64,8 +64,8 @@ Remaining polish for future ticks (NOT re-drafting):
 - If reduction/transport gap sweeps get run, fold data in + tighten §5/§6.
 - Consider whether to actually flip the model to single-rate 150 (report §8
   recommends it; needs user OK — do NOT change shipped params unprompted).
-- Optional: sync cost_model_presentation.md matmul section to the honest regime
-  table (status doc already updated).
+- cost_model_presentation.md was deleted (redundant with the full report); the report
+  is now the single model write-up.
 - A second external-reader pass once the user is back for final wording tweaks.
 If nothing above is actionable, the loop should report "done" and stop.
 
@@ -194,3 +194,23 @@ If nothing above is actionable, the loop should report "done" and stop.
   matmul_row 20%→14%, Part III matmul unchanged. Spill NOT yet coded (verified offline:
   force over-cap intermediates to HBM → −40%→−6%); it's the next impl. Overall 12.1%.
   Lint clean.
+
+- 2026-07-10 (broadcast small-COLS): User caught that the fig4 COLS≤1024 "noise" is a
+  REAL systematic rise (bcast/bcastcol/mulbcast → ~130/124/132 at COLS=1024; copy flat)
+  = the +9..13% §4-table errors. Fixed §4 text (not noise; large-C plateau=118, small-C
+  residual flagged, could be a C-dependent rate like cat0). Chose option (2) over hiding
+  the 1k points: wrote run_broadcast_smallcols_sweep.sh (COLS 256–4096 + a ROWS control
+  at COLS=512) to test if the rise is a real trend below 1024 or a small-tensor artifact.
+  Queued in appendix. Lint clean.
+
+- 2026-07-10 (broadcast small-size sweep folded in): User ran run_broadcast_smallcols
+  (SC1+SC2; SC3 added after, not yet run). +26 rows → 644. RESOLVED the small-COLS
+  question: the >118 lift is a BOUNDED small-tensor speedup (~125-132 GB/s when EITHER
+  dim is small, plateaus by COLS=256, → ~118 only when both large), affects ALL FOUR
+  ops incl copy — NOT a runaway trend, NOT COLS-specific, so no C-dependent broadcast
+  rate warranted; keep 118 (large-size asymptote), flag the ~+10% small-size residual.
+  §4 prose + accuracy caption updated (broadcast 77 pts, 7.6%). fig4 rebuilt from
+  records (COLS 256-16k, shows the rise+plateau); fig4 neg baseline switched to
+  current_only=False (the new-log SHA had shrunk is_current). The 256×16384 −20%
+  bcast/mulbcast anomaly still unconfirmed (contradicts small=faster; SC3 re-measure
+  queued). Lint clean; eval OVERALL 12.1%.

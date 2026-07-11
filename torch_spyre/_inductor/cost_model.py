@@ -19,17 +19,17 @@ LoopLevel IR to guide higher-level optimization. Deliberately NOT a simulator.
 
 Model (per fused bundle / single-op kernel):
 
-    T = compute + HBM/eff - gamma*min(compute, HBM/eff) + c_loop * L
+    T = compute + HBM/eff - gamma*min(compute, HBM/eff)
 
     HBM = [ (R+W)/BW + alpha*min(R,W) ] * (1 + arity_derate*(n-1)) + spill + write_extra
 
   where R = HBM bytes READ (inputs), W = HBM bytes WRITTEN (outputs). LX-resident
   traffic is treated as ~free. ``eff`` (<=1) derates the MEMORY term for OUTPUT-dim
-  (pointwise) coarse-tiling that shrinks each core's per-tile height; ``c_loop * L`` is
-  the per-iteration coarse-tiling loop overhead (L = trip count). ``compute`` is nonzero
-  only for matmul (see below). A genuine-reduction cross-core ring term once lived here
-  but is provably <=~5ns (sub-noise), so it is dropped. For a normal untiled non-matmul
-  kernel eff = 1, compute = 0, L = 1, so this reduces to the bandwidth model.
+  (pointwise) coarse-tiling that shrinks each core's per-tile height. ``compute`` is nonzero
+  only for matmul (see below). A genuine-reduction cross-core ring term, and a per-iteration
+  coarse-tiling loop overhead (c_loop*L), once lived here but are dropped (the ring is
+  <=~5ns sub-noise; c_loop had no current op to validate it). For a normal untiled non-matmul
+  kernel eff = 1 and compute = 0, so this reduces to the bandwidth model.
 
 - ``fill`` ~= 0: the golden kernel has no fixed term (section-A intercept ~0; the old
   ~20us "fixed" was a separate non-deterministic Memset/host-setup bucket, not kernel).
@@ -71,12 +71,12 @@ MATMUL (reduction_type batchmatmul) adds a compute term that OVERLAPS the HBM te
 ``compute = MACs / cores / (mac_peak * pt_eff)`` (MACs = M*N*K, mac_peak=1140 SUSTAINED,
 gamma=0.46). The matmul HBM uses a SINGLE rate = the copy peak (150; the old two-rate
 143/156 is retired, 156>150 was an unphysical artifact) plus an operand RE-READ
-"tile spill": ``|A|*f(M/m) + |B|*f(N/n)`` at that rate, f a saturating log (a per-core
-operand tile past ~448 rows/cols no longer stays on-chip). Fanout is NOT separately
+"tile spill": ``(|A|+|B|)*f(area)`` at that rate, f a saturating log of the per-core
+output-tile area (M/m)*(N/n) past the on-chip capacity ~64K elems). Fanout is NOT separately
 identified (the falsification sweeps were confounded). K is
 always kept whole (WD_K=1) so the K-split psum ring term is 0. Fit on the db_sweep +
 decouple/re-read sweeps: ~8% RMS across cores 4->32, MNK 2e9..3.4e10. Isolation order and
-per-term data: notes/cost_model_presentation.md.
+per-term derivation: notes/cost_model_report.md.
 
 COARSE-TILING (fused kernel, e.g. ``softmax_row_tiling``): a coarse-tiled op is ONE fused
 kernel with intermediates kept in LX -- NOT a sum of per-op kernels. Two things follow.
@@ -92,9 +92,12 @@ SEPARATE from the matmul ``pt_eff``. Re-fit on the softmax rpc sweep; the cross-
 ROWS (rpc), NOT tile bytes, and that it is the tile-SIZE effect, not the tile COUNT L (four
 T=4..32 points at rpc=16 cost the same). Efficiency plateaus ~0.95 at rpc 16-32 and cliffs
 below (rpc4~0.45, rpc2~0.28). KNOWN residuals: a mild efficiency decline above rpc~32
-(rpc128~0.82, unmodeled, rows-driven); and when a per-core tile overflows LX (~1-2 MB/core)
-the compiler SPILLS intermediates to HBM -- the extractor already counts those bytes from
-the IR, but spilled traffic runs slower than modeled (~-34% at the one spill point seen).
+(rpc128~0.82, unmodeled, rows-driven); and when the per-core WORKING SET overflows the
+practically available LX space (~512 KB/core usable) the compiler SPILLS intermediates to HBM
+but the IR still tags them LX, so the extractor UNDERCOUNTS HBM bytes (up to -40% at ~4 MB/core).
+The accurate fix reads the actual per-tensor LX allocation from the IR (open whether that is
+exposed for coarse tiling); a working-set proxy (>~512 KB/core -> HBM) fixes it offline
+(-40%->-6%) but is not yet wired in (see report S14).
 
 ACCESS-PATTERN effective-BW overrides (db_sweep; ``OpFeatures.hbm_pattern``, set by the
 extractor from the LoopLevel IR index/layout -- these fold turnaround into one measured
@@ -158,7 +161,7 @@ class OpFeatures:
     loop_trip: int = 1  # coarse-tiling loop trip count for this op (prod of loop_count)
     # OUTPUT-dim (pointwise) coarse-tiling: True when this op tiles an output dim, so
     # each core's per-tile height shrinks and the underfill derate applies. False for
-    # reduction-dim tiling (keeps the calibrated c_loop) and for untiled ops.
+    # reduction-dim tiling and for untiled ops.
     tiles_output_dim: bool = False
     # Per-core per-tile pass-row height (output-tiled ops only): the streamed tile's
     # "rows" / cores. Drives ``eff_underfill``; 0.0 = unknown / not applicable -> no
@@ -297,17 +300,8 @@ class CostParams:
     # only when out_elems<cores, so it is bounded by ~cores*psum (<=~4.5ns) -- effectively
     # inert (kept for structure). The matmul K-split PSUM ring is deliberately NOT modeled:
     # the planner keeps K whole (WD_K=1), and forcing WD_K>1 made this term explode (+489%).
-    # REDUCTION-DIM coarse-tiling per-iteration loop overhead (ns/iteration). CALIBRATED
-    # ~860 ns/tile from the P2a K-sweep (ctsum B=2048 D=512, tiles 2..16): unmodeled =
-    # (kernel - pred) fits 1.88us + 0.864*K, so the K-slope is the loop overhead (the
-    # 1.88us intercept is the dim0-reduction access penalty -- a separate sumcol-like
-    # bias, NOT loop cost; the D-sweep gives the same K-slope, so it is data-indep).
-    # Per-ITERATION loop-dispatch cost for REDUCTION-dim tiling (a DIFFERENT mechanism
-    # from the underfill derate below, which is per-tile-SIZE). 860 ns from the
-    # reduction K-sweep. The POINTWISE (output-dim) value is separate -- the Section-A
-    # chain sweep (eff=1, vary K) is FLAT, so pointwise loop overhead is ~0 (below).
-    c_loop_ns: float = 860.0
-    c_loop_pointwise_ns: float = 0.0  # output-dim tiling: measured ~0 (Section A, flat)
+    # (A per-iteration coarse-tiling loop overhead c_loop*L was removed: it was calibrated on
+    # the dropped chain/ctsum reduction-dim sweeps and no current op exercises it.)
     # Pipeline-fill (underfill) derate for OUTPUT-dim (pointwise) coarse-tiling:
     # eff = min(1, (rows_per_core / (pass_rows * target_passes)) ** exponent). Same FORM
     # as the matmul pt_eff (work_division.py); the 8-row pass is the shared hardware
@@ -340,26 +334,27 @@ class CostParams:
     # RMS 1.7% across cores 4->32. pt_eff reuses the underfill derate (~1 for M/m>=64).
     mac_peak_per_core_ns: float = 1140.0  # MAC/ns/core (sustained; compute-isolate fit)
     underfill_target_passes_matmul: float = 8.0  # matmul full-fill ~8 passes (=64 rows)
-    mm_tiled_fill_rows: float = (
-        72.0  # coarse-tiled matmul: full-fill threshold (rows/core)
-    )
-    mm_tiled_fill_exp: float = (
-        0.85  # steeper per-tile underfill than a standalone matmul
-    )
+    # (A coarse-tiled matmul's per-tile array underfill is NOT modeled -- data too thin;
+    # tiled matmuls take pt_eff=1. See predict_ops and report Part IV.)
     overlap_gamma: float = 0.46  # compute/HBM overlap: min(compute,HBM) partly hidden
-    # Matmul operand RE-READ (tile spill): a per-core operand tile past ~t0 rows/cols no
-    # longer stays on-chip and is re-streamed from HBM. reread = |A|*f(M/m) + |B|*f(N/n),
-    # f(t) = min(cap, slope*log2(t/t0)). Fit on the decouple + re-read sweeps (fanout was
-    # proven NOT a term). K-split (WD_K>1) is never used, so the old psum ring term = 0.
-    mm_spill_t0: float = 448.0  # per-core tile below which no spill
-    mm_spill_slope: float = 1.10
-    mm_spill_cap: float = 1.70
+    # Matmul operand RE-READ (tile spill): the per-core OUTPUT-accumulator tile has area
+    # (M/m)*(N/n); once it exceeds the on-chip capacity (~64K fp16 elems/core) it no longer
+    # stays resident, so the operands are re-streamed from HBM. The re-read magnitude is the
+    # operand bytes; the fraction grows with how far the tile overflows:
+    #   reread = (|A| + |B|) * f(area),  f(area) = min(cap, slope*log2(area/area0)).
+    # Fit on the decouple + re-read sweeps (fanout proven NOT a term; K-split never used, so
+    # the old psum ring term = 0).
+    mm_spill_area0: float = (
+        65536.0  # per-core output-tile area (elems) below which no spill
+    )
+    mm_spill_slope: float = 0.45
+    mm_spill_cap: float = 1.50
     # Matmul HBM: a SINGLE effective rate = the pointwise copy peak (150). The earlier
     # two-rate fit (143 read / 156 write) is retired: 156 > 150 is unphysical (a write
     # cannot beat the copy peak) and was a compute-free-fit artifact absorbing the overlap
     # term. On the planner-realistic envelope a single 150 + turnaround + overlap scores
-    # RMS 6.9% vs 7.1% for the old two-rate -- equal-or-better AND physical. Read/write are
-    # not separately identifiable from these data. (Verified offline; see report §8.)
+    # better than the old two-rate (RMS ~5.8% with the area-spill term) -- equal-or-better
+    # AND physical. Read/write are not separately identifiable from these data. (See §8.)
     mm_bw_read_gbps: float = 150.0
     mm_bw_write_gbps: float = 150.0
 
@@ -445,16 +440,17 @@ def coarse_underfill_eff(rpc: float, params: CostParams | None = None) -> float:
     )
 
 
-def mm_spill_frac(tile_per_core: float, params: CostParams | None = None) -> float:
-    """Operand RE-READ fraction for a matmul: a per-core operand tile larger than
-    ``mm_spill_t0`` (rows for A / cols for B) no longer stays on-chip and is re-streamed
-    from HBM. Saturating log growth ``min(cap, slope*log2(tile/t0))``; 0 at/below t0."""
+def mm_spill_frac(tile_area: float, params: CostParams | None = None) -> float:
+    """Operand RE-READ fraction for a matmul: once the per-core output-accumulator tile
+    of area ``(M/m)*(N/n)`` exceeds ``mm_spill_area0`` (the on-chip capacity) the operands
+    no longer stay resident and are re-streamed from HBM. Saturating log growth
+    ``min(cap, slope*log2(area/area0))``; 0 at/below area0."""
     p = params or CostParams()
-    if tile_per_core <= 0:
+    if tile_area <= 0:
         return 0.0
     return min(
         p.mm_spill_cap,
-        p.mm_spill_slope * math.log2(max(1.0, tile_per_core / p.mm_spill_t0)),
+        p.mm_spill_slope * math.log2(max(1.0, tile_area / p.mm_spill_area0)),
     )
 
 
@@ -570,15 +566,14 @@ def reduction_read_bw(rows, p):
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
     """Predicted device latency (ns) for a bundle of ops (one fused kernel).
 
-    ``T = fill + [(R+W)/BW_PEAK + alpha*min(R,W)] / eff_underfill + combine +
-    c_loop*L_red`` where R/W are the bundle's HBM read/write bytes (LX ~free), already
+    ``T = fill + [(R+W)/BW_PEAK + alpha*min(R,W)] / eff_underfill`` where R/W are the
+    bundle's HBM read/write bytes (LX ~free), already
     loop-scaled per arg (see ArgTraffic.loop_factor). R/W come from ``_fused_hbm_bytes``:
     a fused kernel loads each distinct EXTERNAL input from HBM ONCE (re-reads served
     on-chip), so a shared input is not double-counted; reads and writes are summed over
     the bundle before the turnaround term (shared bus). ``eff_underfill`` derates the
     bandwidth term when OUTPUT-dim (coarse) tiling shortens each core's per-tile height
-    (``coarse_underfill_eff``, keyed on per-core rows per tile). Reductions
-    add a ring-combine term (once PER TILE); reduction-dim tiling adds c_loop*L_red.
+    (``coarse_underfill_eff``, keyed on per-core rows per tile).
     Matmul ops add an ADDITIVE compute term (MACs/cores/(mac_peak*pt_eff)).
     """
     p = params or CostParams()
@@ -603,11 +598,12 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         return None
 
     if any(getattr(o, "is_matmul", False) for o in ops):
-        # Operand re-read: |A| re-streamed as its per-core tile (M/m) spills, |B| as N/n
-        # spills. Read-rate bytes. (Fanout was proven NOT a term by the re-read sweep.)
+        # Operand re-read: when the per-core output tile of area (M/m)*(N/n) overflows the
+        # on-chip capacity, both operands (|A|+|B|) are re-streamed by the same fraction.
+        # Read-rate bytes. (Fanout was proven NOT a term by the re-read sweep.)
         spill = sum(
-            o.matmul_a_bytes * mm_spill_frac(o.matmul_rows_per_core, p)
-            + o.matmul_b_bytes * mm_spill_frac(o.matmul_cols_per_core, p)
+            (o.matmul_a_bytes + o.matmul_b_bytes)
+            * mm_spill_frac(o.matmul_rows_per_core * o.matmul_cols_per_core, p)
             for o in ops
             if getattr(o, "is_matmul", False)
         )
@@ -674,15 +670,12 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     compute = 0.0
     for o in ops:
         if o.is_matmul and o.matmul_macs > 0 and o.cores > 0:
+            # A coarse-tiled matmul appears to underfill the array MORE per tile than a
+            # standalone one, but the current data (thin, non-current, partly U-shaped) is
+            # too weak to fit -- so it is NOT modeled: tiled matmuls take pt_eff=1 (flagged;
+            # a clean tile-count sweep is queued). Standalone matmuls use the array-fill derate.
             if o.tiles_output_dim:
-                # COARSE-TILED matmul: each per-tile matmul is short (M/tiles rows) and
-                # underfills the array far more than one big matmul -- it pays a per-tile
-                # fill/drain. Steeper curve (measured eff ~0.9/0.5 at 64/32 rows/core).
-                pt_eff = min(
-                    1.0,
-                    (o.matmul_rows_per_core / p.mm_tiled_fill_rows)
-                    ** p.mm_tiled_fill_exp,
-                )
+                pt_eff = 1.0
             else:
                 pt_eff = underfill_eff(
                     o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
@@ -694,17 +687,10 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     t = compute + mem_t - p.overlap_gamma * min(compute, mem_t)
     # (A genuine-reduction cross-core ring-combine term once lived here; it is provably
     # bounded by ~cores * a tiny per-elem cost <= ~5 ns -- below run-to-run noise --
-    # so it is dropped as inert. K is never split for matmul, so there is no matmul analogue.)
-    # Coarse-tiling per-iteration LOOP overhead (distinct from the per-tile-SIZE
-    # underfill derate above; both can apply). Op-structure dependent: REDUCTION-dim
-    # tiling pays c_loop_ns (calibrated 860); OUTPUT-dim (pointwise) tiling pays
-    # c_loop_pointwise_ns (measured ~0). L = max loop trip within each kind.
-    red_trip = max((o.loop_trip for o in ops if not o.tiles_output_dim), default=1)
-    pw_trip = max((o.loop_trip for o in ops if o.tiles_output_dim), default=1)
-    if red_trip > 1:
-        t += p.c_loop_ns * red_trip
-    if pw_trip > 1:
-        t += p.c_loop_pointwise_ns * pw_trip
+    # so it is dropped as inert. K is never split for matmul, so there is no matmul analogue.
+    # A per-iteration coarse-tiling LOOP overhead (c_loop*L) also once lived here, calibrated
+    # on the now-dropped chain/ctsum reduction-dim sweeps; no current op exercises it, so it
+    # is removed rather than carried unvalidated.)
     return t
 
 
@@ -737,7 +723,7 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             )
     # Prediction with the rough calculation spelled out, so SPYRE_DUMP_COST shows the
     # same step-by-step breakdown (base + turnaround, then the underfill derate for
-    # pointwise tiling or the c_loop term for reduction-dim tiling).
+    # pointwise tiling).
     R, W = _fused_hbm_bytes(ops)  # external input counted once (fused kernel)
     is_mm = any(getattr(o, "is_matmul", False) for o in ops)
     base = (
@@ -753,11 +739,6 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             e = coarse_underfill_eff(o.tile_rows_per_core, p)
             if e < eff:
                 eff, eff_rows = e, o.tile_rows_per_core
-    red_trip = max((o.loop_trip for o in ops if not o.tiles_output_dim), default=1)
-    pw_trip = max((o.loop_trip for o in ops if o.tiles_output_dim), default=1)
-    loop_ns = (p.c_loop_ns * red_trip if red_trip > 1 else 0.0) + (
-        p.c_loop_pointwise_ns * pw_trip if pw_trip > 1 else 0.0
-    )
     # Matmul compute (additive): sum the per-op compute term for any matmul ops.
     mm_us, mm_lines = 0.0, []
     for o in ops:
@@ -778,8 +759,6 @@ def explain(ops: list, params: CostParams | None = None) -> str:
         parts = f"[{parts}] / eff_underfill"
     if mm_us > 0:
         parts = f"compute + {parts}"
-    if loop_ns > 0:
-        parts += " + c_loop*L"
     lines.append(f"  -- prediction (turnaround): T = {parts} --")
     lines.append(f"     R={R}B (read)   W={W}B (write)")
     lines.extend(mm_lines)
@@ -799,8 +778,5 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             f"**{p.coarse_underfill_exp}) = {eff:.3f}  "
             f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
         )
-    if loop_ns > 0:
-        lab = f"c_loop*{red_trip}" if red_trip > 1 else f"c_loop_pw*{pw_trip}"
-        lines.append(f"     loop = {lab} = {loop_ns / 1000:.2f} us")
     lines.append(f"     => T_model = {t / 1000:.2f} us")
     return "\n".join(lines)

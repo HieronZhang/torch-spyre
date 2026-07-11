@@ -43,7 +43,7 @@ cd "$ROOT" || exit 1
 mkdir -p haoyang_logs
 LOG="haoyang_logs/broadcast_smallcols_$(date +%Y%m%d_%H%M%S).log"
 [[ -n "${DB_LOG:-}" ]] && LOG=/dev/null   # under run_db_sweep: master writes the unified log
-SECTIONS="${SECTIONS:-SC1 SC2}"
+SECTIONS="${SECTIONS:-SC1 SC2 SC3}"
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1
 
 echo "==== broadcast small-cols sweep $(date) ====" | tee "$LOG"
@@ -73,6 +73,18 @@ has SC2 && { echo "## SC2 ROWS control: {bcast,mulbcast} x ROWS{512,2048,8192} @
     | tee -a "$LOG"
   for r in 512 2048 8192; do
     for op in bcast mulbcast; do runp "$op" "$r" 512; done
+  done; }
+
+# ===== SC3: re-measure the bad small-ROWS x large-COLS corner ==============
+# In the current data ROWS=256, COLS=16384 is -20% for bcast/mulbcast (~95 GB/s) but
+# fine for bcastcol -- likely single-run scatter. Re-measure with repeats to confirm
+# whether it is a real small-ROWS slowdown at large COLS or just noise.
+has SC3 && { echo "## SC3 small-ROWS @ COLS=16384: {bcast,bcastcol,mulbcast} x ROWS{64,128,256,512}, x2" \
+    | tee -a "$LOG"
+  for rep in 1 2; do
+    for r in 64 128 256 512; do
+      for op in bcast bcastcol mulbcast; do runp "$op" "$r" 16384; done
+    done
   done; }
 
 echo "==== DONE -> forward $LOG ====" | tee -a "$LOG"
