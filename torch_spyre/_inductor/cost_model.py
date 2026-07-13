@@ -19,17 +19,19 @@ LoopLevel IR to guide higher-level optimization. Deliberately NOT a simulator.
 
 Model (per fused bundle / single-op kernel):
 
-    T = compute + HBM/eff - gamma*min(compute, HBM/eff)
+    T   = compute + mem - gamma*min(compute, mem)          mem = HBM / (eff * s_lx)
 
     HBM = [ (R+W)/BW + alpha*min(R,W) ] * (1 + arity_derate*(n-1)) + spill + write_extra
+    s_lx = min(1, (512KB/ws)**0.15)   for a coarse-tiled kernel with ws > 512KB   (else 1)
 
   where R = HBM bytes READ (inputs), W = HBM bytes WRITTEN (outputs). LX-resident
   traffic is treated as ~free. ``eff`` (<=1) derates the MEMORY term for OUTPUT-dim
-  (pointwise) coarse-tiling that shrinks each core's per-tile height. ``compute`` is nonzero
-  only for matmul (see below). A genuine-reduction cross-core ring term, and a per-iteration
-  coarse-tiling loop overhead (c_loop*L), once lived here but are dropped (the ring is
-  <=~5ns sub-noise; c_loop had no current op to validate it). For a normal untiled non-matmul
-  kernel eff = 1 and compute = 0, so this reduces to the bandwidth model.
+  (pointwise) coarse-tiling that shrinks each core's per-tile height; ``s_lx`` (<=1) further
+  derates it when the per-core working set overflows LX (spilled traffic runs slower).
+  ``compute`` is nonzero only for matmul (see below). A genuine-reduction cross-core ring term,
+  and a per-iteration coarse-tiling loop overhead (c_loop*L), once lived here but are dropped
+  (the ring is <=~5ns sub-noise; c_loop had no current op to validate it). For a normal untiled
+  non-matmul kernel eff = 1, s_lx = 1 and compute = 0, so this reduces to the bandwidth model.
 
 - ``fill`` ~= 0: the golden kernel has no fixed term (section-A intercept ~0; the old
   ~20us "fixed" was a separate non-deterministic Memset/host-setup bucket, not kernel).
@@ -93,11 +95,11 @@ ROWS (rpc), NOT tile bytes, and that it is the tile-SIZE effect, not the tile CO
 T=4..32 points at rpc=16 cost the same). Efficiency plateaus ~0.95 at rpc 16-32 and cliffs
 below (rpc4~0.45, rpc2~0.28). KNOWN residuals: a mild efficiency decline above rpc~32
 (rpc128~0.82, unmodeled, rows-driven); and when the per-core WORKING SET overflows the
-practically available LX space (~512 KB/core usable) the compiler SPILLS intermediates to HBM
-but the IR still tags them LX, so the extractor UNDERCOUNTS HBM bytes (up to -40% at ~4 MB/core).
-The accurate fix reads the actual per-tensor LX allocation from the IR (open whether that is
-exposed for coarse tiling); a working-set proxy (>~512 KB/core -> HBM) fixes it offline
-(-40%->-6%) but is not yet wired in (see report S14).
+practically available LX (~512 KB/core) the intermediates SPILL to HBM. The extractor already
+counts those spilled bytes as HBM (they show up read+written), so it is NOT a byte miss -- but
+that spilled traffic runs SLOWER than the modeled rate, so the effective bandwidth is DERATED
+(``_lx_spill_bw_derate``: BW *= (cap/ws)**0.15 for ws>cap). Softmax-calibrated (11.0%->5.7% RMS),
+gated to non-matmul coarse tiling. See report S14.
 
 ACCESS-PATTERN effective-BW overrides (db_sweep; ``OpFeatures.hbm_pattern``, set by the
 extractor from the LoopLevel IR index/layout -- these fold turnaround into one measured
@@ -326,6 +328,15 @@ class CostParams:
     coarse_underfill_rfull: float = 13.0
     coarse_underfill_exp: float = 0.68
     coarse_underfill_cap: float = 0.95
+    # LX-SPILL bandwidth derate. When a coarse-tiled kernel's per-core working set (its live
+    # intermediate tiles, ~2 of them) overflows the practically available LX (~512 KB/core),
+    # those intermediates spill to HBM. The extractor ALREADY counts the spilled bytes as HBM
+    # (they show up read+written), so this is NOT a byte miss -- but that spilled traffic runs
+    # SLOWER than the modeled rate, so the effective bandwidth is derated:
+    #   BW *= min(1, (lx_spill_cap / ws_per_core) ** lx_spill_exp),  ws > cap only.
+    # Softmax-calibrated (11.0% -> 5.7% RMS); gated to non-matmul coarse tiling.
+    lx_spill_cap_bytes: float = 524288.0  # ~512 KB/core practically available LX
+    lx_spill_exp: float = 0.15
     # MATMUL compute term. T_matmul = compute + HBM - gamma*min(compute, HBM), where
     # compute = MACs/cores/(mac_peak*pt_eff). mac_peak=1140 (sustained) fit on the
     # compute-DOMINANT low-core runs (cores 4-8, compute 80-90% of the kernel; the old
@@ -438,6 +449,31 @@ def coarse_underfill_eff(rpc: float, params: CostParams | None = None) -> float:
         p.coarse_underfill_cap,
         (rpc / p.coarse_underfill_rfull) ** p.coarse_underfill_exp,
     )
+
+
+def _lx_spill_working_set(ops: list) -> float:
+    """Per-core LX working set (bytes) of a coarse-tiled bundle: ~2 live intermediate tiles,
+    each ``tile_rows_per_core * cols`` elements. 0.0 if nothing is output-tiled."""
+    ws = 0.0
+    for o in ops:
+        if o.tiles_output_dim and o.tile_rows_per_core > 0:
+            cols = max((a.logical[-1] for a in o.args if a.logical), default=0)
+            ws = max(ws, 2.0 * o.tile_rows_per_core * cols * o.dtype_bytes)
+    return ws
+
+
+def _lx_spill_bw_derate(ops: list, params: CostParams | None = None) -> float:
+    """Bandwidth derate when a coarse-tiled kernel's per-core working set overflows LX. The
+    spilled intermediates are already counted as HBM bytes, but that traffic runs slower, so
+    ``BW *= (lx_spill_cap / ws)**lx_spill_exp`` for ``ws > cap``. Gated to non-matmul coarse
+    tiling (softmax-calibrated); 1.0 when it does not apply."""
+    p = params or CostParams()
+    if any(getattr(o, "is_matmul", False) for o in ops):
+        return 1.0
+    ws = _lx_spill_working_set(ops)
+    if ws <= p.lx_spill_cap_bytes:
+        return 1.0
+    return (p.lx_spill_cap_bytes / ws) ** p.lx_spill_exp
 
 
 def mm_spill_frac(tile_area: float, params: CostParams | None = None) -> float:
@@ -665,7 +701,11 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     for o in ops:
         if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
             eff = min(eff, coarse_underfill_eff(o.tile_rows_per_core, p))
-    mem_t = p.fill_ns + mem / eff
+    # LX-SPILL bandwidth derate: a coarse-tiled kernel whose per-core working set (~2 live
+    # intermediate tiles) overflows LX spills to HBM, and that spilled traffic runs slower
+    # than the modeled rate. Bytes are already counted as HBM; here we derate the BW.
+    spill_derate = _lx_spill_bw_derate(ops, p)
+    mem_t = p.fill_ns + mem / eff / spill_derate
     # MATMUL compute = MACs/cores derated by pt_eff (PT-array fill).
     compute = 0.0
     for o in ops:

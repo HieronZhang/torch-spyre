@@ -62,10 +62,11 @@ IR and prints, at compile time, the **per-tensor device-layout I/O**
 when it does not apply; `R`, `W` = HBM bytes read / written):
 
 ```
-T = compute + HBM/eff − γ·min(compute, HBM/eff)
+T   = compute + mem − γ·min(compute, mem)          mem = HBM / (eff · s_lx)
 
   HBM     = [ (R + W)/BW + α·min(R, W) ] · (n-ary derate) + spill + write_extra
   compute = MACs / cores / (peak · pt_eff)
+  s_lx    = min(1, (512KB / ws)^0.15)   for a coarse-tiled kernel with ws > 512KB   (else 1)
 ```
 
 | term | form | what it is |
@@ -78,6 +79,7 @@ T = compute + HBM/eff − γ·min(compute, HBM/eff)
 | `compute` | `MACs/cores/(peak·pt_eff)`, `peak≈1140 MAC/ns/core` | **matmul** only (else 0) |
 | `pt_eff` | `min(1, (rows/64)^0.35)` | systolic-array fill (per-core rows) |
 | `eff` | `min(0.95, (h/13)^0.68)`, `h = ROWS/(cores·tiles)` | coarse-tiling streaming-pipeline fill (memory-bound) |
+| `s_lx` | `min(1, (512KB/ws)^0.15)` for `ws > 512KB`, `ws = 2·(rows/core)·COLS·2B` | coarse-tiled kernel whose per-core working set overflows LX (spilled traffic runs slower) |
 | `γ·min(compute,HBM)` | `γ ≈ 0.46` | compute/HBM **overlap** (0 when `compute=0`) |
 
 The **full derivation of every term and its accuracy** are written up in
