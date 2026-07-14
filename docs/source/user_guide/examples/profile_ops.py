@@ -655,11 +655,6 @@ def _print_model(feats: list) -> float:
             e = cost_model.coarse_underfill_eff(o.tile_rows_per_core, p)
             if e < eff:
                 eff, eff_rows = e, o.tile_rows_per_core
-    red_trip = max((o.loop_trip for o in feats if not o.tiles_output_dim), default=1)
-    pw_trip = max((o.loop_trip for o in feats if o.tiles_output_dim), default=1)
-    loop_ns = (p.c_loop_ns * red_trip if red_trip > 1 else 0.0) + (
-        p.c_loop_pointwise_ns * pw_trip if pw_trip > 1 else 0.0
-    )
     # Matmul compute term (additive).
     mm_us, mm_lines = 0.0, []
     for o in feats:
@@ -680,8 +675,6 @@ def _print_model(feats: list) -> float:
         parts = f"[{parts}] / eff_underfill"
     if mm_us > 0:
         parts = f"compute + {parts}"
-    if loop_ns > 0:
-        parts += " + c_loop*L"
     print(f"MODEL -- estimate (turnaround): T = {parts} --")
     print(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
     for ln in mm_lines:
@@ -703,9 +696,6 @@ def _print_model(feats: list) -> float:
             f"**{p.coarse_underfill_exp}) = {eff:.3f} "
             f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
         )
-    if loop_ns > 0:
-        lab = f"c_loop*{red_trip}" if red_trip > 1 else f"c_loop_pw*{pw_trip}"
-        print(f"MODEL   loop = {lab} = {loop_ns / 1000:.2f} us")
     print(f"MODEL   => T_model = {t / 1000:.2f} us")
     # Machine-readable feature vector (the model's INPUT) so a NEW model version can be
     # scored OFFLINE against the stored measured time -- no hardware re-run. Prefixed
