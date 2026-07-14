@@ -63,6 +63,7 @@ SENCORES = os.environ.get("SENCORES", "")  # core count (read only to tag the SU
 TILES = int(os.environ.get("BENCH_TILES", "0"))  # coarse-tile dim0 into K (>=2 on)
 LX = os.environ.get("LX_PLANNING", "1")  # scratchpad planning on(1)/off(0); SUMMARY tag
 NCOLS = int(os.environ.get("BENCH_N", str(COLS)))  # matmul N dim (M=ROWS, K=COLS, N)
+BB = int(os.environ.get("BENCH_B", "8"))  # batch dim for bmm ops (a[B,M,K] @ b[B,K,N])
 WD_M = os.environ.get("WD_M")  # forced matmul work-div split (spyre_hint work_div):
 WD_N = os.environ.get("WD_N")  # cores = WD_M*WD_N*WD_K. Unset dim -> stays 1 (the hint
 WD_K = os.environ.get("WD_K")  # is FINAL, not floor-filled). Used by the `mmwd` op.
@@ -166,54 +167,6 @@ def _ct_workload(rtype: str):
     torch._dynamo.reset_code_caches()
     FxGraphCache.clear()
     return torch.compile(fn), (x_cpu.to(DEVICE),)
-
-
-def _chain_workload():
-    """Fused pointwise chain ``z = (a + b) * c`` over [A=ROWS, B=COLS] -- the Part-3
-    LX-residency probe (mirrors the scratchpad example in coarse_tiling_loops.md).
-    BENCH_TILES>=2 tiles the A (row) dim so the intermediate ``y = a + b`` stays in LX
-    instead of round-tripping HBM; ``allow_all_ops_in_lx_planning`` makes y LX-eligible.
-    Untiled (BENCH_TILES<=1) is the baseline where y is a full HBM buffer. Toggle
-    LX_PLANNING to compare. The IO dump shows y in lx (free, tiled) vs hbm (counted)."""
-    import torch_spyre._inductor.propagate_named_dims as pnd
-    from torch._inductor.codecache import FxGraphCache
-    from torch_spyre._inductor import config, spyre_hint
-
-    global _PREPARE
-    a_n, b_n = ROWS, COLS
-    config.allow_all_ops_in_lx_planning = True  # let the intermediate y be LX-placed
-    xa = torch.randn(a_n, b_n, dtype=torch.float16)
-    xb = torch.randn(a_n, b_n, dtype=torch.float16)
-    xc = torch.randn(a_n, b_n, dtype=torch.float16)
-
-    def _declare():
-        pnd.declare_tensor_dim("A", a_n)
-        pnd.declare_tensor_dim("B", b_n)
-
-    _declare()
-
-    def _name(a, b, c):
-        pnd.name_tensor_dims(a, ["A", "B"])
-        pnd.name_tensor_dims(b, ["A", "B"])
-        pnd.name_tensor_dims(c, ["A", "B"])
-
-    if TILES >= 2:
-
-        def fn(a, b, c):
-            _name(a, b, c)
-            with spyre_hint(num_tiles_per_dim={"A": TILES}):
-                return (a + b) * c
-
-        _PREPARE = _declare
-    else:
-
-        def fn(a, b, c):
-            return (a + b) * c
-
-    fn(xa, xb, xc)  # eager reference call
-    torch._dynamo.reset_code_caches()
-    FxGraphCache.clear()
-    return torch.compile(fn), (xa.to(DEVICE), xb.to(DEVICE), xc.to(DEVICE))
 
 
 def _softmax_row_tiling():
@@ -384,6 +337,194 @@ def _matmul_row_tiling():
     return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
 
 
+def _matmul_k_tiling():
+    """`a @ b` [M,K]@[K,N] COARSE-TILED over the K (reduction) dim via
+    spyre_hint(num_tiles_per_dim={"K": TILES}) -- mirrors coarse_tile/run_matmul_k_tiled.py
+    and run_mm_k_tiled.py. M=ROWS, K=COLS, N=BENCH_N; TILES>=2 tiles K, else untiled."""
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    m, k, n = ROWS, COLS, NCOLS
+    xa = torch.rand(m, k, dtype=torch.float16)
+    yb = torch.rand(k, n, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("M", m)
+        pnd.declare_tensor_dim("K", k)
+        pnd.declare_tensor_dim("N", n)
+
+    _declare()
+
+    if TILES >= 2:
+
+        def fn(a, b):
+            pnd.name_tensor_dims(a, ["M", "K"])
+            pnd.name_tensor_dims(b, ["K", "N"])
+            with spyre_hint(num_tiles_per_dim={"K": TILES}):
+                return a @ b
+
+        _PREPARE = _declare
+    else:
+
+        def fn(a, b):
+            return a @ b
+
+    fn(xa, yb)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
+
+
+def _mm_nested_m_k():
+    """torch.mm [M,K]@[K,N] with NESTED tiling -- outer M x2, inner K x TILES -- mirrors
+    coarse_tile/run_mm_nested_outer_M_inner_K.py. M=ROWS, K=COLS, N=BENCH_N."""
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    m, k, n = ROWS, COLS, NCOLS
+    xa = torch.rand(m, k, dtype=torch.float16)
+    yb = torch.rand(k, n, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("M", m)
+        pnd.declare_tensor_dim("K", k)
+        pnd.declare_tensor_dim("N", n)
+
+    _declare()
+
+    if TILES >= 2:
+
+        def fn(a, b):
+            pnd.name_tensor_dims(a, ["M", "K"])
+            pnd.name_tensor_dims(b, ["K", "N"])
+            with spyre_hint(num_tiles_per_dim={"M": 2}):
+                with spyre_hint(num_tiles_per_dim={"K": TILES}):
+                    return torch.mm(a, b)
+
+        _PREPARE = _declare
+    else:
+
+        def fn(a, b):
+            return torch.mm(a, b)
+
+    fn(xa, yb)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
+
+
+def _bmm_workload(kind: str):
+    """Batched matmul -- mirrors coarse_tile/run_bmm_*.py. B=BENCH_B, M=ROWS, K=COLS,
+    N=BENCH_N; TILES>=2 tiles K (else untiled). ``kind``:
+      "k"      -> torch.bmm(a[B,M,K], b[B,K,N])       tiled over K
+      "3d2d"   -> torch.matmul(a[B,M,K], b[K,N])      2-D weight shared over the batch
+      "nested" -> torch.bmm(a[B,M,K], b[B,K,N])       outer B x2, inner K x TILES
+    """
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    b_n, m, k, n = BB, ROWS, COLS, NCOLS
+    xa = torch.rand(b_n, m, k, dtype=torch.float16)
+    yb = (
+        torch.rand(k, n, dtype=torch.float16)
+        if kind == "3d2d"
+        else torch.rand(b_n, k, n, dtype=torch.float16)
+    )
+    mm = torch.matmul if kind == "3d2d" else torch.bmm
+
+    def _declare():
+        pnd.declare_tensor_dim("B", b_n)
+        pnd.declare_tensor_dim("M", m)
+        pnd.declare_tensor_dim("K", k)
+        pnd.declare_tensor_dim("N", n)
+
+    _declare()
+
+    def _name(a, b):
+        pnd.name_tensor_dims(a, ["B", "M", "K"])
+        pnd.name_tensor_dims(b, ["K", "N"] if kind == "3d2d" else ["B", "K", "N"])
+
+    if TILES >= 2 and kind == "nested":
+
+        def fn(a, b):
+            _name(a, b)
+            with spyre_hint(num_tiles_per_dim={"B": 2}):
+                with spyre_hint(num_tiles_per_dim={"K": TILES}):
+                    return mm(a, b)
+
+        _PREPARE = _declare
+    elif TILES >= 2:
+
+        def fn(a, b):
+            _name(a, b)
+            with spyre_hint(num_tiles_per_dim={"K": TILES}):
+                return mm(a, b)
+
+        _PREPARE = _declare
+    else:
+
+        def fn(a, b):
+            return mm(a, b)
+
+    fn(xa, yb)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
+
+
+def _softmax_unrolled():
+    """Manual softmax chain (amax/sub/exp/sum/div) over [B,D]=[ROWS,COLS], tiled over B
+    with the tile loop UNROLLED (config.unroll_loops=True, sencores=1) -- mirrors
+    coarse_tile/run_softmax_unrolled.py. The unrolled IR has NO CoarseTileInfo (tiling
+    shows only as dim_hints), so it exercises the extractor's non-loop coarse path."""
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import config, spyre_hint
+
+    global _PREPARE
+    b_n, d = ROWS, COLS
+    x_cpu = torch.randn(b_n, d, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("B", b_n)
+        pnd.declare_tensor_dim("D", d)
+
+    _declare()
+
+    def _softmax(x):
+        mx = x.amax(dim=-1, keepdim=True)
+        e = (x - mx).exp()
+        return e / e.sum(dim=-1, keepdim=True)
+
+    if TILES >= 2:
+
+        def fn(x):
+            pnd.name_tensor_dims(x, ["B", "D"])
+            with spyre_hint(num_tiles_per_dim={"B": TILES}):
+                return _softmax(x)
+
+        _PREPARE = _declare
+    else:  # TILES<=1: the UNTILED single-core reference (no B-tiling)
+        fn = _softmax
+
+    # Match the example's config: unroll the tile loop, single core, LX planning on.
+    config.unroll_loops = True
+    config.sencores = 1
+    config.lx_planning = True
+    config.allow_all_ops_in_lx_planning = True
+
+    fn(x_cpu)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (x_cpu.to(DEVICE),)
+
+
 def make_workload():
     if OP in _UNARY:
         return torch.compile(_UNARY[OP]), (_rand(ROWS, COLS),)
@@ -407,14 +548,24 @@ def make_workload():
         return torch.compile(lambda b, c: b + c), (_rand(1, COLS), _rand(ROWS, 1))
     if OP in _CT_REDUCE:  # coarse-tiled dim0 reduction (BENCH_TILES, LX_PLANNING)
         return _ct_workload(_CT_REDUCE[OP])
-    if OP == "chain":  # fused pointwise chain z=(a+b)*c, tiled -> y in LX (BENCH_TILES)
-        return _chain_workload()
     if OP == "softmax_row_tiling":  # softmax(dim=-1) NROW-tiled -> 5 ops fuse in LX
         return _softmax_row_tiling()
     if OP == "softmax_noexp_row_tiling":  # matched control: softmax structure, exp->mul
         return _softmax_noexp_row_tiling()
     if OP == "matmul_row_tiling":  # a@b coarse-tiled over M (num_tiles, not core split)
         return _matmul_row_tiling()
+    if OP == "matmul_k_tiling":  # a@b coarse-tiled over K (reduction dim)
+        return _matmul_k_tiling()
+    if OP == "mm_nested_m_k":  # mm nested: outer M x2, inner K x TILES
+        return _mm_nested_m_k()
+    if OP == "bmm_k_tiling":  # bmm [B,M,K]@[B,K,N] tiled over K
+        return _bmm_workload("k")
+    if OP == "bmm_3d2d_k_tiling":  # matmul [B,M,K]@[K,N] (shared weight) tiled over K
+        return _bmm_workload("3d2d")
+    if OP == "bmm_nested_b_k":  # bmm nested: outer B x2, inner K x TILES
+        return _bmm_workload("nested")
+    if OP == "softmax_unrolled":  # unrolled softmax chain over B (no CoarseTileInfo)
+        return _softmax_unrolled()
     if OP == "mm":  # matmul [M=ROWS, K=COLS] @ [K=COLS, N=BENCH_N]: a Reduction over K
         # -> work-division Pass 2 (cost_model_matmul_division) picks the (m,n,k) split.
         mm = lambda a, b: a @ b  # noqa: E731
@@ -431,10 +582,15 @@ def make_workload():
         + [
             "bcastcol",
             "write",
-            "chain",
             "softmax_row_tiling",
             "softmax_noexp_row_tiling",
+            "softmax_unrolled",
             "matmul_row_tiling",
+            "matmul_k_tiling",
+            "mm_nested_m_k",
+            "bmm_k_tiling",
+            "bmm_3d2d_k_tiling",
+            "bmm_nested_b_k",
             "mm",
             "mmwd",
             "transpose_outer",

@@ -44,9 +44,9 @@ PROFILE_OPS="$SCRIPT_DIR/profile_ops.py"
 cd "$ROOT" || exit 1
 mkdir -p haoyang_logs
 LOG="haoyang_logs/grand_sweep_$(date +%Y%m%d_%H%M%S).log"
-# Default = only PART 3 (the chain LX-residency win) -- P1/P2 numbers already collected.
-# For a fresh full sweep: SECTIONS="P1a P1b P1c P1d P2a P2b P2c P2d P3" bash ...
-SECTIONS="${SECTIONS:-P3}"
+# Default = the untiled reduction baselines (P2d); other P1/P2 numbers already collected.
+# For a fresh full sweep: SECTIONS="P1a P1b P1c P1d P2a P2b P2c P2d" bash ...
+SECTIONS="${SECTIONS:-P2d}"
 ROWS="${ROWS:-2048}"   # default rows for pointwise ops (>=64/core at 32 cores)
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1   # recompile each run
 
@@ -119,17 +119,5 @@ has P2c && { echo "## P2c coarse-tile D-sweep (ctsum K=8, LX off, B=2048)" | tee
 #   reference (full input read once, tiny output, NO combine). LX off.
 has P2d && { echo "## P2d untiled reduction baselines (B=2048 D=512)" | tee -a "$LOG"
   for op in ctsum ctamax ctamin; do runct 0 1 "$op" 2048 512; done; }
-
-# ============ PART 3: pointwise-chain tiling overhead (c_loop_chain) ============
-# The first 2 runs (2026-06-25, [2048,4096]) overturned the premise: the compiler ALREADY
-# places the intermediate y=a+b in LX UNTILED (it fits per-core), so tiling wins nothing
-# here -- it only ADDS overhead, and a lot: K=1 -> 584us, K=8 -> 780us (~28us/tile, ~30x
-# the reduction c_loop=860ns). The model (single c_loop) under-predicts this badly
-# (tiled err -29.5%). The [4096,8192] untiled run (y EXCEEDS LX) HUNG -- skip it.
-# So: pin the POINTWISE-chain c_loop with a clean K-sweep at [2048,4096] (y in LX every
-# run, only the loop count varies). We already have K=1 and K=8; fill in K=2,4,16.
-has P3 && { echo "## P3 chain c_loop K-sweep ([2048,4096], LX on; have K=1,8)" \
-  | tee -a "$LOG"
-  for k in 2 4 16; do runct 1 "$k" chain 2048 4096; done; }
 
 echo "==== DONE -> forward $LOG ====" | tee -a "$LOG"
