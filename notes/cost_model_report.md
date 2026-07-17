@@ -48,12 +48,12 @@ T   = compute + mem − γ·min(compute, mem) + split      mem = HBM / (eff · s
 | `α·min(R,W)` | `α = 0.00574 ns/B` — read↔write bus **turnaround** (0 for one-directional traffic) | §2 |
 | n-ary derate | `× (1 + 0.075·(n_ops−1))` — multi-pass pointwise chain (`add3/add4`) | §3 |
 | `spill` | `(A_bytes+B_bytes)·f(area)`, `area=(M/m)·(N/n)`, `f=min(1.5, max(0, 0.45·log₂(area/65536)))` — matmul operand **re-read** when the per-core output tile overflows on-chip capacity | §11 |
-| `split` | `c·max(0, area−a₀)·max(0, log₂(fan_long/8))`, `area=(M/m)·(N/n)`, `a₀=131072`, `c=2.6e−3 µs/elem`, `fan_long = m if M≥N else n` — extra matmul operand re-read when a **large** per-core tile is **also** broadcast to a big cohort (long output dim fanned past 8 cores); 0 for balanced splits or small tiles | §12a |
+| `split` | `max(0,area−a₀)·[c_L·max(0,log₂(fan_long/8)) + c_S·max(0,log₂(fan_short/16))]`, `area=(M/m)·(N/n)`, `a₀=131072`, `c_L=2.6e−3`, `c_S=2.9e−3 µs/elem` — extra matmul operand re-read when a **large** per-core tile is **also** split many ways; two-sided (splitting the longer output dim bites sooner than the shorter); 0 for balanced or small tiles | §12 |
 | `write_extra` | `2.148e-7·ROWS^1.6·COLS^2.2` (÷BW) — `write` outer-product, empirical | §4 |
 | `compute` | `MACs / cores / (peak · pt_eff)`, `peak = 1140 MAC/ns/core`; 0 for non-matmul | §9 |
-| `pt_eff` (derates **compute**) | systolic-array fill: `min(1,(rows/64)^0.35)` (`rows` = per-core rows); a coarse-tiled matmul's extra per-tile underfill is flagged, not modeled (`pt_eff=1`) | §9, §15 |
-| `eff` (derates **memory**) | `min(0.95, (h/13)^0.68)`, `h = per-core tile height = ROWS/(cores·tiles)` — streaming-pipeline fill, coarse memory-bound | §15 |
-| `s_lx` (derates **memory**) | `min(1, (512KB/ws)^0.15)` for `ws > 512KB` (coarse-tiled), `ws = 2·(rows/core)·COLS·2B` — per-core working set overflows LX; spilled traffic runs slower | §14 |
+| `pt_eff` (derates **compute**) | systolic-array fill: `min(1,(rows/64)^0.35)` (`rows` = per-core rows); a coarse-tiled matmul's extra per-tile underfill is flagged, not modeled (`pt_eff=1`) | §9, §16 |
+| `eff` (derates **memory**) | `min(0.95, (h/13)^0.68)`, `h = per-core tile height = ROWS/(cores·tiles)` — streaming-pipeline fill, coarse memory-bound | §16 |
+| `s_lx` (derates **memory**) | `min(1, (512KB/ws)^0.15)` for `ws > 512KB` (coarse-tiled), `ws = 2·(rows/core)·COLS·2B` — per-core working set overflows LX; spilled traffic runs slower | §15 |
 | `γ·min(compute,HBM)` | `γ = 0.46` — compute/HBM **overlap** (0 when `compute=0`) | §10 |
 
 Per-op `BW_eff`: `restickify` (transpose) `=116`; `stick_scatter` (cat0) shape-dependent
@@ -603,7 +603,7 @@ the additive model (`γ=0`, open) over-predicts more and more as memory grows, u
 (+30 %), `2048×2048×1024` (+26 %), and non-pow2 `2048×2048×4608` (−17 %). These are the same
 thin-operand shapes flagged in §8 — the error there is the memory/tile term, not overlap, so we
 resolve them in **§12** rather than distort γ to chase them. (Two families are filtered out of
-this figure entirely: lopsided splits `1×32`/`16×2` (−40…−47 % before the §12a split term) and
+this figure entirely: lopsided splits `1×32`/`16×2` (−40…−47 % before the §12 split term) and
 tiny-`K` matmuls (near-pure memory) — both §12's.)
 
 ### §11. A residual: when the operand tile overflows on-chip memory
@@ -611,9 +611,10 @@ tiny-`K` matmuls (near-pure memory) — both §12's.)
 **Observation.** With the memory (§8), compute (§9), and overlap (§10) terms in place — the full
 base model, minus this section's term — balanced high-core matmuls still leave a residual that
 **grows once the per-core output tile overflows on-chip capacity**. That tile is the accumulator
-of area `(M/m)·(N/n)`; the figure grows it with two `4×8`-split sweeps (one raises `M/m` at
-`N/n = 256`, the other raises `N/n` at `M/m = 512`) and plots both against the tile **size in
-bytes**. The residual (measured − base model) sits near zero while the tile fits and climbs
+of area `(M/m)·(N/n)`; the figure grows it with two `4×8`-split sweeps — the balanced splits a real
+planner emits — (one raises `M/m` at `N/n = 256`, the other raises `N/n` at `M/m = 512`) and plots
+both against the tile **size in bytes**. (This section, and its term, are fit on these `4×8` splits;
+how *lopsidedly* the tile is split is a separate effect, taken up in §12.) The residual (measured − base model) sits near zero while the tile fits and climbs
 steeply once the size passes ~128 KB/core (64K fp16 elements), reaching +277 µs (+17 %) at the
 largest tile. That is the signature of running out of on-chip room.
 
@@ -629,86 +630,90 @@ spill = (|A| + |B|)·f(area),   area = (M/m)·(N/n),
 f(area) = min(1.50, max(0, 0.45·log₂(area / 65536)))
 ```
 
-charged at the read rate. The knee at ~128 KB/core is the on-chip accumulator capacity — a
-single, physical threshold on the tile *as a whole*, not a separate limit per edge.
+where `|A|` and `|B|` are the two operand byte sizes the extractor records — `|A|` the `[M,K]`
+activation, `|B|` the `[K,N]` weight — so `(|A|+|B|)` is the traffic for one full re-stream of both,
 
-**Residuals.** Two small ones remain: at equal area an elongated tile costs a little more than a
-square one (a shape dependence the area-only form omits), and very *small* tiles are slightly
-*over*-predicted by the opposite-sign under-fill/overhead floor of §12. Neither matters much for
-what this term is *for*: we only need a large tile to carry a **reasonable, growing** cost so the
-compiler is steered away from over-large per-core tiles — which the spill term now does.
+charged at the read rate. The knee at ~128 KB/core is the PE-array **accumulator** capacity, *not*
+the LX scratchpad — the IR dumps show matmuls use **zero LX** (`lx = 0 B` on all 316 runs), so the
+resource that overflows is on the compute side and the extra operand traffic is the re-stream it
+forces. It is one threshold on the tile *as a whole*, not a separate limit per edge. (Because the
+trigger is compute-side, charging the re-stream to HBM vs compute is partly interchangeable through
+the §10 overlap; the current data do not separate them, and the HBM form fits the balanced envelope.)
 
-### §12. Beyond the planner-realistic envelope
+**Residuals.** A few remain: at equal area an elongated tile costs a little more than a square one
+(a shape dependence the area-only form omits); very *small* tiles are slightly *over*-predicted by
+the opposite-sign small-tile floor; and because `f` saturates at 1.5, the very largest balanced
+tiles (e.g. `8×4` past ~256 KB) are *under*-predicted by ~15 %. None matters much for what this term
+is *for*: steering the compiler away from over-large per-core tiles.
 
-The base model (§8–§11) predicts **planner-realistic** matmuls — those a real compiler would
-emit (K kept whole, each fanout ≤ 8, non-tiny) — to **RMS ~5.8 %** (mean ≈ 0). Two configurations
-depart from it. §12a adds a term for lopsided splits; §12b remains flagged.
+### §12. Split shape: a large per-core tile fanned across many cores
 
-#### §12a. Split shape: a large per-core tile that is also widely broadcast
+**Observation.** With the memory (§8), compute (§9), overlap (§10) and spill (§11) terms in place,
+forced **lopsided** splits still under-predict badly: at a fixed problem on 32 cores, `8×4` is basically accurate, but `16×2` misses
+by ~40 %, `32×1` by ~61 %. The per-core output-tile *area* `(M/m)·(N/n)` is identical for every split
+at fixed cores, so §11's area spill is the same for all of them and cannot see this — the miss
+depends on **how** the output is split, not just the tile size.
 
-**Observation.** Pushing one fanout past 8, at a fixed problem and fixed core count, leaves the
-base model badly short: a `16×2` split under-predicts by ~40 %, `32×1` by ~61 %. Crucially the
-per-core tile *area* `(M/m)·(N/n)` is identical for every split at fixed cores, so the area-based
-spill of §11 is the same for all of them and cannot see this — the miss depends on **how** the
-output is split, not just the tile size.
 
-**What it is not.** The obvious guess — that a shared operand is re-read once per core it is
-broadcast to, so the cost grows with the fanout — does not survive controls. Three facts rule it
-out: (i) a large per-core tile at *low* fanout is predicted accurately (a single unsplit `M`-strip
-up to 8192 rows is within a few percent), so fanout alone is not the driver; (ii) the miss does not
-scale with the broadcast operand's size — two shapes with identical weight bytes and identical
-fanout differ ~250× in error; (iii) *both* split extremes hurt, not one operand. The miss tracks
-the per-core tile and the fanout **together**.
+**The data.** The figure plots the base-model residual (measured − model *without* this term) against
+per-core tile size. **Balanced splits stay flat near zero at any tile size**; splitting either
+dimension past its knee climbs once the tile passes the ~256 KB gate, and the two-sided term (dashed)
+tracks each climb — the long-dim splits (steeper) and the short-dim splits (lighter, higher knee).
 
-**What it is.** Holding the tile fixed while sweeping the fanout, and vice versa, isolates an
-**interaction**: the cost appears only when a per-core tile is *both* large *and* broadcast to a
-cohort past ~8 cores. It is also **size-gated** — it does not appear until the tile is about twice
-the §11 capacity knee, so a *small* lopsided tile (e.g. a small batched matmul split `16×2`) stays
-accurate. Transposing the split (`m ↔ n`) shows the cost follows the **longer** problem dimension —
-splitting the long axis into many pieces is what hurts. Physically, a large tile re-fed to many
-cohort cores re-streams its operands from HBM beyond what the area spill already counts.
+![§12 lopsided-split residual is ~0 for balanced splits at any tile size, and climbs with tile size once past the ~256 KB gate; the two-sided split term (dashed) tracks both long-dim and short-dim splits](figures/fig12_matmul_split.png)
 
-**Model.** An additive term, charged **after** the compute/memory overlap (it is not hidden under
-compute — it is why the lopsided kernel runs long):
+**Hypothesis.** Splitting an output dimension across many cores makes them re-read the operand they
+share: the `m` cores that split `M` all need the same weight columns; the `n` cores that split `N`
+all need the same activation rows. Past a cohort of ~8 cores the shared operand is re-fetched from
+HBM rather than broadcast once. This bites only when the tile is **large** (past §11's capacity) *and*
+a dimension is split many ways — and it is **asymmetric**: splitting the **longer** output dimension
+into many thin slices is penalized sooner and harder than splitting the **shorter** one. Concretely
+at `M ≫ N`, a `32×1` split (all 32 cores on the long `M`) costs about **twice** a `1×32` (all 32 on
+the short `N`) at the same tile area — a difference a single symmetric term cannot represent.
+
+**Model.** Two additive terms — one for how far the *longer* output dimension is split, one for the
+*shorter* — charged **after** the compute/memory overlap (they are not hidden under compute; they are
+why the lopsided kernel runs long):
 
 ```text
-split = c · max(0, area − a₀) · max(0, log₂(fan_long / 8))
-area = (M/m)·(N/n),   fan_long = m if M ≥ N else n,   a₀ = 131072 elems,   c = 2.6e−3 µs/elem
+split = c_L · max(0, area − a₀) · max(0, log₂(fan_long / 8))
+      + c_S · max(0, area − a₀) · max(0, log₂(fan_short / 16))
+area = (M/m)·(N/n);   fan_long, fan_short = the split counts of the longer, shorter output dim
+a₀ = 131072 elems (≈ 256 KB);   c_L = 2.6e−3,   c_S = 2.9e−3 µs/elem
 ```
 
-`fan_long` is the fanout of the longer output dimension; the `/8` knee is the cohort size below
-which the broadcast is free; `a₀` (twice the §11 capacity knee) is the tile size below which the
-interaction does not bite. The term is **exactly 0 for balanced splits and for small tiles**, so
-the base envelope (§8–§11) is unchanged.
+`fan_long` is how many cores the longer output dimension is split into, `fan_short` the shorter.
+The long-dim knee `/8` is the compiler's own cohort limit (`_COHORT_LIMIT` in its work-division cost
+model); the short-dim knee `/16` is empirical — the shorter dimension tolerates a wider split before
+it costs. `a₀` (twice §11's knee) gates out small tiles. Both terms are **exactly 0 for balanced
+splits and for small tiles**, so §8–§11 is unchanged.
 
-**Residuals.** Fit on a forced-split sweep and checked on held-out shapes, the term closes the
-split a real compiler *does* emit — a batched matmul split `16×2` on a tall (`M ≥ N`) problem goes
-from **−40 % to a few percent**, with **no change to balanced or small kernels**. Two cases stay
-honestly out of reach: fanning the *short* dimension into slivers (`1×32` on a small `N`) is a
-separate small-tile effect it does not claim, and a `16×2` split on a *wide* (`N > M`) problem —
-where the heavily-split axis is the short one — is left near its original error. Both are narrow;
-the term is aimed at the common tall-problem split, which it now predicts to a few percent.
 
-#### §12b. Tiny / thin matmuls
+**After the term.** On the lopsided rows the error drops from **RMS 36 % → 15 %** (mean −29 → −2 %),
+and both extremes are pulled in — the tall `16×2` a real compiler emits (long-dim term), and the
+forced `32×1` / `1×32` ends (long- and short-dim terms) — with balanced and small kernels untouched:
 
-Sub-10-µs kernels sit on a fixed per-kernel overhead the model zeroes, **under-predicting by up to
-−34 %**; a few thin, memory-heavy shapes (small `M`/`N`) *over*-predict by up to **+48 %** (the
-small-tile / underfill residual of §10–§11). Both are bounded and off the real-workload path.
-**Question for review:** do these edge shapes warrant a deeper dive, or is it fine to leave them
-flagged?
+| M×K×N | split | base err | with §12 term |
+|---|---|---:|---:|
+| 2048×2048×2048 | `16×2` (small tile) | −1 % | −1 % |
+| 4096×2048×2048 | `16×2` | −37 % | −8 % |
+| 8192×2048×2048 | `16×2` | −39 % | **−1 %** |
+| 8192×2048×2048 | `32×1` (split the long `M` ×32) | −61 % | −11 % |
+| 8192×2048×2048 | `1×32` (split the short `N` ×32) | −44 % | −4 % |
+| 2048×2048×8192 | `1×32` (split the long `N` ×32) | −67 % | −24 % |
 
-**Part III accuracy — matmul, by regime.** The planner-realistic bulk is within a few percent;
-the out-of-regime rows carry the large, mechanism-named errors above.
+What remains is the most extreme wide-problem case (splitting a very long dimension ×32, last row):
+better than before but still under — the deep tail the two knees do not fully reach.
+
+**Part III accuracy — matmul, by regime.** The planner-realistic bulk is within a few percent; the
+lopsided rows are now modeled by §12; tiny / thin matmuls (sub-10-µs kernels on a fixed per-kernel
+overhead, or thin memory-heavy shapes) remain a bounded, flagged residual off the real-workload path.
 
 | regime | n | RMS % | mean % | err range | status |
 |---|---:|---:|---:|---|---|
 | planner-realistic (K whole, fanout ≤ 8, non-tiny) | 35 | **5.8** | +3.1 | −7…+19 | modeled |
-| lopsided split (fanout > 8)† | 48 | 20.5 | −7.2 | −45…+42 | §12a: **now modeled** (split re-read); tall `16×2` → a few %, short-dim slivers & wide-`16×2` remain |
-| tiny / thin (K ≤ 128 or min(M,N) ≤ 512) | 17 | 22.0 | +4.1 | −34…+48 | §12b: fixed-overhead floor + thin-shape residual |
-
-† From the expanded forced-split sweep (larger than the original curated set). Before the §12a
-term this regime was ~36 % RMS / −29 % mean; the term halves it and drives the planner-emitted
-tall `16×2` from −40 % to a few percent, with balanced and small kernels unchanged.
+| lopsided split (fanout > 8) | 48 | **15.0** | −2.4 | −39…+46 | §12: two-sided split term (base was 36 % / −29 %); both `16×2` and `32×1`/`1×32` pulled in; only the most extreme wide-problem ×32 splits still trail |
+| tiny / thin (K ≤ 128 or min(M,N) ≤ 512) | 17 | 22.0 | +4.1 | −34…+48 | flagged: fixed-overhead floor + thin-shape residual |
 
 Representative planner-realistic points (the regime the model is built for):
 
@@ -766,11 +771,11 @@ Representative planner-realistic points (the regime the model is built for):
 | `extreme` | 64×4096×4096 | 1×32×1 | 276.4 | 249.6 | -9.7 |
 | `extreme` | 2048×2048×2048 | 2×16×1 | 399.4 | 393.4 | -1.5 |
 | `extreme` | 4096×2048×2048 | 2×16×1 | 811.1 | 781.2 | -3.7 |
-| `extreme` | 4096×2048×2048 | 32×1×1 | 1202.7 | 781.2 | -35.0 |
-| `extreme` | 4096×2048×2048 | 16×2×1 | 1222.8 | 781.2 | -36.1 |
-| `extreme` | 4096×2048×2048 | 1×32×1 | 1381.8 | 781.2 | -43.5 |
+| `extreme` | 4096×2048×2048 | 32×1×1 | 1202.7 | 1468.0 | +22.1 |
+| `extreme` | 4096×2048×2048 | 16×2×1 | 1222.8 | 1124.6 | -8.0 |
+| `extreme` | 4096×2048×2048 | 1×32×1 | 1381.8 | 1158.7 | -16.1 |
 | `extreme` | 8192×2048×2048 | 2×16×1 | 1632.6 | 1582.0 | -3.1 |
-| `extreme` | 8192×2048×2048 | 16×2×1 | 2632.8 | 1582.0 | -39.9 |
+| `extreme` | 8192×2048×2048 | 16×2×1 | 2632.8 | 2612.2 | -0.8 |
 | `tiny` | 512×64×512 | 4×8×1 | 5.3 | 5.4 | +2.2 |
 | `tiny` | 512×64×512 | 4×4×1 | 7.5 | 5.6 | -24.7 |
 | `tiny` | 512×64×512 | 2×4×1 | 8.4 | 6.1 | -27.6 |
@@ -791,6 +796,112 @@ Representative planner-realistic points (the regime the model is built for):
 
 ---
 
+### §13. Batched matmul: serial batches run below the single-matmul rate
+
+**Observation.** In batched matmul the compiler **never splits the batch across cores** — it keeps every batch on the same
+cores and iterates — so the model charges `B ×` a single matmul's compute and HBM. Measured, it runs
+much slower. At a balanced split the kernel is a **shape-dependent 2–4.6× the prediction**, and the
+factor is **flat in `B`** once `B ≥ 4`: a genuine per-batch floor, not a one-off start-up cost.
+(`B = 1` is excluded from the fit — with a single batch the compiler collapses the batch dimension
+into a different plan: its `op_it_space_splits` has three dims where `B ≥ 2` has four.)
+
+**The data.** The figure plots measured / predicted against `B` for three shapes. The **full bmm**
+(solid) — a true `[B,M,K] @ [B,K,N]` with a distinct weight per batch — plateaus at a shape-dependent
+**2–4.6×** for `B ≥ 4`. The **shared-weight** variant (dashed) is the `3d2d` case `[B,M,K] @ [K,N]`,
+a projection: one 2-D weight applied to every batch, read **once** instead of once per batch. It
+plateaus far lower (~1.3–2×). Both are flat in `B` — the cost is `B ×` a fixed per-batch penalty.
+As an anchor, a **plain 2-D matmul** of one batch's shape (the star at `B = 1`) sits at ~1×: the model
+is right for a single matmul, so the entire penalty comes from batching, not from the shape.
+
+![§13 batched-matmul measured/predicted vs B: the full bmm (solid) plateaus at 2–4.6×, the shared-weight 3d2d projection (dashed) far lower, both flat in B; a plain 2-D matmul (star) sits at ~1×](figures/fig13_matmul_bmm.png)
+
+**The residual is over and above the `B ×` accounting — on both sides.** The extractor already counts
+`B ×` the HBM bytes (the full bmm's weight `B ×`, the projection's once) **and** charges `B ×` the
+compute; the prediction scales linearly with `B` (verified: it doubles per `B`-doubling). So the miss
+is **not a byte or a MAC under-count; it is a rate**. It also **grows with the per-batch size**: at
+fixed `B = 8` it runs 2.7× at `K = 256` up to 4.4× at `K = 4096` (and similarly with `M`, `N`) — the
+more traffic per batch, the more of it runs at the low rate.
+
+**The shared-weight control pins the rate to the weight re-read, not compute.** At *equal MACs*, the
+full bmm and the projection differ only in weight traffic — the full re-reads it every batch, the
+projection once. Their per-batch excess differs ~10× (~350 µs vs ~29 µs at a mid shape); a pure
+compute-rate cause would give the *same* excess and does not.
+
+![§13 shared-weight control: full bmm vs 3d2d projection at equal MACs (matched pairs joined by a vertical line); the full bmm's per-batch excess is ~10× the projection's](figures/fig13b_matmul_bmm_control.png)
+
+**A two-rate model.** Charge the (correctly counted) per-batch traffic at **two** effective rates: the
+streamed part — inputs, output, spill, and the weight's *first* read — at `BW_stream ≈ 64 GB/s`, and
+the **repeated weight re-read** of `(B−1)·K·N·2` bytes — present for the full bmm, zero for the
+projection — at a much lower `BW_reread ≈ 16 GB/s`:
+
+```text
+mem = (streamed − reread)/BW_stream + reread/BW_reread     reread = (B−1)·K·N·2  (full bmm; 0 for 3d2d)
+```
+
+Serial batches drain the pipeline with no cross-batch locality, so even the streamed rate sits below
+the ~150 GB/s single-matmul peak; the same weight re-read `B−1` times has the worst locality of all and
+runs slower still. Applied to the memory half of the prediction (these shapes are ~half bandwidth,
+~half compute), it cuts the mean error on the batched rows from **~68 % to ~36 %** (projection ~27 %,
+full ~39 %). A single bandwidth cannot fit both — the full bmm needs a much lower rate than the
+projection — which is the two-rate model's point. The remaining ~36 % is honest residual: `BW_stream`
+and `BW_reread` are constants, yet the implied rates still drift ~2× with shape, so a **shape-dependent
+rate is the open item**, and the term is not yet in the model (it needs the extractor to expose the
+per-batch re-read bytes).
+
+Two interactions are recorded so they are not later double-counted. A **lopsided** bmm split still
+pays §12 on top of the floor, so a short-dim-fanned bmm is worse again (up to ~15×). And **forcing the
+batch across cores** — which the planner never does — is catastrophic (~11× for the full bmm), because
+every core then reloads a full weight per batch; it is a guard case, not something to model.
+
+**Every batched-matmul data point** (balanced `4×8` per-batch split; `err %` is the **shipped** model,
+which has no bmm term — this is the gap the two-rate model above closes to ~36 %). `err = (pred − meas)/meas`:
+
+| path | M×K×N | B | meas µs | pred µs | err % |
+|---|---|---:|---:|---:|---:|
+| full | 512×2048×512 | 2 | 267.9 | 84.8 | -68.3 |
+| full | 512×2048×512 | 4 | 351.2 | 169.7 | -51.7 |
+| full | 512×2048×512 | 8 | 938.8 | 339.3 | -63.9 |
+| full | 512×2048×512 | 16 | 1868.3 | 678.6 | -63.7 |
+| full | 512×2048×512 | 32 | 4002.2 | 1357.2 | -66.1 |
+| full | 512×2048×1024 | 8 | 1736.3 | 566.8 | -67.4 |
+| full | 1024×256×1024 | 8 | 658.9 | 247.7 | -62.4 |
+| full | 1024×512×1024 | 4 | 557.5 | 191.8 | -65.6 |
+| full | 1024×512×1024 | 8 | 1105.9 | 383.6 | -65.3 |
+| full | 1024×1024×1024 | 2 | 252.3 | 139.7 | -44.6 |
+| full | 1024×1024×1024 | 4 | 969.2 | 279.5 | -71.2 |
+| full | 1024×1024×1024 | 8 | 1980.1 | 559.0 | -71.8 |
+| full | 1024×1024×1024 | 16 | 3842.5 | 1118.0 | -70.9 |
+| full | 1024×2048×512 | 8 | 1833.4 | 566.8 | -69.1 |
+| full | 1024×2048×1024 | 2 | 470.2 | 227.5 | -51.6 |
+| full | 1024×2048×1024 | 4 | 1843.5 | 454.9 | -75.3 |
+| full | 1024×2048×1024 | 8 | 3666.5 | 909.8 | -75.2 |
+| full | 1024×2048×1024 | 16 | 7340.0 | 1819.7 | -75.2 |
+| full | 1024×2048×2048 | 4 | 3705.7 | 798.0 | -78.5 |
+| full | 1024×2048×2048 | 8 | 7244.9 | 1596.0 | -78.0 |
+| full | 1024×4096×1024 | 4 | 3523.0 | 805.8 | -77.1 |
+| full | 1024×4096×1024 | 8 | 7120.7 | 1611.5 | -77.4 |
+| full | 1024×8192×1024 | 4 | 6974.5 | 1507.5 | -78.4 |
+| full | 2048×2048×1024 | 2 | 936.6 | 399.0 | -57.4 |
+| full | 2048×2048×1024 | 4 | 3702.6 | 798.0 | -78.4 |
+| full | 2048×2048×1024 | 8 | 7437.9 | 1596.0 | -78.5 |
+| full | 2048×2048×2048 | 2 | 2028.7 | 736.5 | -63.7 |
+| 3d2d | 1024×1024×1024 | 2 | 162.9 | 125.8 | -22.8 |
+| 3d2d | 1024×1024×1024 | 4 | 286.9 | 237.6 | -17.2 |
+| 3d2d | 1024×1024×1024 | 8 | 769.6 | 461.1 | -40.1 |
+| 3d2d | 1024×1024×1024 | 16 | 1587.6 | 908.3 | -42.8 |
+| 3d2d | 1024×2048×1024 | 2 | 279.4 | 199.5 | -28.6 |
+| 3d2d | 1024×2048×1024 | 4 | 486.7 | 371.0 | -23.8 |
+| 3d2d | 1024×2048×1024 | 8 | 1396.9 | 719.2 | -48.5 |
+| 3d2d | 1024×2048×1024 | 16 | 2755.4 | 1423.4 | -48.3 |
+| 3d2d | 2048×2048×1024 | 2 | 548.8 | 371.0 | -32.4 |
+| 3d2d | 2048×2048×1024 | 4 | 999.9 | 719.2 | -28.1 |
+| 3d2d | 2048×2048×1024 | 8 | 2706.4 | 1423.4 | -47.4 |
+
+Mean shipped-model error: **full −68 %** (n = 27), **3d2d −35 %** (n = 11) — the full bmm's extra
+weight re-read is the gap between them, and the two-rate model closes both to ~36 %.
+
+---
+
 ## Part IV — Coarse tiling: fitting intermediates in on-chip memory
 
 A *coarse-tiled* program fuses a chain of ops into **one** kernel and tiles a dimension so that,
@@ -799,7 +910,7 @@ instead of off-chip memory (HBM). Two examples: `softmax(x)` (the chain `max →
 div`) and a tiled `a @ b`. This part shows the cost of such a kernel needs **no new form** — it
 is the Parts I–III model applied to a byte count that depends on where each tensor lives.
 
-### §13. The whole model is one question: which tensors are in HBM, which in LX?
+### §14. The whole model is one question: which tensors are in HBM, which in LX?
 
 The accelerator has two memories: **HBM** (off-chip — the bandwidth every Part so far has
 modeled) and **LX** (a small on-chip scratchpad). In the traffic model, an LX-resident tensor is
@@ -828,10 +939,10 @@ HBM (2 passes). The byte-counting model follows the drop:
 | 16 | LX | 2.0 | 2649 | 2695 | +2 |
 | 32 | LX | 2.0 | 2683 | 2695 | +0 |
 
-(The `tiles=2` row still carries the deepest residual, and the `§14` bandwidth derate is what
+(The `tiles=2` row still carries the deepest residual, and the `§15` bandwidth derate is what
 lifts its prediction from the old −40 % toward −18 %.)
 
-### §14. The LX-spill boundary: spilled traffic runs slower than peak
+### §15. The LX-spill boundary: spilled traffic runs slower than peak
 
 **Observation.** The byte count is accurate at both ends — fully untiled (all intermediates in
 HBM, ~7 passes) and finely tiled (all in LX, 2 passes) — but **under-predicts by up to 40 % in
@@ -845,7 +956,7 @@ set** — the live intermediate bytes each core holds, `≈ 2 × (rows/core) × 
 | ~1.0 MB | ~90 GB/s | −5…−13 | over capacity — mild |
 | ≤ 0.5 MB | ~100 GB/s | −7…+4 | fits — model correct |
 
-![§14 softmax prediction error collapses onto the per-core working set; spills past ~512 KB/core](figures/fig12_coarse_spill.png)
+![§15 softmax prediction error collapses onto the per-core working set; spills past ~512 KB/core](figures/fig12_coarse_spill.png)
 
 **It is a rate effect, not a byte miss.** The tempting story is that the spilled intermediates go
 uncounted. They do not: at the spilling end the extractor already tags them **HBM** and counts
@@ -875,16 +986,16 @@ from −40 % to −18 %. It is calibrated on softmax and gated to non-matmul coa
 residual −18 % at the deepest overflow (8× capacity) is the one point the single exponent
 under-derates.
 
-### §15. Underfill: a short per-core tile runs the pipeline below peak — the `eff` term
+### §16. Underfill: a short per-core tile runs the pipeline below peak — the `eff` term
 
-**Observation.** Once the intermediates fit in LX (§14), a coarse-tiled kernel's speed still
+**Observation.** Once the intermediates fit in LX (§15), a coarse-tiled kernel's speed still
 depends on the **per-core tile height** — the rows each core streams per tile,
 `h = ROWS / (cores · tiles)`: with too few rows the **effective bandwidth drops**. Sweeping the
 tile count on softmax (isolating the LX-fitting points), the effective bandwidth climbs from
 ~48 GB/s at a 2-row tile (`h = 2`) to a ~150 GB/s plateau by `h ≈ 16`, then mildly declines
 (figure).
 
-![§15 the coarse underfill: softmax effective BW climbs with the per-core tile height, plateaus at h≈16](figures/fig13_coarse_eff.png)
+![§16 the coarse underfill: softmax effective BW climbs with the per-core tile height, plateaus at h≈16](figures/fig13_coarse_eff.png)
 
 **Model (calibrated).** A pipeline-fill efficiency `eff ≤ 1` multiplies the memory term, keyed on
 the per-core tile height `h = ROWS / (cores · tiles)`:
@@ -896,7 +1007,7 @@ eff = min(0.95,  (h / 13)^0.68)          memory term = (R + W) / BW_eff / eff
 It plateaus at 0.95 by `h ≈ 16` and derates below (≈0.45 at `h = 4`, ≈0.28 at `h = 2`). A
 cross-`COLS` control (same `h`, double the tile bytes → same per-byte cost) confirmed it keys
 on **rows (`h`), not tile bytes**. **On the softmax regime where the intermediates fit LX, this
-gives RMS 5.9 %** (mean −1.2 %, over 45 points) — the coarse-tiling model is accurate once §14's
+gives RMS 5.9 %** (mean −1.2 %, over 45 points) — the coarse-tiling model is accurate once §15's
 spill is set aside.
 
 **Two residuals, both left unmodeled.** (1) Above `h ≈ 32` the efficiency mildly declines
@@ -907,55 +1018,171 @@ is thin, non-current, and partly non-monotonic, so it is **flagged, not modeled*
 take `pt_eff = 1`; a clean tile-count sweep is queued). It is the −15 % `matmul_row` row in the
 table below.
 
+### §17. Coarse tiling as a design space: predicting the best tile size
+
+A coarse-tiled program exposes the **tile count** as a free knob: the same computation can be
+tiled many ways, and the fastest choice is not obvious — too few tiles overflow on-chip memory
+(§15), too many underfill the pipeline (§16), and the best sits in between. This is a small
+**design space**, and the reason to have a cost model is to search it without running hardware.
+
+The model does not need to predict absolute time perfectly to be useful here — it needs to predict
+the **relative** ordering of tile choices. On the paths it models (looped softmax, K-tiled matmul)
+it does: the predicted cost-vs-tile-count curve tracks the measured one, including the location of
+the optimum.
+
+![§17 left: predicted (dashed) vs measured (solid) cost normalized to each problem's best, vs tile count — the model tracks the U-shaped curve and its minimum; right: choosing the model's best tile size costs at most ~9 % over the true optimum](figures/fig17_coarse_designspace.png)
+
+Choosing the tile size the model predicts to be fastest lands on the true-optimal tile in **7 of 9**
+swept problems, and within **≤ 9 %** of optimal in the other two (mean regret ~3 %). So for these
+categories the model is already good enough to **drive tile-size selection** — the point of building
+it. The categories it does *not* yet model (the nested and unrolled paths in the table below, some
+of them known extractor/code defects) are exactly the ones where this guarantee does not yet hold,
+and are what we take up next.
+
 ### Part IV data — every coarse-tiling run
 
-Both coarse ops, all current-image runs (`softmax_row_tiling` fits the §13–§15 model; the
-`matmul_row_tiling` rows are the unmodeled tiled-underfill residual just noted):
+All coarse ops we have measured, scored on the current model (rows averaged over repeat `runs`; `err = (pred − meas)/meas`). The K-tiling and looped-softmax paths are modeled to a few percent; the remaining large residuals are **flagged, not yet modeled** — some are known code defects (noted in the status column), which we take up next.
+
+| op | n | RMS % | mean % | status |
+|---|---:|---:|---:|---|
+| `matmul_row_tiling` | 25 | 27 | -18 | per-tile compute underfill not modeled (`pt_eff=1`); grows with tile count |
+| `matmul_k_tiling` | 15 | 7 | -4 | **modeled** (K-tiling, control) |
+| `mm_nested_m_k` | 12 | 44 | -38 | nested compute under-counted (missing `×loop_trip`) — code fix queued |
+| `bmm_k_tiling` | 17 | 63 | -60 | bmm batch floor (§13) + K-tiling; not modeled |
+| `bmm_3d2d_k_tiling` | 6 | 14 | -13 | shared-weight K-tiling; close |
+| `bmm_nested_b_k` | 4 | 65 | +15 | fractional batch-split trpc corrupts mem term — code fix queued |
+| `softmax_row_tiling` | 34 | 20 | -4 | **modeled** (§14–§16); small `COLS≤128` rows underfill (cores=1) |
+| `softmax_noexp_row_tiling` | 3 | 5 | +5 | **modeled** (§14–§16, control) |
+| `softmax_unrolled` | 8 | 91 | -91 | extractor under-counts unrolled loop (cores=1, no `CoarseTileInfo`) |
+
+Per-row detail:
 
 | op | shape | tiles | runs | meas µs | pred µs | err % |
 |---|---|---:|---:|---:|---:|---:|
-| `matmul` | 2048×2048×2048 | 2 | 1 | 341 | 358 | +5 |
-| `matmul` | 2048×2048×2048 | 4 | 1 | 440 | 358 | -19 |
-| `matmul` | 2048×2048×2048 | 8 | 1 | 652 | 358 | -45 |
-| `matmul` | 2048×2048×4096 | 2 | 1 | 752 | 720 | -4 |
-| `matmul` | 2048×2048×4096 | 4 | 1 | 724 | 685 | -5 |
-| `matmul` | 2048×2048×4096 | 8 | 1 | 1123 | 685 | -39 |
-| `matmul` | 4096×2048×2048 | 2 | 1 | 776 | 713 | -8 |
-| `matmul` | 4096×2048×2048 | 4 | 1 | 677 | 685 | +1 |
-| `matmul` | 4096×2048×2048 | 8 | 1 | 872 | 685 | -21 |
-| `softmax` | 2048×2048 | 4 | 1 | 172 | 168 | -2 |
-| `softmax` | 2048×2048 | 8 | 1 | 204 | 223 | +9 |
-| `softmax` | 2048×2048 | 16 | 1 | 323 | 357 | +10 |
-| `softmax` | 2048×2048 | 32 | 1 | 526 | 571 | +9 |
-| `softmax` | 4096×2048 | 4 | 1 | 352 | 337 | -4 |
-| `softmax` | 4096×2048 | 8 | 1 | 359 | 337 | -6 |
-| `softmax` | 4096×2048 | 16 | 1 | 400 | 445 | +11 |
-| `softmax` | 4096×2048 | 32 | 1 | 646 | 713 | +10 |
-| `softmax` | 4096×4096 | 2 | 1 | 711 | 747 | +5 |
-| `softmax` | 4096×4096 | 4 | 1 | 675 | 674 | -0 |
-| `softmax` | 4096×4096 | 8 | 1 | 691 | 674 | -2 |
-| `softmax` | 6144×4096 | 2 | 1 | 1160 | 1192 | +3 |
-| `softmax` | 8192×2048 | 2 | 1 | 762 | 747 | -2 |
-| `softmax` | 8192×2048 | 4 | 2 | 730 | 674 | -8 |
-| `softmax` | 8192×2048 | 8 | 8 | 667 | 674 | +1 |
-| `softmax` | 8192×2048 | 16 | 2 | 679 | 674 | -1 |
-| `softmax` | 8192×2048 | 32 | 1 | 856 | 890 | +4 |
-| `softmax` | 8192×4096 | 2 | 1 | 1574 | 1659 | +5 |
-| `softmax` | 10240×4096 | 2 | 1 | 2020 | 2144 | +6 |
-| `softmax` | 12288×4096 | 2 | 1 | 2487 | 2644 | +6 |
-| `softmax` | 16384×2048 | 1 | 1 | 4956 | 4930 | -1 |
-| `softmax` | 16384×2048 | 2 | 1 | 1653 | 1659 | +0 |
-| `softmax` | 16384×2048 | 4 | 3 | 1541 | 1495 | -3 |
-| `softmax` | 16384×2048 | 8 | 3 | 1444 | 1347 | -7 |
-| `softmax` | 16384×2048 | 16 | 4 | 1340 | 1347 | +1 |
-| `softmax` | 16384×2048 | 32 | 2 | 1384 | 1347 | -3 |
-| `softmax` | 16384×4096 | 1 | 1 | 9927 | 9861 | -1 |
-| `softmax` | 16384×4096 | 2 | 2 | 9735 | 8006 | -18 |
-| `softmax` | 16384×4096 | 4 | 2 | 3143 | 3318 | +6 |
-| `softmax` | 16384×4096 | 8 | 2 | 2867 | 2990 | +4 |
-| `softmax` | 16384×4096 | 16 | 3 | 2649 | 2695 | +2 |
-| `softmax` | 16384×4096 | 32 | 1 | 2683 | 2695 | +0 |
-
+| `matmul_row_tiling` | 2048×2048×2048 | 1 | 1 | 383 | 393 | +3 |
+| `matmul_row_tiling` | 2048×2048×2048 | 2 | 2 | 341 | 358 | +5 |
+| `matmul_row_tiling` | 2048×2048×2048 | 4 | 2 | 438 | 358 | -18 |
+| `matmul_row_tiling` | 2048×2048×2048 | 8 | 2 | 655 | 358 | -45 |
+| `matmul_row_tiling` | 2048×2048×2048 | 16 | 1 | 1004 | 358 | -64 |
+| `matmul_row_tiling` | 2048×2048×4096 | 1 | 1 | 770 | 781 | +1 |
+| `matmul_row_tiling` | 2048×2048×4096 | 2 | 2 | 754 | 720 | -4 |
+| `matmul_row_tiling` | 2048×2048×4096 | 4 | 2 | 727 | 685 | -6 |
+| `matmul_row_tiling` | 2048×2048×4096 | 8 | 2 | 1128 | 685 | -39 |
+| `matmul_row_tiling` | 2048×2048×4096 | 16 | 1 | 1944 | 685 | -65 |
+| `matmul_row_tiling` | 4096×2048×2048 | 1 | 1 | 835 | 781 | -6 |
+| `matmul_row_tiling` | 4096×2048×2048 | 2 | 2 | 781 | 713 | -9 |
+| `matmul_row_tiling` | 4096×2048×2048 | 4 | 2 | 678 | 685 | +1 |
+| `matmul_row_tiling` | 4096×2048×2048 | 8 | 2 | 872 | 685 | -22 |
+| `matmul_row_tiling` | 4096×2048×2048 | 16 | 1 | 1304 | 685 | -47 |
+| `matmul_row_tiling` | 4096×2048×4096 | 1 | 1 | 1576 | 1451 | -8 |
+| `matmul_row_tiling` | 4096×2048×4096 | 2 | 1 | 1538 | 1391 | -10 |
+| `matmul_row_tiling` | 4096×2048×4096 | 4 | 1 | 1514 | 1341 | -11 |
+| `matmul_row_tiling` | 4096×2048×4096 | 8 | 1 | 1455 | 1306 | -10 |
+| `matmul_row_tiling` | 4096×2048×4096 | 16 | 1 | 2248 | 1306 | -42 |
+| `matmul_row_tiling` | 8192×2048×2048 | 1 | 1 | 1636 | 1582 | -3 |
+| `matmul_row_tiling` | 8192×2048×2048 | 2 | 1 | 1681 | 1423 | -15 |
+| `matmul_row_tiling` | 8192×2048×2048 | 4 | 1 | 1588 | 1366 | -14 |
+| `matmul_row_tiling` | 8192×2048×2048 | 8 | 1 | 1360 | 1337 | -2 |
+| `matmul_row_tiling` | 8192×2048×2048 | 16 | 1 | 1744 | 1337 | -23 |
+| `matmul_k_tiling` | 1024×4096×1024 | 1 | 1 | 198 | 201 | +2 |
+| `matmul_k_tiling` | 1024×4096×1024 | 2 | 1 | 357 | 330 | -8 |
+| `matmul_k_tiling` | 1024×4096×1024 | 4 | 1 | 521 | 474 | -9 |
+| `matmul_k_tiling` | 1024×4096×1024 | 8 | 1 | 758 | 786 | +4 |
+| `matmul_k_tiling` | 1024×4096×1024 | 16 | 1 | 1387 | 1422 | +3 |
+| `matmul_k_tiling` | 2048×2048×2048 | 1 | 2 | 387 | 393 | +2 |
+| `matmul_k_tiling` | 2048×2048×2048 | 2 | 2 | 1021 | 950 | -7 |
+| `matmul_k_tiling` | 2048×2048×2048 | 4 | 2 | 1706 | 1546 | -9 |
+| `matmul_k_tiling` | 2048×2048×2048 | 8 | 2 | 2884 | 2804 | -3 |
+| `matmul_k_tiling` | 2048×2048×2048 | 16 | 2 | 5230 | 5352 | +2 |
+| `matmul_k_tiling` | 4096×2048×2048 | 1 | 1 | 840 | 781 | -7 |
+| `matmul_k_tiling` | 4096×2048×2048 | 2 | 1 | 2148 | 1875 | -13 |
+| `matmul_k_tiling` | 4096×2048×2048 | 4 | 1 | 3506 | 3054 | -13 |
+| `matmul_k_tiling` | 4096×2048×2048 | 8 | 1 | 5960 | 5563 | -7 |
+| `matmul_k_tiling` | 4096×2048×2048 | 16 | 1 | 10622 | 10658 | +0 |
+| `mm_nested_m_k` | 2048×2048×2048 | 1 | 2 | 386 | 393 | +2 |
+| `mm_nested_m_k` | 2048×2048×2048 | 2 | 2 | 1103 | 669 | -39 |
+| `mm_nested_m_k` | 2048×2048×2048 | 4 | 2 | 1721 | 1036 | -40 |
+| `mm_nested_m_k` | 2048×2048×2048 | 8 | 2 | 2827 | 1642 | -42 |
+| `mm_nested_m_k` | 2048×2048×4096 | 1 | 1 | 778 | 781 | +0 |
+| `mm_nested_m_k` | 2048×2048×4096 | 2 | 1 | 2355 | 1310 | -44 |
+| `mm_nested_m_k` | 2048×2048×4096 | 4 | 1 | 3649 | 1993 | -45 |
+| `mm_nested_m_k` | 2048×2048×4096 | 8 | 1 | 5907 | 3130 | -47 |
+| `mm_nested_m_k` | 4096×2048×2048 | 1 | 1 | 846 | 781 | -8 |
+| `mm_nested_m_k` | 4096×2048×2048 | 2 | 1 | 2378 | 997 | -58 |
+| `mm_nested_m_k` | 4096×2048×2048 | 4 | 1 | 3752 | 1248 | -67 |
+| `mm_nested_m_k` | 4096×2048×2048 | 8 | 1 | 6060 | 1950 | -68 |
+| `bmm_k_tiling` | 1·1024×2048×1024 | 1 | 1 | 148 | 114 | -23 |
+| `bmm_k_tiling` | 2·1024×2048×1024 | 1 | 1 | 960 | 485 | -50 |
+| `bmm_k_tiling` | 4·256×2048×1024 | 1 | 1 | 453 | 250 | -45 |
+| `bmm_k_tiling` | 4·512×2048×1024 | 1 | 1 | 893 | 429 | -52 |
+| `bmm_k_tiling` | 4·1024×512×1024 | 1 | 1 | 886 | 244 | -72 |
+| `bmm_k_tiling` | 4·1024×1024×1024 | 1 | 1 | 1864 | 427 | -77 |
+| `bmm_k_tiling` | 4·1024×2048×1024 | 1 | 5 | 3795 | 730 | -81 |
+| `bmm_k_tiling` | 4·1024×2048×1024 | 2 | 2 | 4399 | 1084 | -75 |
+| `bmm_k_tiling` | 4·1024×2048×1024 | 4 | 2 | 4953 | 1666 | -66 |
+| `bmm_k_tiling` | 4·1024×2048×1024 | 8 | 2 | 6099 | 2917 | -52 |
+| `bmm_k_tiling` | 4·1024×2048×1024 | 16 | 2 | 8352 | 5463 | -35 |
+| `bmm_k_tiling` | 4·2048×2048×1024 | 1 | 1 | 5880 | 1536 | -74 |
+| `bmm_k_tiling` | 8·1024×64×1024 | 1 | 1 | 300 | 154 | -48 |
+| `bmm_k_tiling` | 8·1024×2048×1024 | 1 | 3 | 7414 | 1189 | -84 |
+| `bmm_k_tiling` | 8·1024×2048×1024 | 2 | 1 | 8698 | 2063 | -76 |
+| `bmm_k_tiling` | 8·1024×2048×1024 | 4 | 1 | 9703 | 3279 | -66 |
+| `bmm_k_tiling` | 8·1024×2048×1024 | 8 | 1 | 11877 | 5808 | -51 |
+| `bmm_3d2d_k_tiling` | 4·1024×2048×1024 | 1 | 2 | 598 | 562 | -6 |
+| `bmm_3d2d_k_tiling` | 4·1024×2048×1024 | 2 | 2 | 1171 | 1000 | -15 |
+| `bmm_3d2d_k_tiling` | 4·1024×2048×1024 | 4 | 2 | 1871 | 1582 | -15 |
+| `bmm_3d2d_k_tiling` | 4·1024×2048×1024 | 8 | 2 | 3285 | 2833 | -14 |
+| `bmm_3d2d_k_tiling` | 4·1024×2048×1024 | 16 | 2 | 6117 | 5379 | -12 |
+| `bmm_3d2d_k_tiling` | 8·1024×2048×1024 | 1 | 1 | 1498 | 1223 | -18 |
+| `bmm_nested_b_k` | 4·1024×2048×1024 | 1 | 2 | 3797 | 627 | -83 |
+| `bmm_nested_b_k` | 4·1024×2048×1024 | 2 | 2 | 4897 | 5240 | +7 |
+| `bmm_nested_b_k` | 4·1024×2048×1024 | 4 | 2 | 5635 | 8360 | +48 |
+| `bmm_nested_b_k` | 4·1024×2048×1024 | 8 | 2 | 7151 | 13376 | +87 |
+| `softmax_row_tiling` | 1024×512 | 8 | 6 | 127 | 26 | -79 |
+| `softmax_row_tiling` | 2048×512 | 16 | 6 | 252 | 52 | -79 |
+| `softmax_row_tiling` | 2048×2048 | 4 | 1 | 172 | 168 | -2 |
+| `softmax_row_tiling` | 2048×2048 | 8 | 1 | 204 | 223 | +9 |
+| `softmax_row_tiling` | 2048×2048 | 16 | 1 | 323 | 357 | +10 |
+| `softmax_row_tiling` | 2048×2048 | 32 | 1 | 526 | 571 | +9 |
+| `softmax_row_tiling` | 4096×2048 | 4 | 1 | 352 | 337 | -4 |
+| `softmax_row_tiling` | 4096×2048 | 8 | 1 | 359 | 337 | -6 |
+| `softmax_row_tiling` | 4096×2048 | 16 | 1 | 400 | 445 | +11 |
+| `softmax_row_tiling` | 4096×2048 | 32 | 1 | 646 | 713 | +10 |
+| `softmax_row_tiling` | 4096×4096 | 2 | 1 | 711 | 747 | +5 |
+| `softmax_row_tiling` | 4096×4096 | 4 | 1 | 675 | 674 | -0 |
+| `softmax_row_tiling` | 4096×4096 | 8 | 1 | 691 | 674 | -2 |
+| `softmax_row_tiling` | 6144×4096 | 2 | 1 | 1160 | 1192 | +3 |
+| `softmax_row_tiling` | 8192×2048 | 2 | 1 | 762 | 747 | -2 |
+| `softmax_row_tiling` | 8192×2048 | 4 | 2 | 730 | 674 | -8 |
+| `softmax_row_tiling` | 8192×2048 | 8 | 8 | 667 | 674 | +1 |
+| `softmax_row_tiling` | 8192×2048 | 16 | 2 | 679 | 674 | -1 |
+| `softmax_row_tiling` | 8192×2048 | 32 | 1 | 856 | 890 | +4 |
+| `softmax_row_tiling` | 8192×4096 | 2 | 1 | 1574 | 1659 | +5 |
+| `softmax_row_tiling` | 10240×4096 | 2 | 1 | 2020 | 2144 | +6 |
+| `softmax_row_tiling` | 12288×4096 | 2 | 1 | 2487 | 2644 | +6 |
+| `softmax_row_tiling` | 16384×2048 | 1 | 1 | 4956 | 4930 | -1 |
+| `softmax_row_tiling` | 16384×2048 | 2 | 1 | 1653 | 1659 | +0 |
+| `softmax_row_tiling` | 16384×2048 | 4 | 3 | 1541 | 1495 | -3 |
+| `softmax_row_tiling` | 16384×2048 | 8 | 3 | 1444 | 1347 | -7 |
+| `softmax_row_tiling` | 16384×2048 | 16 | 4 | 1340 | 1347 | +1 |
+| `softmax_row_tiling` | 16384×2048 | 32 | 2 | 1384 | 1347 | -3 |
+| `softmax_row_tiling` | 16384×4096 | 1 | 1 | 9927 | 9861 | -1 |
+| `softmax_row_tiling` | 16384×4096 | 2 | 2 | 9735 | 8006 | -18 |
+| `softmax_row_tiling` | 16384×4096 | 4 | 2 | 3143 | 3318 | +6 |
+| `softmax_row_tiling` | 16384×4096 | 8 | 2 | 2867 | 2990 | +4 |
+| `softmax_row_tiling` | 16384×4096 | 16 | 3 | 2649 | 2695 | +2 |
+| `softmax_row_tiling` | 16384×4096 | 32 | 1 | 2683 | 2695 | +0 |
+| `softmax_noexp_row_tiling` | 8192×2048 | 8 | 1 | 641 | 674 | +5 |
+| `softmax_noexp_row_tiling` | 16384×2048 | 16 | 1 | 1284 | 1347 | +5 |
+| `softmax_noexp_row_tiling` | 16384×4096 | 16 | 1 | 2545 | 2695 | +6 |
+| `softmax_unrolled` | 1024×512 | 1 | 1 | 288 | 23 | -92 |
+| `softmax_unrolled` | 1024×512 | 4 | 1 | 294 | 21 | -93 |
+| `softmax_unrolled` | 1024×512 | 8 | 1 | 301 | 21 | -93 |
+| `softmax_unrolled` | 1024×512 | 16 | 1 | 339 | 21 | -94 |
+| `softmax_unrolled` | 2048×512 | 1 | 1 | 676 | 154 | -77 |
+| `softmax_unrolled` | 2048×512 | 8 | 1 | 584 | 42 | -93 |
+| `softmax_unrolled` | 2048×512 | 16 | 1 | 596 | 42 | -93 |
+| `softmax_unrolled` | 2048×512 | 32 | 1 | 675 | 42 | -94 |
 ---
 
 ### Appendix — reproducibility

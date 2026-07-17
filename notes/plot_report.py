@@ -727,6 +727,207 @@ def fig_matmul_spill(_recs):
     _save(fig, "fig11_matmul_spill")
 
 
+def fig_matmul_split(_recs):
+    # THE OBSERVATION (§12): with the split term OFF, the base model leaves a residual on
+    # LOPSIDED matmul splits (from the forced-split sweep) that grows with the per-core tile
+    # SIZE -- but ONLY when the long output dimension is fanned across more than 8 cores.
+    # Points are colored by fan_long (m if M>=N else n): fanout<=8 stays flat near 0 at ANY
+    # tile size; fanout=16 and 32 climb once the tile passes the ~256 KB size gate. Dashed =
+    # the modeled split term, which tracks each climb. k=1, non-tiny rows only.
+    cm = _cost_model()
+    p0 = cm.CostParams(mm_split_reread_us_per_elem=0.0)  # base model, split term OFF
+    a0_bytes = cm.CostParams().mm_split_area0 * 2  # elems -> bytes (fp16)
+    groups = {"bal": [], "long16": [], "long32": [], "short": []}
+    for r in _load(current_only=False):
+        if r.get("op") != "mmwd" or not r.get("feats"):
+            continue
+        s = r.get("split_forced") or {}
+        if s.get("k", 1) != 1:
+            continue
+        M, N, K = r.get("M"), r.get("N"), r.get("K")
+        if None in (M, N, K) or min(M, N) < 512 or K < 256:
+            continue
+        m, n = s.get("m", 1), s.get("n", 1)
+        if m == 1 and n == 1:  # unsplit (cores=1): a cores->BW effect, NOT a split -- exclude
+            continue
+        fan_long, mx = (m if M >= N else n), max(m, n)
+        if mx <= 8:
+            g = "bal"
+        elif fan_long >= 32:
+            g = "long32"
+        elif fan_long >= 16:
+            g = "long16"
+        else:
+            g = "short"  # a fanout > 8 but on the SHORT dim -> deliberately unmodeled
+        feats = r["feats"]
+        feats = feats if isinstance(feats, list) else json.loads(feats)
+        ops = cm.ops_from_json(json.dumps(feats))
+        mm = next(o for o in ops if getattr(o, "is_matmul", False))
+        area_bytes = mm.matmul_rows_per_core * mm.matmul_cols_per_core * 2
+        base = cm.predict_ops(ops, p0) / 1e3
+        groups[g].append(
+            (area_bytes, r["kernel_us"] - base, cm.predict_ops(ops) / 1e3 - base,
+             f"{m}×{n}", f"{M}×{K}×{N}")
+        )
+
+    import matplotlib.ticker as _mt
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
+    ax.axhline(0, color="0.6", lw=1.0, zorder=1)
+    ax.axvline(a0_bytes, ls="--", color="0.5", lw=1.1, zorder=1,
+               label="size gate  a₀ ≈ 256 KB")
+    # balanced: flat at ~0
+    bal = sorted(groups["bal"])
+    ax.scatter([d[0] for d in bal], [d[1] for d in bal], color="#7f7f7f", s=30, zorder=3,
+               edgecolors="white", linewidths=0.4, label="residual: fanout ≤ 8 (balanced) ≈ 0")
+    def _annotate(data, col):
+        # tag each fanned point with its split m×n (the config that drives the climb);
+        # alternate the vertical offset so neighbours at the same tile size don't collide.
+        for i, d in enumerate(data):
+            ax.annotate(d[3], (d[0], d[1]), textcoords="offset points",
+                        xytext=(0, 6 if i % 2 == 0 else -11), ha="center",
+                        fontsize=5.6, color=col, zorder=4)
+
+    # long-dim fanned: climb, tracked by the term (dashed)
+    for g, col, lab in [("long16", "#ff7f0e", "long-dim fanout = 16"),
+                        ("long32", "#d62728", "long-dim fanout = 32")]:
+        data = sorted(groups[g])
+        if not data:
+            continue
+        xs = [d[0] for d in data]
+        ax.scatter(xs, [d[1] for d in data], color=col, s=36, zorder=3,
+                   edgecolors="white", linewidths=0.4, label=f"residual: {lab}")
+        ax.plot(xs, [d[2] for d in data], "--", color=col, lw=1.2, alpha=0.8, zorder=2)
+        _annotate(data, col)
+    # short-dim split: the second term (lighter, higher knee) tracks these too
+    sh = sorted(groups["short"])
+    if sh:
+        ax.scatter([d[0] for d in sh], [d[1] for d in sh], color="#8c564b", s=36,
+                   marker="^", zorder=3, edgecolors="white", linewidths=0.4,
+                   label="residual: short-dim split")
+        ax.plot([d[0] for d in sh], [d[2] for d in sh], "--", color="#8c564b",
+                lw=1.2, alpha=0.8, zorder=2)
+        _annotate(sh, "#8c564b")
+    ax.plot([], [], "--", color="0.5", lw=1.2, label="modeled split term (both sides)")
+    ax.set_xscale("log", base=2)
+    ticks = [65536, 131072, 262144, 524288, 1048576]
+    ax.set_xticks(ticks)
+    ax.xaxis.set_major_formatter(_mt.FuncFormatter(
+        lambda v, _: f"{v / 1048576:.0f} MB" if v >= 1048576 else f"{v / 1024:.0f} KB"))
+    ax.xaxis.set_minor_formatter(_mt.NullFormatter())
+    ax.set_xlabel("per-core output-tile size   2·(M/m)·(N/n)   [bytes, fp16]")
+    ax.set_ylabel("residual:  measured − base model (no split term)   (µs)")
+    ax.set_title("§12  Lopsided-split residual: a large tile fanned across many cores")
+    ax.annotate(
+        "balanced (fanout ≤ 8): flat at ~0 for any tile\n"
+        "fanout > 8: climbs once the tile passes the gate",
+        xy=(0.03, 0.97), xycoords="axes fraction", va="top", ha="left",
+        fontsize=7.2, color="0.3",
+        bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"))
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=2,
+              fontsize=7.0, frameon=False, columnspacing=1.2, handletextpad=0.3)
+    _save(fig, "fig12_matmul_split")
+
+
+def fig_matmul_bmm(_recs):
+    # §13: measured/predicted vs B for a balanced (4x8) batched matmul. A plain 2-D matmul
+    # (a single batch) is accurate (~1.0, the anchor at B=1). The FULL bmm (a distinct weight
+    # per batch, solid) plateaus at 2-4.6x; the SHARED-weight projection [B,M,K]@[K,N] (dashed)
+    # plateaus far lower. Both flat in B. Only shapes with a full B-sweep are shown.
+    import collections
+
+    lines = collections.defaultdict(dict)  # (op, shape) -> {B: ratio}
+    mm_anchor = {}  # shape -> ratio of the plain 2-D matmul (the "1 batch" reference)
+    for r in _load(current_only=False):
+        s = r.get("split_forced") or {}
+        if s.get("m") != 4 or s.get("n") != 8 or not r.get("kernel_us"):
+            continue
+        sh = f"{r['M']}×{r['K']}×{r['N']}"
+        if r["op"] == "mmwd":
+            mm_anchor[sh] = r["kernel_us"] / r["pred_us"]
+        elif (str(r.get("log_file", "")).startswith("overnight_")
+              and r["op"] in ("bmm_wd", "bmm_wd_3d2d")
+              and s.get("b") == 1 and r.get("B", 1) >= 2):
+            lines[(r["op"], sh)][r["B"]] = r["kernel_us"] / r["pred_us"]
+    # keep only shapes with a real sweep (>=3 B points) for BOTH full and 3d2d
+    shapes = sorted({sh for (op, sh), d in lines.items()
+                     if len(d) >= 3 and ("bmm_wd", sh) in lines
+                     and len(lines.get(("bmm_wd_3d2d", sh), {})) >= 3})
+    colors = {sh: c for sh, c in zip(shapes, ["#1f77b4", "#d62728", "#2ca02c"])}
+
+    fig, ax = plt.subplots(figsize=(6.2, 4.2))
+    ax.axhline(1.0, color="0.6", lw=1.0, zorder=1)
+    for sh in shapes:
+        col = colors[sh]
+        for op, style, lab in [("bmm_wd", "-o", "full bmm"),
+                               ("bmm_wd_3d2d", "--s", "shared-weight (3d2d)")]:
+            d = lines.get((op, sh), {})
+            xs = sorted(d)
+            ax.plot(xs, [d[b] for b in xs], style, color=col,
+                    lw=1.8 if op == "bmm_wd" else 1.2, ms=5,
+                    markerfacecolor=col if op == "bmm_wd" else "white",
+                    label=f"{lab}  {sh}")
+            # tag each point with its multiplier; full above the marker, 3d2d below
+            up = op == "bmm_wd"
+            for b in xs:
+                ax.annotate(f"{d[b]:.1f}×", (b, d[b]), textcoords="offset points",
+                            xytext=(0, 6 if up else -12), ha="center", fontsize=5.8,
+                            color=col, zorder=5)
+        if sh in mm_anchor:  # the plain 2-D matmul, plotted at B=1
+            ax.plot([1], [mm_anchor[sh]], "*", color=col, ms=13, zorder=4,
+                    markeredgecolor="0.3", markeredgewidth=0.5)
+    ax.plot([], [], "*", color="0.4", ms=12, markeredgecolor="0.3",
+            label="plain 2-D matmul (1 batch) ≈ 1")
+    ax.set_xscale("log", base=2)
+    ax.set_xticks([1, 2, 4, 8, 16])
+    ax.get_xaxis().set_major_formatter(plt.matplotlib.ticker.ScalarFormatter())
+    ax.set_xlabel("batch  B   (batches run serially on the same cores)")
+    ax.set_ylabel("measured / predicted   (base model = B × one matmul)")
+    ax.set_title("§13  Batched matmul runs 2–4.6× the predicted cost, flat in B")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=2,
+              fontsize=7.2, frameon=False, handletextpad=0.3, columnspacing=1.2)
+    _save(fig, "fig13_matmul_bmm")
+
+
+def fig_matmul_bmm_control(_recs):
+    # §13: the shared-weight control. Full bmm and the shared-weight projection have IDENTICAL
+    # MACs (same x), but the full bmm's per-batch excess (kernel-pred)/B is ~10x the shared
+    # one -- so the miss is NOT compute-rate (equal MACs would give equal excess); it is the
+    # per-batch weight re-read (memory). Matched (shape, B), balanced 4x8, b=1.
+    full, d2d = {}, {}
+    for r in _load(current_only=False):
+        if not str(r.get("log_file", "")).startswith("overnight_") or not r.get("kernel_us"):
+            continue
+        s = r.get("split_forced") or {}
+        if s.get("b") != 1 or s.get("m") != 4 or s.get("n") != 8 or r.get("B", 1) < 2:
+            continue
+        key = (r["M"], r["K"], r["N"], r["B"])
+        macs = r["M"] * r["K"] * r["N"] * r["B"]
+        exc = (r["kernel_us"] - r["pred_us"]) / r["B"]  # per-batch excess
+        (full if r["op"] == "bmm_wd" else d2d)[key] = (macs, exc)
+    fig, ax = plt.subplots(figsize=(6.0, 4.0))
+    for d, col, mk, lab in [(full, "#d62728", "o", "full bmm (distinct weight per batch)"),
+                            (d2d, "#1f77b4", "s", "shared-weight (weight read once)")]:
+        pts = sorted(d.values())
+        ax.scatter([p[0] / 1e9 for p in pts], [p[1] for p in pts], color=col, marker=mk,
+                   s=42, zorder=3, edgecolors="white", linewidths=0.5, label=lab)
+    # connect matched pairs to show equal-MACs, unequal-excess
+    for k in sorted(set(full) & set(d2d)):
+        ax.plot([full[k][0] / 1e9] * 2, [full[k][1], d2d[k][1]], color="0.7", lw=0.8, zorder=1)
+    ax.axhline(0, color="0.6", lw=0.9)
+    ax.set_xscale("log", base=2)
+    ax.set_xlabel("MACs per batched matmul  (G)   — identical for the two ops at each pair")
+    ax.set_ylabel("per-batch excess  (measured − predicted)/B   (µs)")
+    ax.set_title("§13  Equal MACs, very different excess → not compute, it's the weight re-read")
+    ax.annotate("same MACs (vertical line), but the full bmm's\n"
+                "per-batch excess is ~10× the shared-weight one",
+                xy=(0.03, 0.97), xycoords="axes fraction", va="top", ha="left",
+                fontsize=7.4, color="0.3",
+                bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"))
+    ax.legend(loc="upper left", bbox_to_anchor=(0.02, 0.80), fontsize=7.6, framealpha=0.9)
+    _save(fig, "fig13b_matmul_bmm_control")
+
+
 def _mm_balanced_points(K_set=(2048, 4096), M=2048, N=2048):
     """All (cores, m, n, k, t) for M×N×K matmuls, deduped, from every sweep."""
     recs = _load(current_only=False)
@@ -1101,11 +1302,95 @@ def fig_coarse_eff(_recs):
     _save(fig, "fig13_coarse_eff")
 
 
+def fig_coarse_designspace(_recs):
+    # §17: tile count is a design-space knob. For a FIXED problem the model tracks the
+    # measured cost vs tile count (relative), so it picks a near-optimal tile size. Left:
+    # measured (solid) vs predicted (dashed) normalized to each problem's best, for a few
+    # softmax shapes. Right: the model-chosen tile's measured cost / the true best (regret).
+    import collections
+
+    import regex as re
+
+    cm = _cost_model()
+    p = cm.CostParams()
+
+    def shp(r):
+        m = re.search(r"\[(\d+),(\d+)\]", r.get("label", ""))
+        if m:
+            return f"{m[1]}×{m[2]}"
+        m = re.search(r"M=(\d+)\s+K=(\d+)\s+N=(\d+)", r.get("label", ""))
+        return f"{m[1]}×{m[2]}×{m[3]}" if m else None
+
+    grp = collections.defaultdict(dict)  # (op, shape) -> {tiles: (meas, pred)}
+    for r in _load(current_only=False):
+        op = r.get("op")
+        if op not in ("softmax_row_tiling", "matmul_k_tiling") or not r.get("feats"):
+            continue
+        s, t = shp(r), r.get("tiles")
+        if s is None or t is None:
+            continue
+        pred = cm.predict_ops(cm.ops_from_json(json.dumps(r["feats"])), p) / 1e3
+        cur = grp[(op, s)].get(t)
+        grp[(op, s)][t] = (r["kernel_us"], pred) if cur is None else \
+            ((cur[0] + r["kernel_us"]) / 2, (cur[1] + pred) / 2)
+
+    # left panel: a few softmax shapes with a real optimum in the sweep
+    show = [("softmax_row_tiling", "8192×2048"), ("softmax_row_tiling", "16384×2048"),
+            ("softmax_row_tiling", "16384×4096"), ("softmax_row_tiling", "2048×2048")]
+    cols = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
+
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(9.4, 3.9),
+                                   gridspec_kw=dict(width_ratios=[1.5, 1]))
+    for (key, col) in zip(show, cols):
+        d = grp.get(key)
+        if not d:
+            continue
+        tiles = sorted(d)
+        mn = min(d[t][0] for t in tiles)
+        pmn = min(d[t][1] for t in tiles)
+        axL.plot(tiles, [d[t][0] / mn for t in tiles], "-o", color=col, ms=4,
+                 label=f"{key[1]}  measured")
+        axL.plot(tiles, [d[t][1] / pmn for t in tiles], "--s", color=col, ms=4,
+                 markerfacecolor="white", lw=1.1)
+    axL.axhline(1.0, color="0.7", lw=0.8, zorder=0)
+    axL.set_xscale("log", base=2)
+    axL.set_xticks([1, 2, 4, 8, 16, 32])
+    axL.get_xaxis().set_major_formatter(plt.matplotlib.ticker.ScalarFormatter())
+    axL.set_xlabel("tile count  (design-space knob)")
+    axL.set_ylabel("cost / that problem's best  (relative)")
+    axL.set_title("Model tracks the cost-vs-tiles curve\n(solid = measured, dashed = predicted)")
+    axL.legend(fontsize=6.6, framealpha=0.9)
+
+    # right panel: selection regret = measured(model's pick) / measured(true best)
+    regrets = []
+    for (op, s), d in grp.items():
+        if len(d) < 3:
+            continue
+        tiles = sorted(d)
+        bt = min(tiles, key=lambda t: d[t][0])
+        pt = min(tiles, key=lambda t: d[t][1])
+        regrets.append((f"{op.split('_')[0]} {s}", d[pt][0] / d[bt][0]))
+    regrets.sort(key=lambda x: x[1])
+    ys = range(len(regrets))
+    axR.barh(list(ys), [(r - 1) * 100 for _, r in regrets], color="#4c72b0")
+    axR.set_yticks(list(ys))
+    axR.set_yticklabels([n for n, _ in regrets], fontsize=6.0)
+    axR.set_xlabel("regret of model-picked tile  (% over optimal)")
+    axR.set_title("Picking the model's best tile size\ncosts ≤ ~9 % over the true optimum")
+    axR.axvline(0, color="0.6", lw=0.8)
+    fig.tight_layout()
+    _save(fig, "fig17_coarse_designspace")
+
+
 _FIGS = {
     "matmul_hbm": fig_matmul_hbm,
     "matmul_spill": fig_matmul_spill,
+    "matmul_split": fig_matmul_split,
+    "matmul_bmm": fig_matmul_bmm,
+    "matmul_bmm_control": fig_matmul_bmm_control,
     "coarse_spill": fig_coarse_spill,
     "coarse_eff": fig_coarse_eff,
+    "coarse_designspace": fig_coarse_designspace,
     "matmul_peak": fig_matmul_peak,
     "matmul_overlap": fig_matmul_overlap,
     "pointwise_baseline": fig_pointwise_baseline,

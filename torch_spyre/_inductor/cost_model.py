@@ -363,20 +363,24 @@ class CostParams:
     )
     mm_spill_slope: float = 0.45
     mm_spill_cap: float = 1.50
-    # SPLIT-SHAPE re-read (§12a): the area spill above is symmetric in m<->n and so is blind
-    # to how the output is split. A forced-split sweep shows a large per-core tile that is
-    # ALSO broadcast to a big cohort (the LONG dimension fanned out past ~8 cores) costs extra
-    # HBM the area term misses -- an INTERACTION of tile size and fanout, NOT fanout alone (a
-    # big tile at low fanout is fine) and NOT the weight bytes (the miss tracks the tile, not
-    # |B|). It is also SIZE-GATED: it bites only once the tile is ~2x the §11 spill knee, so a
-    # small lopsided tile (e.g. a small batched-matmul 16x2) stays accurate.
-    #   extra = coef * max(0, area - area0) * max(0, log2(fanout_long / knee))
-    #   area  = (M/m)*(N/n),  fanout_long = m if M>=N else n
-    # Zero for balanced splits (fanout <= knee) and for small tiles, so the planner-realistic
-    # bulk is untouched. See §12a and notes/fit_split_shape.py.
-    mm_split_reread_us_per_elem: float = 2.616e-3
+    # SPLIT-SHAPE re-read (§12): the area spill above is symmetric in m<->n and so is blind to
+    # how the output is split. A forced-split sweep shows a large per-core tile that is ALSO
+    # split many ways costs extra the area term misses -- an INTERACTION of tile size and how
+    # far each output dimension is split. It is SIZE-GATED (bites only once the tile is ~2x the
+    # §11 knee, so a small lopsided tile stays accurate) and TWO-SIDED: splitting the LONGER
+    # output dim into many cores is penalized sooner (knee 8, the planner's own _COHORT_LIMIT)
+    # and harder than splitting the SHORTER dim (knee 16, empirical). This asymmetry -- e.g. at
+    # M>>N, a 32x1 split (fan the long M) costs ~2x a 1x32 (fan the short N) at equal area --
+    # is real (leave-one-shape-out RMS 337->249 vs the one-sided form) and a symmetric term
+    # cannot express it.
+    #   split = cL*max(0,area-area0)*max(0,log2(fan_long/8)) + cS*max(0,area-area0)*max(0,log2(fan_short/16))
+    #   area = (M/m)*(N/n);  fan_long = m if M>=N else n;  fan_short = the other split count
+    # Zero for balanced splits (both fanouts small) and for small tiles. See §12, notes/fit_split_shape.py.
+    mm_split_reread_us_per_elem: float = 2.62e-3  # cL: long-dim split coefficient
+    mm_split_short_us_per_elem: float = 2.88e-3  # cS: short-dim split coefficient
     mm_split_area0: float = 131072.0  # per-core tile elems below which no split re-read
-    mm_split_fanout_knee: float = 8.0
+    mm_split_long_knee: float = 8.0  # long-dim cores before the re-read (planner _COHORT_LIMIT)
+    mm_split_short_knee: float = 16.0  # short dim tolerated to a higher fanout (empirical)
     # Matmul HBM: a SINGLE effective rate = the pointwise copy peak (150). The earlier
     # two-rate fit (143 read / 156 write) is retired: 156 > 150 is unphysical (a write
     # cannot beat the copy peak) and was a compute-free-fit artifact absorbing the overlap
@@ -738,26 +742,27 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
                     o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
                 )
             compute += o.matmul_macs / o.cores / (p.mac_peak_per_core_ns * pt_eff)
-    # SPLIT-SHAPE re-read (§12a): a large per-core output tile that is ALSO broadcast to a big
-    # cohort (the LONG output dim fanned out past the knee) re-reads operands from HBM beyond
-    # what the symmetric area spill counts. An INTERACTION of tile size and fanout (a big tile
-    # at low fanout is fine); 0 for balanced splits so the planner-realistic bulk is untouched.
+    # SPLIT-SHAPE re-read (§12): a large per-core output tile that is ALSO split many ways
+    # re-reads operands beyond what the symmetric area spill counts. Two-sided: splitting the
+    # LONGER output dim (knee 8) is penalized sooner/harder than the SHORTER (knee 16). An
+    # INTERACTION of tile size and split; 0 for balanced splits and small tiles.
     split_ns = 0.0
     for o in ops:
         if o.is_matmul and o.cores > 0:
-            long_fanout = (
-                o.matmul_m_split
-                if o.matmul_rows_per_core * o.matmul_m_split
-                >= o.matmul_cols_per_core * o.matmul_n_split
-                else o.matmul_n_split
-            )
-            area = o.matmul_rows_per_core * o.matmul_cols_per_core
-            split_ns += (
+            m_dev = o.matmul_rows_per_core * o.matmul_m_split
+            n_dev = o.matmul_cols_per_core * o.matmul_n_split
+            if m_dev >= n_dev:  # M is the longer output dim
+                long_fan, short_fan = o.matmul_m_split, o.matmul_n_split
+            else:
+                long_fan, short_fan = o.matmul_n_split, o.matmul_m_split
+            area_exc = max(0.0, o.matmul_rows_per_core * o.matmul_cols_per_core - p.mm_split_area0)
+            split_us = area_exc * (
                 p.mm_split_reread_us_per_elem
-                * max(0.0, area - p.mm_split_area0)
-                * max(0.0, math.log2(max(1, long_fanout) / p.mm_split_fanout_knee))
-                * 1000.0  # us/elem -> ns
+                * max(0.0, math.log2(max(1, long_fan) / p.mm_split_long_knee))
+                + p.mm_split_short_us_per_elem
+                * max(0.0, math.log2(max(1, short_fan) / p.mm_split_short_knee))
             )
+            split_ns += split_us * 1000.0  # us -> ns
     # compute/HBM OVERLAP: memory transfers pipeline with the systolic compute, so the
     # smaller of the two is partly hidden (gamma=0.46). For a non-matmul bundle compute=0
     # -> min(0, mem_t)=0 -> t = mem_t (unchanged). The split re-read is charged AFTER the
@@ -859,21 +864,20 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     split_us = 0.0
     for o in ops:
         if getattr(o, "is_matmul", False) and o.cores > 0:
-            lf = (
-                o.matmul_m_split
-                if o.matmul_rows_per_core * o.matmul_m_split
-                >= o.matmul_cols_per_core * o.matmul_n_split
-                else o.matmul_n_split
-            )
-            exc = max(0.0, math.log2(max(1, lf) / p.mm_split_fanout_knee))
-            area = o.matmul_rows_per_core * o.matmul_cols_per_core
-            split_us += (
-                p.mm_split_reread_us_per_elem * max(0.0, area - p.mm_split_area0) * exc
+            m_dev = o.matmul_rows_per_core * o.matmul_m_split
+            n_dev = o.matmul_cols_per_core * o.matmul_n_split
+            lf, sf = ((o.matmul_m_split, o.matmul_n_split) if m_dev >= n_dev
+                      else (o.matmul_n_split, o.matmul_m_split))
+            area_exc = max(0.0, o.matmul_rows_per_core * o.matmul_cols_per_core - p.mm_split_area0)
+            split_us += area_exc * (
+                p.mm_split_reread_us_per_elem * max(0.0, math.log2(max(1, lf) / p.mm_split_long_knee))
+                + p.mm_split_short_us_per_elem * max(0.0, math.log2(max(1, sf) / p.mm_split_short_knee))
             )
     if split_us > 0:
         lines.append(
-            f"     split_reread = coef*max(0,area-{p.mm_split_area0:.0f})"
-            f"*max(0,log2(fan_long/{p.mm_split_fanout_knee:.0f})) = {split_us:.2f} us"
+            f"     split_reread = max(0,area-{p.mm_split_area0:.0f})*"
+            f"[cL*log2(fan_long/{p.mm_split_long_knee:.0f}) + "
+            f"cS*log2(fan_short/{p.mm_split_short_knee:.0f})] = {split_us:.2f} us"
         )
     lines.append(f"     => T_model = {t / 1000:.2f} us")
     return "\n".join(lines)
