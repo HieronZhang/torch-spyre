@@ -70,9 +70,17 @@ for _c, _ops in {
     "transport": "transpose transpose_outer cat0 cat1".split(),
     # copy (x+1.0) is really a broadcast op -- an add with a resident broadcast constant.
     "broadcast": "copy bcast mulbcast bcastcol write".split(),
-    "matmul": "mm mmwd".split(),
+    "matmul": ["mm"],  # planner-chosen split (balanced) -- the no-regress baseline
+    "matmul_split": ["mmwd"],  # FORCED split (incl. lopsided) -- the split-shape target
     "matmul_row": ["matmul_row_tiling"],
+    "matmul_k": ["matmul_k_tiling"],
+    "matmul_nested": ["mm_nested_m_k"],
+    "bmm": ["bmm_k_tiling"],
+    "bmm_3d2d": ["bmm_3d2d_k_tiling"],
+    "bmm_nested": ["bmm_nested_b_k"],
+    "bmm_split": ["bmm_wd", "bmm_wd_3d2d"],  # FORCED-split bmm (full + shared-weight)
     "softmax": ["softmax_row_tiling", "softmax_noexp_row_tiling"],
+    "softmax_unrolled": ["softmax_unrolled"],
     "coarse_reduction": "ctsum ctamax ctamin chain".split(),
 }.items():
     for _o in _ops:
@@ -89,7 +97,13 @@ _HBM_PATTERN_BY_OP = {
     "ctamax": "reduce_outer",
     "ctamin": "reduce_outer",
 }
-_NO_RECONSTRUCT = {"mm", "mmwd", "matmul_row_tiling"}  # need `feats`
+_NO_RECONSTRUCT = {
+    "mm",
+    "mmwd",
+    "bmm_wd",
+    "bmm_wd_3d2d",
+    "matmul_row_tiling",
+}  # matmul-type: need `feats` (IO reconstruction can't rebuild the compute term)
 
 
 def category(op):
@@ -116,7 +130,10 @@ def reconstruct_from_io(rec):
     op_name = rec.get("op")
     if not io or op_name in _NO_RECONSTRUCT:
         return None
-    cores = int(rec.get("cores") or 1)
+    try:  # old feats-less rows can carry cores='-'/None -> unscoreable, skip
+        cores = int(rec.get("cores") or 1)
+    except (ValueError, TypeError):
+        return None
     tiles = int(rec.get("tiles") or 0)
     tiled = tiles >= 2
     rows = rec.get("rows")

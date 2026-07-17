@@ -70,6 +70,7 @@ DB_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null)"
   run_one run_matmul_validate_sweep.sh "M1"   # HBM only; compute/psum have own scripts
   run_one run_matmul_compute_sweep.sh
   run_one run_split_sweep.sh
+  run_one run_split_shape_sweep.sh   # FORCED-split deconfound (H1 N-tile vs H2 fanout) + bmm_wd
   run_one run_decouple_sweep.sh
   run_one run_matmul_psum_sweep.sh
   run_one run_coarse_tiling_sweep.sh

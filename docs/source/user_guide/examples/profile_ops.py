@@ -64,9 +64,10 @@ TILES = int(os.environ.get("BENCH_TILES", "0"))  # coarse-tile dim0 into K (>=2 
 LX = os.environ.get("LX_PLANNING", "1")  # scratchpad planning on(1)/off(0); SUMMARY tag
 NCOLS = int(os.environ.get("BENCH_N", str(COLS)))  # matmul N dim (M=ROWS, K=COLS, N)
 BB = int(os.environ.get("BENCH_B", "8"))  # batch dim for bmm ops (a[B,M,K] @ b[B,K,N])
-WD_M = os.environ.get("WD_M")  # forced matmul work-div split (spyre_hint work_div):
-WD_N = os.environ.get("WD_N")  # cores = WD_M*WD_N*WD_K. Unset dim -> stays 1 (the hint
-WD_K = os.environ.get("WD_K")  # is FINAL, not floor-filled). Used by the `mmwd` op.
+WD_B = os.environ.get("WD_B")  # forced work-div split (spyre_hint work_div). cores =
+WD_M = os.environ.get("WD_M")  # WD_B*WD_M*WD_N*WD_K. Unset dim -> stays 1 (the hint is
+WD_N = os.environ.get("WD_N")  # FINAL, not floor-filled). WD_M/N/K used by `mmwd`; all
+WD_K = os.environ.get("WD_K")  # four (incl. WD_B) used by `bmm_wd`/`bmm_wd_3d2d`.
 
 torch.manual_seed(0xAFFE)
 
@@ -423,6 +424,10 @@ def _bmm_workload(kind: str):
       "k"      -> torch.bmm(a[B,M,K], b[B,K,N])       tiled over K
       "3d2d"   -> torch.matmul(a[B,M,K], b[K,N])      2-D weight shared over the batch
       "nested" -> torch.bmm(a[B,M,K], b[B,K,N])       outer B x2, inner K x TILES
+
+    If any of WD_B/WD_M/WD_N/WD_K is set, a FORCED work-division split
+    (spyre_hint work_div) is applied instead of coarse tiling -- the `bmm_wd` /
+    `bmm_wd_3d2d` ops, mirroring `mmwd` but for a batched output.
     """
     import torch_spyre._inductor.propagate_named_dims as pnd
     from torch._inductor.codecache import FxGraphCache
@@ -450,7 +455,24 @@ def _bmm_workload(kind: str):
         pnd.name_tensor_dims(a, ["B", "M", "K"])
         pnd.name_tensor_dims(b, ["K", "N"] if kind == "3d2d" else ["B", "K", "N"])
 
-    if TILES >= 2 and kind == "nested":
+    # FORCED-split path (bmm_wd): any WD_* set -> hint work_div instead of coarse tiling.
+    # NB: must call _name(a,b) here -- the untiled `else` branch below does NOT name dims,
+    # and work_div_loop_info (which the cost-model decode reads) is populated only for
+    # NAMED, work_div-hinted ops.
+    wd = {
+        nm: int(os.environ[ev])
+        for nm, ev in (("B", "WD_B"), ("M", "WD_M"), ("N", "WD_N"), ("K", "WD_K"))
+        if os.environ.get(ev)
+    }
+    if wd:
+
+        def fn(a, b):
+            _name(a, b)
+            with spyre_hint(work_div=wd):
+                return mm(a, b)
+
+        _PREPARE = _declare
+    elif TILES >= 2 and kind == "nested":
 
         def fn(a, b):
             _name(a, b)
@@ -564,6 +586,10 @@ def make_workload():
         return _bmm_workload("3d2d")
     if OP == "bmm_nested_b_k":  # bmm nested: outer B x2, inner K x TILES
         return _bmm_workload("nested")
+    if OP == "bmm_wd":  # bmm [B,M,K]@[B,K,N] with a FORCED split via WD_B/M/N/K
+        return _bmm_workload("k")
+    if OP == "bmm_wd_3d2d":  # matmul [B,M,K]@[K,N] shared weight, FORCED split
+        return _bmm_workload("3d2d")
     if OP == "softmax_unrolled":  # unrolled softmax chain over B (no CoarseTileInfo)
         return _softmax_unrolled()
     if OP == "mm":  # matmul [M=ROWS, K=COLS] @ [K=COLS, N=BENCH_N]: a Reduction over K
@@ -591,6 +617,8 @@ def make_workload():
             "bmm_k_tiling",
             "bmm_3d2d_k_tiling",
             "bmm_nested_b_k",
+            "bmm_wd",
+            "bmm_wd_3d2d",
             "mm",
             "mmwd",
             "transpose_outer",

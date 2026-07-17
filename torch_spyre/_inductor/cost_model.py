@@ -179,6 +179,10 @@ class OpFeatures:
     matmul_cols_per_core: float = 0.0  # N/n (per-core B tile width  -> B re-read)
     matmul_a_bytes: int = 0  # |A| = M*K device bytes (re-read scales with M/m)
     matmul_b_bytes: int = 0  # |B| = K*N device bytes (re-read scales with N/n)
+    # Per-dim core-split counts (m along M, n along N). Recorded so a split-shape term can
+    # key on the raw fanout / arrangement, not just the area (M/m)*(N/n). 1 = unsplit.
+    matmul_m_split: int = 1
+    matmul_n_split: int = 1
     # Access-pattern HBM effective-BW override (from the LoopLevel IR index/layout):
     # "restickify" (transpose: write-stick var read with coeff!=1), "stick_scatter"
     # (cat on a partition dim -> a device dim <64 just inside the stick), "reduce_outer"

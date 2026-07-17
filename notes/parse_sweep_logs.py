@@ -57,6 +57,8 @@ _KV = re.compile(r"(\w+)=(\S+)")
 _SPLITS = re.compile(r"(d\d+):\s*(\d+)")
 _LBL_MNK = re.compile(r"\bM=(\d+)\s+K=(\d+)\s+N=(\d+)")
 _LBL_SPLIT = re.compile(r"\bsplit\s+m=(\d+)\s+n=(\d+)\s+k=(\d+)")
+_LBL_B = re.compile(r"\bB=(\d+)")  # batch size for bmm_wd labels
+_LBL_BMNK_SPLIT = re.compile(r"\bb=(\d+)\s+m=(\d+)\s+n=(\d+)\s+k=(\d+)")  # forced bmm split
 _LBL_RPC = re.compile(r"rows/core=(\d+)")
 
 _M_RW = re.compile(r"R=(\d+) B.*?W=(\d+) B.*?loop_trip L=(\d+)")
@@ -165,6 +167,24 @@ def _derive(rec):
                 "m": sp.get("d0", 1),
                 "n": sp.get("d1", 1),
                 "k": sp.get("d2", 1),
+            }
+    elif op in ("bmm_wd", "bmm_wd_3d2d"):
+        # Forced-split bmm. The LABEL is authoritative (we set the split), so read
+        # b/m/n/k from it; MACs include the batch (B*M*N*K). split_actual is left as the
+        # raw op_it_space_splits dict -- d0..dN mapping shifts with whether the batch dim
+        # collapses (3-dim when B=1, 4-dim when B>=2), so we do NOT hard-map it here.
+        if g := _LBL_MNK.search(label):
+            rec["M"], rec["K"], rec["N"] = int(g[1]), int(g[2]), int(g[3])
+        if g := _LBL_B.search(label):
+            rec["B"] = int(g[1])
+        if all(rec.get(d) for d in ("B", "M", "K", "N")):
+            rec["macs"] = rec["B"] * rec["M"] * rec["N"] * rec["K"]
+        if g := _LBL_BMNK_SPLIT.search(label):
+            rec["split_forced"] = {
+                "b": int(g[1]),
+                "m": int(g[2]),
+                "n": int(g[3]),
+                "k": int(g[4]),
             }
     elif op == "chain":
         if g := _LBL_RPC.search(label):
