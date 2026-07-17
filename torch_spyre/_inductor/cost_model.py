@@ -357,13 +357,26 @@ class CostParams:
     # stays resident, so the operands are re-streamed from HBM. The re-read magnitude is the
     # operand bytes; the fraction grows with how far the tile overflows:
     #   reread = (|A| + |B|) * f(area),  f(area) = min(cap, slope*log2(area/area0)).
-    # Fit on the decouple + re-read sweeps (fanout proven NOT a term; K-split never used, so
-    # the old psum ring term = 0).
+    # Fit on the decouple + re-read sweeps (area spill, K-split never used so psum ring = 0).
     mm_spill_area0: float = (
         65536.0  # per-core output-tile area (elems) below which no spill
     )
     mm_spill_slope: float = 0.45
     mm_spill_cap: float = 1.50
+    # SPLIT-SHAPE re-read (§12a): the area spill above is symmetric in m<->n and so is blind
+    # to how the output is split. A forced-split sweep shows a large per-core tile that is
+    # ALSO broadcast to a big cohort (the LONG dimension fanned out past ~8 cores) costs extra
+    # HBM the area term misses -- an INTERACTION of tile size and fanout, NOT fanout alone (a
+    # big tile at low fanout is fine) and NOT the weight bytes (the miss tracks the tile, not
+    # |B|). It is also SIZE-GATED: it bites only once the tile is ~2x the §11 spill knee, so a
+    # small lopsided tile (e.g. a small batched-matmul 16x2) stays accurate.
+    #   extra = coef * max(0, area - area0) * max(0, log2(fanout_long / knee))
+    #   area  = (M/m)*(N/n),  fanout_long = m if M>=N else n
+    # Zero for balanced splits (fanout <= knee) and for small tiles, so the planner-realistic
+    # bulk is untouched. See §12a and notes/fit_split_shape.py.
+    mm_split_reread_us_per_elem: float = 2.616e-3
+    mm_split_area0: float = 131072.0  # per-core tile elems below which no split re-read
+    mm_split_fanout_knee: float = 8.0
     # Matmul HBM: a SINGLE effective rate = the pointwise copy peak (150). The earlier
     # two-rate fit (143 read / 156 write) is retired: 156 > 150 is unphysical (a write
     # cannot beat the copy peak) and was a compute-free-fit artifact absorbing the overlap
@@ -725,10 +738,31 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
                     o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
                 )
             compute += o.matmul_macs / o.cores / (p.mac_peak_per_core_ns * pt_eff)
+    # SPLIT-SHAPE re-read (§12a): a large per-core output tile that is ALSO broadcast to a big
+    # cohort (the LONG output dim fanned out past the knee) re-reads operands from HBM beyond
+    # what the symmetric area spill counts. An INTERACTION of tile size and fanout (a big tile
+    # at low fanout is fine); 0 for balanced splits so the planner-realistic bulk is untouched.
+    split_ns = 0.0
+    for o in ops:
+        if o.is_matmul and o.cores > 0:
+            long_fanout = (
+                o.matmul_m_split
+                if o.matmul_rows_per_core * o.matmul_m_split
+                >= o.matmul_cols_per_core * o.matmul_n_split
+                else o.matmul_n_split
+            )
+            area = o.matmul_rows_per_core * o.matmul_cols_per_core
+            split_ns += (
+                p.mm_split_reread_us_per_elem
+                * max(0.0, area - p.mm_split_area0)
+                * max(0.0, math.log2(max(1, long_fanout) / p.mm_split_fanout_knee))
+                * 1000.0  # us/elem -> ns
+            )
     # compute/HBM OVERLAP: memory transfers pipeline with the systolic compute, so the
     # smaller of the two is partly hidden (gamma=0.46). For a non-matmul bundle compute=0
-    # -> min(0, mem_t)=0 -> t = mem_t (unchanged).
-    t = compute + mem_t - p.overlap_gamma * min(compute, mem_t)
+    # -> min(0, mem_t)=0 -> t = mem_t (unchanged). The split re-read is charged AFTER the
+    # overlap (it is not hidden by compute -- it is why the lopsided kernel runs long).
+    t = compute + mem_t - p.overlap_gamma * min(compute, mem_t) + split_ns
     # (A genuine-reduction cross-core ring-combine term once lived here; it is provably
     # bounded by ~cores * a tiny per-elem cost <= ~5 ns -- below run-to-run noise --
     # so it is dropped as inert. K is never split for matmul, so there is no matmul analogue.
@@ -821,6 +855,25 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             f"({eff_rows:.1f}/{p.coarse_underfill_rfull:.0f})"
             f"**{p.coarse_underfill_exp}) = {eff:.3f}  "
             f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
+        )
+    split_us = 0.0
+    for o in ops:
+        if getattr(o, "is_matmul", False) and o.cores > 0:
+            lf = (
+                o.matmul_m_split
+                if o.matmul_rows_per_core * o.matmul_m_split
+                >= o.matmul_cols_per_core * o.matmul_n_split
+                else o.matmul_n_split
+            )
+            exc = max(0.0, math.log2(max(1, lf) / p.mm_split_fanout_knee))
+            area = o.matmul_rows_per_core * o.matmul_cols_per_core
+            split_us += (
+                p.mm_split_reread_us_per_elem * max(0.0, area - p.mm_split_area0) * exc
+            )
+    if split_us > 0:
+        lines.append(
+            f"     split_reread = coef*max(0,area-{p.mm_split_area0:.0f})"
+            f"*max(0,log2(fan_long/{p.mm_split_fanout_knee:.0f})) = {split_us:.2f} us"
         )
     lines.append(f"     => T_model = {t / 1000:.2f} us")
     return "\n".join(lines)

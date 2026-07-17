@@ -35,7 +35,7 @@ Per kernel, with `R`, `W` = HBM bytes read / written. Every term is shown; each 
 does not apply. The right column names the section where it is derived.
 
 ```text
-T   = compute + mem − γ·min(compute, mem)          mem = HBM / (eff · s_lx)
+T   = compute + mem − γ·min(compute, mem) + split      mem = HBM / (eff · s_lx)
 
   HBM     = [ (R+W)/BW + α·min(R,W) ] · (n-ary derate)  +  spill  +  write_extra
   compute = MACs / cores / (peak · pt_eff)
@@ -48,6 +48,7 @@ T   = compute + mem − γ·min(compute, mem)          mem = HBM / (eff · s_lx)
 | `α·min(R,W)` | `α = 0.00574 ns/B` — read↔write bus **turnaround** (0 for one-directional traffic) | §2 |
 | n-ary derate | `× (1 + 0.075·(n_ops−1))` — multi-pass pointwise chain (`add3/add4`) | §3 |
 | `spill` | `(A_bytes+B_bytes)·f(area)`, `area=(M/m)·(N/n)`, `f=min(1.5, max(0, 0.45·log₂(area/65536)))` — matmul operand **re-read** when the per-core output tile overflows on-chip capacity | §11 |
+| `split` | `c·max(0, area−a₀)·max(0, log₂(fan_long/8))`, `area=(M/m)·(N/n)`, `a₀=131072`, `c=2.6e−3 µs/elem`, `fan_long = m if M≥N else n` — extra matmul operand re-read when a **large** per-core tile is **also** broadcast to a big cohort (long output dim fanned past 8 cores); 0 for balanced splits or small tiles | §12a |
 | `write_extra` | `2.148e-7·ROWS^1.6·COLS^2.2` (÷BW) — `write` outer-product, empirical | §4 |
 | `compute` | `MACs / cores / (peak · pt_eff)`, `peak = 1140 MAC/ns/core`; 0 for non-matmul | §9 |
 | `pt_eff` (derates **compute**) | systolic-array fill: `min(1,(rows/64)^0.35)` (`rows` = per-core rows); a coarse-tiled matmul's extra per-tile underfill is flagged, not modeled (`pt_eff=1`) | §9, §15 |
@@ -602,8 +603,8 @@ the additive model (`γ=0`, open) over-predicts more and more as memory grows, u
 (+30 %), `2048×2048×1024` (+26 %), and non-pow2 `2048×2048×4608` (−17 %). These are the same
 thin-operand shapes flagged in §8 — the error there is the memory/tile term, not overlap, so we
 resolve them in **§12** rather than distort γ to chase them. (Two families are filtered out of
-this figure entirely: lopsided splits `1×32`/`16×2` (−40…−47 %, the split model) and tiny-`K`
-matmuls (near-pure memory) — both §12's.)
+this figure entirely: lopsided splits `1×32`/`16×2` (−40…−47 % before the §12a split term) and
+tiny-`K` matmuls (near-pure memory) — both §12's.)
 
 ### §11. A residual: when the operand tile overflows on-chip memory
 
@@ -637,23 +638,64 @@ square one (a shape dependence the area-only form omits), and very *small* tiles
 what this term is *for*: we only need a large tile to carry a **reasonable, growing** cost so the
 compiler is steered away from over-large per-core tiles — which the spill term now does.
 
-### §12. Where the base model breaks: out-of-regime residuals
+### §12. Beyond the planner-realistic envelope
 
 The base model (§8–§11) predicts **planner-realistic** matmuls — those a real compiler would
-emit (K kept whole, each fanout ≤ 8, non-tiny) — to **RMS ~5.8 %** (mean ≈ 0). Two departures
-leave larger errors; both sit outside what a planner emits.
+emit (K kept whole, each fanout ≤ 8, non-tiny) — to **RMS ~5.8 %** (mean ≈ 0). Two configurations
+depart from it. §12a adds a term for lopsided splits; §12b remains flagged.
 
-- **§12a. Extreme splits (one fanout ≫ 8).** A lopsided split makes an operand's per-core tile
-  huge and re-read from HBM by many cores, **under-predicting by 35–47 %** (`16×2`, `32×1`, `1×32`).
-  The effect is **edge-asymmetric** — a huge `N/n` breaks it, a huge `M/m` (e.g. `2×16`) is fine
-  (extra rows just stream) — so the area-only spill term (§11) structurally cannot express it. It
-  costs little in practice: a planner keeps both fanouts moderate. **Question for review:** does
-  this case warrant a deeper dive, or is it fine to leave unmodeled?
-- **§12b. Tiny / thin matmuls.** Sub-10-µs kernels sit on a fixed per-kernel overhead the model
-  zeroes, **under-predicting by up to −34 %**; a few thin, memory-heavy shapes (small `M`/`N`)
-  *over*-predict by up to **+48 %** (the small-tile / underfill residual of §10–§11). Both are
-  bounded and off the real-workload path. **Question for review:** do these edge shapes warrant a
-  deeper dive, or is it fine to leave them flagged?
+#### §12a. Split shape: a large per-core tile that is also widely broadcast
+
+**Observation.** Pushing one fanout past 8, at a fixed problem and fixed core count, leaves the
+base model badly short: a `16×2` split under-predicts by ~40 %, `32×1` by ~61 %. Crucially the
+per-core tile *area* `(M/m)·(N/n)` is identical for every split at fixed cores, so the area-based
+spill of §11 is the same for all of them and cannot see this — the miss depends on **how** the
+output is split, not just the tile size.
+
+**What it is not.** The obvious guess — that a shared operand is re-read once per core it is
+broadcast to, so the cost grows with the fanout — does not survive controls. Three facts rule it
+out: (i) a large per-core tile at *low* fanout is predicted accurately (a single unsplit `M`-strip
+up to 8192 rows is within a few percent), so fanout alone is not the driver; (ii) the miss does not
+scale with the broadcast operand's size — two shapes with identical weight bytes and identical
+fanout differ ~250× in error; (iii) *both* split extremes hurt, not one operand. The miss tracks
+the per-core tile and the fanout **together**.
+
+**What it is.** Holding the tile fixed while sweeping the fanout, and vice versa, isolates an
+**interaction**: the cost appears only when a per-core tile is *both* large *and* broadcast to a
+cohort past ~8 cores. It is also **size-gated** — it does not appear until the tile is about twice
+the §11 capacity knee, so a *small* lopsided tile (e.g. a small batched matmul split `16×2`) stays
+accurate. Transposing the split (`m ↔ n`) shows the cost follows the **longer** problem dimension —
+splitting the long axis into many pieces is what hurts. Physically, a large tile re-fed to many
+cohort cores re-streams its operands from HBM beyond what the area spill already counts.
+
+**Model.** An additive term, charged **after** the compute/memory overlap (it is not hidden under
+compute — it is why the lopsided kernel runs long):
+
+```text
+split = c · max(0, area − a₀) · max(0, log₂(fan_long / 8))
+area = (M/m)·(N/n),   fan_long = m if M ≥ N else n,   a₀ = 131072 elems,   c = 2.6e−3 µs/elem
+```
+
+`fan_long` is the fanout of the longer output dimension; the `/8` knee is the cohort size below
+which the broadcast is free; `a₀` (twice the §11 capacity knee) is the tile size below which the
+interaction does not bite. The term is **exactly 0 for balanced splits and for small tiles**, so
+the base envelope (§8–§11) is unchanged.
+
+**Residuals.** Fit on a forced-split sweep and checked on held-out shapes, the term closes the
+split a real compiler *does* emit — a batched matmul split `16×2` on a tall (`M ≥ N`) problem goes
+from **−40 % to a few percent**, with **no change to balanced or small kernels**. Two cases stay
+honestly out of reach: fanning the *short* dimension into slivers (`1×32` on a small `N`) is a
+separate small-tile effect it does not claim, and a `16×2` split on a *wide* (`N > M`) problem —
+where the heavily-split axis is the short one — is left near its original error. Both are narrow;
+the term is aimed at the common tall-problem split, which it now predicts to a few percent.
+
+#### §12b. Tiny / thin matmuls
+
+Sub-10-µs kernels sit on a fixed per-kernel overhead the model zeroes, **under-predicting by up to
+−34 %**; a few thin, memory-heavy shapes (small `M`/`N`) *over*-predict by up to **+48 %** (the
+small-tile / underfill residual of §10–§11). Both are bounded and off the real-workload path.
+**Question for review:** do these edge shapes warrant a deeper dive, or is it fine to leave them
+flagged?
 
 **Part III accuracy — matmul, by regime.** The planner-realistic bulk is within a few percent;
 the out-of-regime rows carry the large, mechanism-named errors above.
@@ -661,8 +703,12 @@ the out-of-regime rows carry the large, mechanism-named errors above.
 | regime | n | RMS % | mean % | err range | status |
 |---|---:|---:|---:|---|---|
 | planner-realistic (K whole, fanout ≤ 8, non-tiny) | 35 | **5.8** | +3.1 | −7…+19 | modeled |
-| extreme split (one fanout ≫ 8 → huge tile) | 10 | 25.0 | −18.3 | −44…−1 | §12a: edge-asymmetric re-read; area-based spill can't fit |
+| lopsided split (fanout > 8)† | 48 | 20.5 | −7.2 | −45…+42 | §12a: **now modeled** (split re-read); tall `16×2` → a few %, short-dim slivers & wide-`16×2` remain |
 | tiny / thin (K ≤ 128 or min(M,N) ≤ 512) | 17 | 22.0 | +4.1 | −34…+48 | §12b: fixed-overhead floor + thin-shape residual |
+
+† From the expanded forced-split sweep (larger than the original curated set). Before the §12a
+term this regime was ~36 % RMS / −29 % mean; the term halves it and drives the planner-emitted
+tall `16×2` from −40 % to a few percent, with balanced and small kernels unchanged.
 
 Representative planner-realistic points (the regime the model is built for):
 

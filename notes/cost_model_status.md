@@ -95,11 +95,16 @@ term (coef·ROWS^1.6·COLS^2.2, 12% RMS, black-box) → broadcast category 19→
 HBM + tile-spill`, with compute/HBM `overlap γ=0.46`. Isolation order: HBM (compute-free) →
 compute+overlap (low cores) → spill → (K-split now gated off). The 8% holds on pow2/balanced/
 mid-size shapes (~half the tested points); **honest full-range k=1 RMS ≈18% (−48…+68%), mean
-bias −4%**. **The "fanout penalty" hypothesis was FALSIFIED** (re-read sweep FB/FA: fanout 1→32
-at fixed small tile → ~0 effect); the split penalty is per-core **TILE SPILL** and the residual
-grows with *large* tiles (so it is NOT misattributed underfill — right sign). Residuals (⚠):
-tiny matmuls +54% (fixed-overhead floor), extreme *forced* splits, non-pow2-N (model even
-*inverts* the 6144-vs-8192 ranking).
+bias −4%**. Both the earlier "fanout penalty" AND the "it's just tile spill" readings were incomplete.
+A forced-split sweep (2 rounds, `run_split_shape_sweep.sh` + `_r2.sh`) + a 5-agent adversarial
+review showed the lopsided-split miss is an **INTERACTION**: a per-core tile that is *both* large
+*and* fanned out past ~8 cores (neither alone — a huge tile at low fanout is accurate; the miss
+anti-correlates with weight bytes). It is size-gated and follows the LONG output dim.
+**§12a split-shape term SHIPPED (2026-07-17):** `split = c·max(0, area−131072)·max(0,
+log2(fan_long/8))`, `fan_long = m if M≥N else n`, `c=2.6e−3 µs/elem`, added post-overlap in
+`predict_ops`. Fixes the planner-emitted tall `16×2` from −40 % → a few %, **0 on balanced/small**
+(no regression). Fit + LOSO in `notes/fit_split_shape.py`. Residuals (⚠): tiny matmuls +54%
+(fixed-overhead floor), forced short-dim slivers (`1×32`) & wide-`16×2` (N>M), non-pow2-N.
 
 **DONE (2026-07-10): dropped the two-rate HBM, now a SINGLE rate = 150 (user approved).** On the
 planner-realistic envelope (k=1, fanout ≤8, non-tiny, pow2-N; n=34) the old two-rate 143/156
@@ -244,6 +249,12 @@ the flaws fixed BEFORE writing (memory: conservative-claims-adversarial-check). 
 
 ## Immediate next steps
 
+0. **bmm (current focus).** §12a split-shape term is shipped for mm. bmm is NOT just mm×batches:
+   a forced `b=1` (batch serialized) sweep shows a large **batch floor** — bmm is −78 % even at a
+   *balanced* `4×8` split. Isolation order (agreed): **(a) bmm batch floor** (the dominant miss,
+   likely per-batch weight reload / pipeline drain — isolate at `b=1`, then the shared-weight 3d2d
+   control) → **(b) bmm split-shape** (should inherit the §12a mm term on top) → **(c)** the forced
+   `b=B` batch-split pathology (−90 %; the planner never emits it → a guard/warning, not a term).
 1. **Re-run `run_db_sweep.sh` on current code** (psum gate + extractor fixes) → the ONE clean
    current-model dataset. Master runner auto-stamps this sha as `is_current` and drops chain.
    Everything below depends on having current-model `pred_us`.

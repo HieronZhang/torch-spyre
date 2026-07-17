@@ -131,6 +131,12 @@ def relu(x):
     return x if x > 0 else 0.0
 
 
+def _l2(x):
+    import math
+
+    return math.log2(x) if x > 0 else 0.0
+
+
 # Candidate additive terms. Each: name -> (list of basis cols, optional knee grid + builder).
 # `builder(knee)` returns the cols list for a given knee value.
 def CANDIDATES(kw=8, ka=16):
@@ -158,6 +164,15 @@ def CANDIDATES(kw=8, ka=16):
         # per-core AREA x max-fanout-excess
         "area*relu(maxfan-8)": ([
             lambda r: r["area"] * relu(maxfan(r) - 8),
+        ], None),
+        # per-core AREA x LOG fanout-excess (smooth gate at 8)
+        "area*relu(log2(maxfan)-3)": ([
+            lambda r: r["area"] * relu(_l2(maxfan(r)) - 3),
+        ], None),
+        # broadcast re-read (symmetric, both operands): (n-1)|A| + (m-1)|B|
+        "(n-1)|A|+(m-1)|B|": ([
+            lambda r: (r["n"] - 1) * r["act"],
+            lambda r: (r["m"] - 1) * r["weight"],
         ], None),
         # absolute M x max-fanout-excess (symmetric gate)
         "M*relu(maxfan-8)": ([
