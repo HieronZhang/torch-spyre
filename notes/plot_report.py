@@ -44,10 +44,10 @@ def _load(current_only=True):
     return recs
 
 
-def _save(fig, name):
+def _save(fig, name, dpi=130):
     os.makedirs(_FIGDIR, exist_ok=True)
     path = os.path.join(_FIGDIR, f"{name}.png")
-    fig.savefig(path, dpi=130, bbox_inches="tight")
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  wrote {os.path.relpath(path, _HERE)}")
 
@@ -210,57 +210,70 @@ def fig_pointwise_vcurve(recs):
 # at w=1/3), but measured effBW DECLINES with each chained op -> a per-op derate.
 # ============================================================================
 def fig_pointwise_arity(recs):
-    bw_peak, alpha, derate = 150.0, 0.00574, 0.075
-    ops = [("add", 1), ("add3", 2), ("add4", 3)]  # n = number of chained binary adds
-    meas = {n: [] for _, n in ops}
+    # §3: the honest baseline for a fused n-input add is the SAME computation run as
+    # (n-1) separate binary adds -- which moves identical HBM bytes (each intermediate
+    # round-trips). Plot each op's kernel time RELATIVE to one `add` at the same shape:
+    # the byte model predicts add_k = k * add exactly (the gray "unfused chain" line),
+    # but the fused kernel sits ABOVE it -- it streams slower than not fusing.
+    derate = 0.075
+    ops = [("add", 1), ("add3", 2), ("add4", 3)]  # k = equivalent number of binary adds
+    shapes = {(2048, 1024), (2048, 4096), (2048, 16384)}  # the arity sweep (add3/add4 exist here)
+    recs = _load(current_only=False)  # measured times are version-independent
+    # single-add baseline per shape (add has no intermediate -> scratchpad-independent)
+    add_t = {}
     for r in recs:
-        for op, n in ops:
-            if r["op"] == op:
-                m = r.get("model") or {}
-                R, W = m.get("R"), m.get("W")
-                if R and W:
-                    meas[n].append((R + W) / 1e3 / r["kernel_us"])
-    # byte model: same f=1/3 for all arities -> flat effBW
-    eff_byte = 1.0 / (1.0 / bw_peak + alpha * (1.0 / 3.0))
-    ns = [n for _, n in ops]
+        if r["op"] == "add" and r.get("kernel_us") and (r.get("rows"), r.get("cols")) in shapes \
+                and r.get("lx") == 0:
+            add_t.setdefault((r["rows"], r["cols"]), []).append(r["kernel_us"])
+    add_t = {k: sum(v) / len(v) for k, v in add_t.items()}
+    off = {k: [] for _, k in ops}   # scratchpad OFF (lx=0): intermediate round-trips HBM
+    on = {k: [] for _, k in ops}    # scratchpad ON  (lx=1): intermediate stays on-chip
+    for r in recs:
+        if (r.get("rows"), r.get("cols")) not in shapes or not r.get("kernel_us"):
+            continue
+        for op, k in ops:
+            if r["op"] != op:
+                continue
+            base = add_t.get((r["rows"], r["cols"]))
+            if not base:
+                continue
+            (off if r.get("lx") == 0 else on if r.get("lx") == 1 else {k: []})[k].append(
+                r["kernel_us"] / base)
+    ks = [k for _, k in ops]
 
-    fig, ax = plt.subplots(figsize=(4.8, 3.5))
-    ax.axhline(
-        eff_byte,
-        ls="--",
-        color="0.6",
-        lw=1.2,
-        label=f"byte model, no derate (flat = {eff_byte:.0f})",
-    )
-    ax.plot(
-        ns,
-        [eff_byte / (1 + derate * (n - 1)) for n in ns],
-        "-",
-        color="#d62728",
-        lw=1.3,
-        marker="s",
-        ms=5,
-        zorder=2,
-        label=f"× (1 + {derate}·(n−1)) derate",
-    )
-    for n in ns:
-        ax.scatter(
-            [n] * len(meas[n]),
-            meas[n],
-            s=40,
-            color="#1f77b4",
-            zorder=3,
-            edgecolors="white",
-            linewidths=0.5,
-            label="measured" if n == 1 else None,
-        )
-    ax.set_xticks(ns)
-    ax.set_xticklabels(["add\n(n=1)", "add3\n(n=2)", "add4\n(n=3)"])
-    ax.set_xlabel("chained binary adds")
-    ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
-    ax.set_title("§3  n-ary derate: effBW falls per chained op")
-    ax.set_ylim(94, 120)
-    ax.legend(loc="lower left", fontsize=7.5, framealpha=0.9)
+    fig, ax = plt.subplots(figsize=(6.2, 4.6))
+    # reference: k INDEPENDENT adds -- same bytes as add_k, but NO read-after-write dependency.
+    # This is what the byte model predicts (it can't see the cross-op dependency).
+    ax.plot(ks, ks, "--", color="0.55", lw=1.4, zorder=1,
+            label="k INDEPENDENT adds — same bytes, no dependency\n(what the byte count predicts)")
+    ax.plot(ks, [k * (1 + derate * (k - 1)) for k in ks], "-", color="#d62728", lw=1.3,
+            marker="s", ms=5, zorder=2, label=f"empirical derate: k·(1 + {derate}·(k−1))")
+    ax.plot(ks, [(k + 2) / 3 for k in ks], ":", color="#2ca02c", lw=1.6, zorder=1,
+            label="scratchpad on: intermediate on-chip, no round-trip (k+2)/3")
+    # measured
+    for k in ks:
+        if off[k]:
+            ax.scatter([k] * len(off[k]), off[k], s=46, color="#1f77b4", zorder=3,
+                       edgecolors="white", linewidths=0.5,
+                       label="add_k, scratchpad OFF (buf round-trips HBM)" if k == 1 else None)
+        if on[k]:
+            ax.scatter([k] * len(on[k]), on[k], s=46, color="#2ca02c", marker="D", zorder=3,
+                       edgecolors="white", linewidths=0.5,
+                       label="add_k, scratchpad ON (buf on-chip)" if k == 2 else None)
+    ax.annotate("+7.5% per round-tripped intermediate:\nop_i reads buf_{i-1} the instant it is written\n"
+                "(read-after-write not in the byte count)",
+                xy=(2.97, 3.45), xytext=(2.02, 2.45), fontsize=7.0, color="#1f4e8c",
+                ha="left", arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8))
+    ax.annotate("no HBM round-trip → derate vanishes\n(≈ the 3R:1W byte count)",
+                xy=(2, 1.35), xytext=(2.05, 1.62), fontsize=7.0, color="#1f7a1f",
+                arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8))
+    ax.set_xticks(ks)
+    ax.set_xticklabels(["add\n(k=1)", "add3\n(k=2)", "add4\n(k=3)"])
+    ax.set_xlabel("n-input add  (k = number of dependent binary adds)")
+    ax.set_ylabel("kernel time  /  one `add`  (same shape)")
+    ax.set_title("§3  add_k costs more than the same bytes with no dependency\n"
+                 "(the read-after-write on the round-tripped intermediate — not in the byte count)")
+    ax.legend(loc="upper left", fontsize=6.6, framealpha=0.9)
     _save(fig, "fig3_pointwise_arity")
 
 
@@ -1012,155 +1025,114 @@ def fig_matmul_peak(_recs):
 
 
 def fig_matmul_overlap(_recs):
-    # Does gamma generalize across shapes/splits? For EVERY balanced (k=1) matmul, plot
-    # prediction error vs the MEMORY FRACTION (memory/(compute+memory)). Overlap matters
-    # most when memory is a big fraction: the ADDITIVE model (gamma=0) over-predicts more
-    # and more as memory grows (open red, climbing), while the OVERLAP model (gamma=0.46)
-    # stays flat near 0 across the whole range AND across aspect types. Marker = aspect.
+    # §10: does the overlap term generalize? For EVERY 32-core matmul run (all regimes),
+    # plot prediction error vs the MEMORY FRACTION memory/(compute+memory). Each run gets
+    # TWO markers joined by a line: the ADDITIVE model (gamma=0, open) and the OVERLAP model
+    # (gamma=0.46, filled). The additive error grows with memory fraction (up to +40%);
+    # the overlap term pulls every point back toward 0. Color = regime.
+    import regex as re
+
     cm = _cost_model()
+    p = cm.CostParams()
     p_add = cm.CostParams(overlap_gamma=0.0)
-    recs = _load(current_only=False)
+
+    def sp(lab):
+        m = re.search(r"\bm=(\d+)\s+n=(\d+)\s+k=(\d+)", lab)
+        return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
+    def opsp(feats, s):
+        ops = cm.ops_from_json(json.dumps(feats))
+        for o in ops:
+            if getattr(o, "is_matmul", False):
+                if not o.matmul_m_split or o.matmul_m_split == 1:
+                    o.matmul_m_split = s[0]
+                if not o.matmul_n_split or o.matmul_n_split == 1:
+                    o.matmul_n_split = s[1]
+        return ops
+
+    def regime(M, K, N, m, n):
+        # four regimes: a lopsided WORK DIVISION (fanout > 8); a TENSOR-SIZE extreme (thin
+        # reduction, K ≤ 128 -- memory-heavy, compute-starved); a TINY kernel (small output,
+        # min(M,N) ≤ 512); else realistic. Checked in this order, so a config matching more
+        # than one is assigned to the first (work-division dominates, then tiny output).
+        if max(m, n) > 8:
+            return "workdiv"
+        if min(M, N) <= 512:
+            return "tiny"
+        if K <= 128:
+            return "tensor"
+        return "realistic"
+
     seen, rows = set(), []
-    for r in recs:
-        if r.get("op") not in ("mm", "mmwd") or not r.get("feats"):
+    for r in _load(current_only=False):
+        if r.get("op") != "mmwd" or not r.get("feats"):
             continue
-        sa = r.get("split_actual") or {}
+        s = sp(r.get("label", ""))
         M, N, K = r.get("M"), r.get("N"), r.get("K")
-        if sa.get("k", 1) != 1 or (sa.get("m") or 9) > 8 or (sa.get("n") or 9) > 8:
+        # keep only the cases that use all 32 cores with no K-split (m·n = cores = 32, k = 1)
+        if not s or None in (M, N, K) or s[2] != 1 or s[0] * s[1] != 32 \
+                or r.get("cores") != 32:
             continue
-        if not M or not N or not K or M < 512 or N < 512 or K < 512 or M * N * K < 5e8:
+        # keep only power-of-2 tensor dimensions
+        if any(d & (d - 1) for d in (M, N, K)):
             continue
-        key = (M, N, K, sa.get("m"), sa.get("n"))
+        key = (M, N, K, s[0], s[1])
         if key in seen:
             continue
         seen.add(key)
         feats = r["feats"]
         feats = feats if isinstance(feats, list) else json.loads(feats)
-        ops = cm.ops_from_json(json.dumps(feats))
-        mm = next(o for o in ops if getattr(o, "is_matmul", False))
-        t_add = cm.predict_ops(ops, p_add) / 1e3
-        t_ov = cm.predict_ops(ops) / 1e3
+        mm = next(o for o in opsp(feats, s) if getattr(o, "is_matmul", False))
+        t_add = cm.predict_ops(opsp(feats, s), p_add) / 1e3
+        t_ov = cm.predict_ops(opsp(feats, s), p) / 1e3
         meas = r["kernel_us"]
         compute = mm.matmul_macs / mm.cores / 1140 / 1e3  # µs
-        frac = max(0.0, min(1.0, (t_add - compute) / t_add))  # memory fraction
-        if K >= 2 * max(M, N):
-            asp = "fat-K"
-        elif min(M, N) * 2 <= max(M, N):
-            asp = "thin M/N"
-        elif M == N == K:
-            asp = "square"
-        else:
-            asp = "rectangular"
-        rows.append(
-            (
-                frac,
-                100 * (t_add - meas) / meas,
-                100 * (t_ov - meas) / meas,
-                asp,
-                M,
-                N,
-                K,
-            )
-        )
+        frac = max(0.0, min(1.0, (t_add - compute) / t_add)) if t_add > 0 else 0.0
+        rows.append((frac, 100 * (t_add - meas) / meas, 100 * (t_ov - meas) / meas,
+                     regime(M, K, N, s[0], s[1]), M, K, N, s))
 
-    markers = {"square": "o", "fat-K": "^", "thin M/N": "s", "rectangular": "D"}
-    neg_out = 0  # stagger labels of the (colliding) negative outliers
-    fig, ax = plt.subplots(figsize=(6.8, 5.0))
+    colors = {"realistic": "#2ca02c", "workdiv": "#ff7f0e", "tensor": "#1f77b4",
+              "tiny": "#7f7f7f"}
+    labels = {"realistic": "realistic (balanced split, normal shape)",
+              "workdiv": "work-division extreme (fanout > 8)",
+              "tensor": "tensor-size extreme (thin reduction, K ≤ 128)",
+              "tiny": "tiny (small output, min(M,N) ≤ 512)"}
+    fig, ax = plt.subplots(figsize=(11.5, 8.0))
+    ax.axhspan(-10, 10, color="0.92", zorder=0, label="±10 %")
     ax.axhline(0, color="0.6", lw=1.0, zorder=1)
-    ax.axhspan(-10, 10, color="0.9", zorder=0, label="±10 %")
-    for frac, ea, eo, asp, M, N, K in rows:
-        ax.plot([frac, frac], [ea, eo], "-", color="0.85", lw=0.6, zorder=1)
-        mk = markers[asp]
-        ax.scatter(
-            frac,
-            ea,
-            facecolors="none",
-            edgecolors="#d62728",
-            s=34,
-            marker=mk,
-            lw=1.0,
-            zorder=2,
-        )
-        ax.scatter(
-            frac,
-            eo,
-            color="#2ca02c",
-            s=34,
-            marker=mk,
-            zorder=3,
-            edgecolors="white",
-            linewidths=0.3,
-        )
-        # Ring + label the residual outliers (|overlap err| > 12 %): these are all
-        # thin-M/N shapes at high memory fraction -- flagged here, explained in §12.
-        if abs(eo) > 12:
-            ax.scatter(
-                frac,
-                eo,
-                facecolors="none",
-                edgecolors="#7f00ff",
-                s=150,
-                marker="o",
-                lw=1.6,
-                zorder=4,
-            )
-            if eo > 0:
-                off = (6, 4)
-            else:
-                off = (8, -16 - 12 * neg_out)  # stagger colliding negative labels
-                neg_out += 1
-            ax.annotate(
-                f"{M}×{K}×{N}",
-                xy=(frac, eo),
-                xytext=off,
-                textcoords="offset points",
-                fontsize=6.5,
-                color="#5000a0",
-                zorder=5,
-                arrowprops=dict(arrowstyle="-", color="#7f00ff", lw=0.5)
-                if eo < 0
-                else None,
-            )
-    # aspect legend (marker shape) + model legend (color)
-    for asp, mk in markers.items():
-        ax.scatter([], [], color="0.4", marker=mk, s=34, label=asp)
-    ax.scatter([], [], color="#2ca02c", s=40, label="overlap γ=0.46 (filled)")
-    ax.scatter(
-        [],
-        [],
-        facecolors="none",
-        edgecolors="#d62728",
-        s=40,
-        label="additive γ=0 (open)",
-    )
-    ax.scatter(
-        [],
-        [],
-        facecolors="none",
-        edgecolors="#7f00ff",
-        s=60,
-        lw=1.6,
-        label="thin-M/N outlier (|err|>12%, see §12)",
-    )
-    ax.set_xlabel("memory fraction   memory / (compute + memory)")
-    ax.set_ylabel("prediction error  (%)")
-    ax.set_title(
-        "§10  γ=0.46 holds to ±10 % for the compute-leaning bulk;\n"
-        "thin-M/N shapes (ringed) scatter at high memory fraction — deferred to §12"
-    )
-    ax.set_ylim(-25, 55)
-    ax.annotate(
-        f"{len(rows)} balanced configs (k=1, splits ≤8×8, K≥512)",
-        xy=(0.03, 0.04),
-        xycoords="axes fraction",
-        va="bottom",
-        ha="left",
-        fontsize=7.5,
-        color="0.3",
-        bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"),
-    )
-    ax.legend(loc="upper left", fontsize=7.0, framealpha=0.9, ncol=2)
-    _save(fig, "fig10_matmul_overlap")
+    for frac, ea, eo, reg, M, K, N, s in rows:
+        col = colors[reg]
+        ax.plot([frac, frac], [ea, eo], "-", color="0.82", lw=0.7, zorder=1)
+        ax.scatter(frac, ea, facecolors="none", edgecolors=col, s=60, lw=1.2, zorder=2)
+        ax.scatter(frac, eo, color=col, s=60, zorder=3, edgecolors="white", linewidths=0.4)
+    # label the residual outliers (|overlap err| > 15%) with BOTH the tensor size M×K×N and
+    # the work-division split m×n×k
+    neg = 0
+    for frac, ea, eo, reg, M, K, N, s in rows:
+        if abs(eo) <= 15:
+            continue
+        up = eo > 0
+        lab = f"{M}×{K}×{N}\n{s[0]}×{s[1]}×{s[2]}"
+        ax.annotate(lab, xy=(frac, eo), textcoords="offset points",
+                    xytext=(7, 4) if up else (7, -11 - 22 * (neg % 2)), fontsize=7.0,
+                    color=colors[reg], zorder=5, linespacing=0.9)
+        if not up:
+            neg += 1
+    # legends: model (open/filled) + regime (color)
+    ax.scatter([], [], facecolors="none", edgecolors="0.35", s=60, label="additive  γ=0 (open)")
+    ax.scatter([], [], color="0.35", s=60, label="overlap  γ=0.46 (filled)")
+    for reg, col in colors.items():
+        n = sum(1 for r in rows if r[3] == reg)
+        ax.scatter([], [], color=col, s=60, label=f"{labels[reg]}  (n={n})")
+    ax.set_xlabel("memory fraction   memory / (compute + memory)", fontsize=11)
+    ax.set_ylabel("prediction error  (%)", fontsize=11)
+    ax.tick_params(labelsize=10)
+    ax.set_title("§10  Overlap (γ=0.46, filled) lowers every prediction, closing the additive\n"
+                 "model's over-prediction — which grows with the memory fraction", fontsize=12)
+    ax.set_ylim(-35, 60)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.11), ncol=3, fontsize=9.5,
+              frameon=False, handletextpad=0.3, columnspacing=1.4)
+    _save(fig, "fig10_matmul_overlap", dpi=200)
 
 
 # ============================================================================

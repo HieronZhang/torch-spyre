@@ -93,7 +93,7 @@ _UNARY = {  # 1 read + 1 write (gelu/relu/sigmoid/exp also probe arithmetic-free
     "exp": torch.exp,
 }
 _BINARY = {"mul": lambda a, b: a * b, "add": lambda a, b: a + b}  # 2R + 1W
-_NARY = {"add3": 3, "add4": 4}  # n inputs summed (intermediates staged in LX)
+_NARY = {"add3": 3, "add4": 4, "add5": 5, "add6": 6}  # n inputs summed (dependent chain)
 _REDUCE = {  # read-dominated; sumall reduces to a scalar -> ring combine
     "read": lambda x: x.sum(dim=-1),
     "sumrow": lambda x: x.sum(dim=-1),  # reduce COLS -> [ROWS] (within-stick axis)
@@ -568,6 +568,12 @@ def make_workload():
         return torch.compile(lambda a, b: a + b), (_rand(ROWS, COLS), _rand(ROWS, 1))
     if OP == "write":  # write-only: both inputs broadcast -> cached
         return torch.compile(lambda b, c: b + c), (_rand(1, COLS), _rand(ROWS, 1))
+    if OP == "add_indep2":  # §3 control: two INDEPENDENT adds, same 4R:2W as add3 but NO
+        # read-after-write dependency (op0=a+b, op1=c+d). add3 − add_indep2 isolates the
+        # dependent round-trip cost from the byte count. (Verify in the IR whether Inductor
+        # fuses the two into one kernel or emits two; both readings are informative.)
+        indep = lambda a, b, c, d: (a + b, c + d)  # noqa: E731
+        return torch.compile(indep), tuple(_rand(ROWS, COLS) for _ in range(4))
     if OP in _CT_REDUCE:  # coarse-tiled dim0 reduction (BENCH_TILES, LX_PLANNING)
         return _ct_workload(_CT_REDUCE[OP])
     if OP == "softmax_row_tiling":  # softmax(dim=-1) NROW-tiled -> 5 ops fuse in LX
@@ -608,6 +614,7 @@ def make_workload():
         + [
             "bcastcol",
             "write",
+            "add_indep2",
             "softmax_row_tiling",
             "softmax_noexp_row_tiling",
             "softmax_unrolled",

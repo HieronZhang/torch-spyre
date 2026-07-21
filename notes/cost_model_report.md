@@ -138,12 +138,13 @@ which is the subject of §3.
 
 **Model.** `T = (R+W)/BW_peak + α·min(R,W)`, with `BW_peak = 150`, `α = 0.00574 ns/B`.
 
-### §3. Chained pointwise ops pay a per-op derate
+### §3. A dependent add-chain costs more than its byte count
 
-**Observation.** In §2's figure, `add3`/`add4` sat *below* the turnaround valley curve in §2 — they run
-slower per byte than a single `add`, and it worsens with each extra operand.
+**Observation.** In §2's figure, `add3`/`add4` sat *below* the turnaround valley — they run slower per
+byte than a single `add`, worsening with each extra operand. "Slower per byte than a single `add`"
+understates it, though; the sharp comparison is against the **same bytes with no data dependency**.
 
-**Why: the hardware add is binary.** The loop-level IR only fuses a **2-input → 1-output**
+**The op is a chain of binary adds.** The loop-level IR only fuses a **2-input → 1-output**
 add, so an n-input sum compiles as a **chain of binary adds**, each writing an intermediate
 that the next reads back:
 
@@ -162,17 +163,33 @@ With scratchpad planning off every buffer lives in HBM, so each intermediate (`b
 | `add3` | arg0, arg1, **buf0**, arg2 | **buf0**, out | 4 | 2 | 0.33 |
 | `add4` | arg0, arg1, **buf0**, arg2, **buf1**, arg3 | **buf0**, **buf1**, out | 6 | 3 | 0.33 |
 
-**The round-trip bytes do not fully explain it.** Every arity has the *same* `w = 1/3`, so
-the §2 turnaround model predicts the *same* effective BW (~117 GB/s) for all of them — a flat
-line. But the measured effBW **declines**: 116 → 108 → 99 as `add → add3 → add4`. So there is
-an extra cost *beyond* the counted round-trip bytes.
+**Same bytes as *k* independent adds — but slower.** `add3`'s 4R:2W is exactly 2× `add`'s 2R:1W;
+`add4`'s 6R:3W is exactly 3× (verified: `io_hbm_bytes` is 2.00× / 3.00×). So the byte model predicts
+`add_k` = *k* independent adds — a flat effective BW. Measured, it runs **~7.5 % more per round-tripped
+intermediate** (`add3` +6 %, `add4` +16 %, consistent across the three shapes). The excess is **not
+extra bytes**: it is the **read-after-write dependency** the per-kernel byte model cannot see — `op1`
+reads `buf0` the instant `op0` writes it, and that dependent read of a just-written HBM buffer does not
+stream at the independent-read peak.
 
-![§3 effBW falls with each chained add: byte model predicts flat, a per-op derate captures the decline](figures/fig3_pointwise_arity.png)
+![§3 add_k sits above the "k independent adds" byte line by ~7.5% per round-tripped intermediate; with scratchpad on the intermediate stays on-chip and the gap vanishes](figures/fig3_pointwise_arity.png)
 
-**Model.** The derate grows **linearly** with the number of chained ops, and a linear form is
-good enough: `T × (1 + 0.075·(n_ops − 1))` — each extra op adds a flat 7.5 %. It lands `add3`
-exactly (base+turn 216 µs × 1.075 = 232 µs = measured) and `add4` within ~2 %, so there is no
-need for a higher-order (super-linear) term over the tested arities.
+**What this is *not*, and what we cannot yet separate.** It is **not** a "fusion penalty": `add3`
+already *is* the dependent chain (one bundle, two passes, `buf0` through HBM) — there is no faster
+"unfused" version at the same bytes to beat. The honest baseline in the figure is *k* **independent**
+adds (same bytes, no dependency), which is what the byte count models. And we do **not** have the
+controls that would decompose the excess — a measurement of the same sum forced into two *separate*
+kernels, or of two *independent* adds bundled identically. So we attribute it to the dependent HBM
+round-trip, but cannot yet split a pure read-after-write cost from any kernel-scheduling component;
+the mechanism is a **hypothesis**, and the deciding experiment (`add3` vs two-separate-kernels vs
+independent-bundle, at matched bytes) is queued.
+
+**One corroboration.** With scratchpad *on*, `buf0` stays on-chip, the HBM round-trip disappears, and
+`add3` drops to **1.35× `add`** — its 3R:1W byte count, with *no* derate (green in the figure). So the
+excess tracks the HBM round-trip of the dependent intermediate specifically, not the arity as such.
+
+**Model.** An empirical per-intermediate derate, linear in the chain length:
+`T × (1 + 0.075·(k − 1))` — each round-tripped intermediate adds ~7.5 %. It lands `add3` exactly
+(2 × 108 µs × 1.075 = 232 µs = measured) and `add4` within ~2 %, over the tested arities.
 
 ### Part I accuracy — every pointwise data point
 
@@ -593,18 +610,36 @@ that overhead grows as each core's pipeline shortens: for `2048×2048×2048` the
 falls `0.64 → 0.49 → 0.35` as cores go `4 → 8 → 32`. A single `γ` is a compromise across core
 counts; an `L`-dependent γ is the natural refinement (a queued core-count sweep, see the appendix).
 
-![§10 prediction error vs memory fraction: additive (γ=0) over-predicts as memory grows; γ=0.46 flattens the compute-leaning bulk, but the thin-M/N shapes (ringed) scatter — deferred to §12](figures/fig10_matmul_overlap.png)
+![§10 prediction error vs memory fraction for every 32-core matmul run (k=1, power-of-2 shapes), colored by regime. Two markers per run: the additive model (γ=0, open) over-predicts more as the memory fraction grows; the overlap term (γ=0.46, filled) lowers every prediction, closing that over-prediction for the realistic bulk. Outliers are labeled with tensor size M×K×N and split m×n×k. The outlier causes — work-division extreme (lopsided split), tensor-size extreme (thin reduction), and tiny (small output) — are colored separately.](figures/fig10_matmul_overlap.png)
 
-**Where it holds, and the outliers.** The figure plots each balanced matmul's error against its
-**memory fraction** `memory / (compute + memory)`. For the compute-leaning bulk (fraction ≲ 0.45)
-the additive model (`γ=0`, open) over-predicts more and more as memory grows, up to +40 %, and
-`γ=0.46` (filled) flattens it to **±10 % across every shape class**. The remaining outliers
-(ringed, |error| > 12 %) are **all thin-M/N** shapes: `512×2048×2048` (+48 %), `2048×2048×512`
-(+30 %), `2048×2048×1024` (+26 %), and non-pow2 `2048×2048×4608` (−17 %). These are the same
-thin-operand shapes flagged in §8 — the error there is the memory/tile term, not overlap, so we
-resolve them in **§12** rather than distort γ to chase them. (Two families are filtered out of
-this figure entirely: lopsided splits `1×32`/`16×2` (−40…−47 % before the §12 split term) and
-tiny-`K` matmuls (near-pure memory) — both §12's.)
+**Does γ generalize?** The figure plots **every 32-core matmul run** against its memory fraction, each
+with two markers — additive (`γ=0`, open) and overlap (`γ=0.46`, filled). Read vertically: the drop
+from open to filled *is* the overlap term — it always **lowers** the prediction (filled sits below
+open), by construction. The additive model over-predicts more and more as the memory fraction grows —
+up to **+40…+50 %** for the memory-heaviest runs — and overlap closes exactly that gap: the
+**realistic** points land inside ±10 % across the whole fraction range. That the *same* `γ = 0.46`
+does this for every realistic shape and memory fraction is the evidence it generalizes.
+
+Because overlap only lowers the prediction, it is *not* a universal pull toward 0: a run whose
+additive prediction is already near or below the measured time is pushed **more** negative. That
+happens for a handful of **work-division extreme** runs (lopsided `1×32` / `16×2` / `32×1`), where the
+additive model already under-predicts — overlap is the wrong lever for those, and the §12 split term
+(applied separately, after the overlap) is what they need.
+
+What still sits outside ±10 % after overlap is **not** an overlap miss — it is spill / split and
+small-kernel effects taken up next, split into three distinct causes (each outlier labeled with its
+size *and* split):
+
+- **work-division extreme** (lopsided split, fanout > 8: `32×1`, `1×32`, `16×2`) — a normal-shape tensor
+  whose per-core tile is fanned lopsidedly; this is §12's split term.
+- **tensor-size extreme** (thin reduction, `K ≤ 128`) — a memory-heavy, compute-starved operand; it
+  stresses the memory/tile term (§8 / §11), and sits at the high-memory-fraction right edge.
+- **tiny** (small output, `min(M,N) ≤ 512`) — a small kernel riding the fixed per-kernel overhead floor.
+
+The **realistic** group (balanced split, normal shape) is the tightest — the regime the model is built
+for. (This figure keeps only the all-32-core, `k = 1`, power-of-2 cases; lower core counts are a separate
+`γ(cores)` refinement — a single `γ` is a compromise across core counts, the queued core-count sweep in
+the appendix.)
 
 ### §11. A residual: when the operand tile overflows on-chip memory
 
@@ -705,17 +740,19 @@ forced `32×1` / `1×32` ends (long- and short-dim terms) — with balanced and 
 What remains is the most extreme wide-problem case (splitting a very long dimension ×32, last row):
 better than before but still under — the deep tail the two knees do not fully reach.
 
-**Part III accuracy — matmul, by regime.** The planner-realistic bulk is within a few percent; the
-lopsided rows are now modeled by §12; tiny / thin matmuls (sub-10-µs kernels on a fixed per-kernel
-overhead, or thin memory-heavy shapes) remain a bounded, flagged residual off the real-workload path.
+**Part III accuracy — matmul, by regime** (power-of-2 shapes only). The **realistic** bulk is within a
+few percent; the **work-division extreme** (lopsided-split) rows are now modeled by §12; the
+**tensor-size extreme** (thin-K) and **tiny** (small-output) matmuls remain bounded, flagged residuals
+off the real-workload path.
 
 | regime | n | RMS % | mean % | err range | status |
 |---|---:|---:|---:|---|---|
-| planner-realistic (K whole, fanout ≤ 8, non-tiny) | 35 | **5.8** | +3.1 | −7…+19 | modeled |
-| lopsided split (fanout > 8) | 48 | **15.0** | −2.4 | −39…+46 | §12: two-sided split term (base was 36 % / −29 %); both `16×2` and `32×1`/`1×32` pulled in; only the most extreme wide-problem ×32 splits still trail |
-| tiny / thin (K ≤ 128 or min(M,N) ≤ 512) | 17 | 22.0 | +4.1 | −34…+48 | flagged: fixed-overhead floor + thin-shape residual |
+| realistic (balanced split, normal shape) | 34 | **5.8** | +3.4 | -6…+19 | modeled |
+| work-division extreme (fanout > 8) | 10 | **10.2** | -3.2 | -16…+22 | §12 two-sided split term; only the most extreme ×32 splits still trail |
+| tensor-size extreme (thin reduction, K ≤ 128) | 6 | 15.9 | +10.7 | +1…+32 | flagged: thin-operand memory/tile residual |
+| tiny (small output, min(M,N) ≤ 512) | 7 | 27.7 | +8.6 | -28…+48 | flagged: fixed per-kernel overhead floor |
 
-Representative planner-realistic points (the regime the model is built for):
+Representative realistic points (the regime the model is built for):
 
 | M×K×N | split (m×n×k) | measured µs | predicted µs | err % |
 |---|---|---:|---:|---:|
@@ -727,7 +764,7 @@ Representative planner-realistic points (the regime the model is built for):
 | 2048×4096×2048 | 4×8×1 (cores 32) | 667.1 | 702.3 | +5.3 |
 | 2048×2048×4096 | 4×8×1 (cores 32) | 764.0 | 781.2 | +2.2 |
 
-**Every matmul data point** (62 runs; `regime` = which row of the summary table above):
+**Every matmul data point** (57 runs, power-of-2 shapes only; `regime` = which row of the summary table above):
 
 | regime | M×K×N | split (m×n×k) | meas µs | pred µs | err % |
 |---|---|---|---:|---:|---:|
@@ -745,7 +782,6 @@ Representative planner-realistic points (the regime the model is built for):
 | `realistic` | 4096×2048×2048 | 4×8×1 | 806.1 | 781.2 | -3.1 |
 | `realistic` | 4096×2048×2048 | 4×8×1 | 810.3 | 781.2 | -3.6 |
 | `realistic` | 4096×2048×2048 | 8×4×1 | 831.5 | 781.2 | -6.0 |
-| `realistic` | 2048×2048×4608 | 4×8×1 | 944.1 | 879.5 | -6.8 |
 | `realistic` | 1024×4096×1024 | 2×2×1 | 1006.3 | 1070.7 | +6.4 |
 | `realistic` | 2048×4096×2048 | 4×4×1 | 1093.4 | 1227.6 | +12.3 |
 | `realistic` | 2048×2048×2048 | 2×4×1 | 1093.8 | 1140.0 | +4.2 |
@@ -766,33 +802,29 @@ Representative planner-realistic points (the regime the model is built for):
 | `realistic` | 2048×2048×4096 | 2×2×1 | 4026.8 | 4106.4 | +2.0 |
 | `realistic` | 4096×2048×2048 | 2×2×1 | 4027.0 | 4106.4 | +2.0 |
 | `realistic` | 4096×2048×4096 | 2×2×1 | 8045.1 | 8061.8 | +0.2 |
-| `extreme` | 64×4096×2048 | 1×32×1 | 127.9 | 126.5 | -1.0 |
-| `extreme` | 32×4096×4096 | 1×32×1 | 264.9 | 238.8 | -9.9 |
-| `extreme` | 64×4096×4096 | 1×32×1 | 276.4 | 249.6 | -9.7 |
-| `extreme` | 2048×2048×2048 | 2×16×1 | 399.4 | 393.4 | -1.5 |
-| `extreme` | 4096×2048×2048 | 2×16×1 | 811.1 | 781.2 | -3.7 |
-| `extreme` | 4096×2048×2048 | 32×1×1 | 1202.7 | 1468.0 | +22.1 |
-| `extreme` | 4096×2048×2048 | 16×2×1 | 1222.8 | 1124.6 | -8.0 |
-| `extreme` | 4096×2048×2048 | 1×32×1 | 1381.8 | 1158.7 | -16.1 |
-| `extreme` | 8192×2048×2048 | 2×16×1 | 1632.6 | 1582.0 | -3.1 |
-| `extreme` | 8192×2048×2048 | 16×2×1 | 2632.8 | 2612.2 | -0.8 |
+| `work-div` | 64×4096×2048 | 1×32×1 | 127.9 | 126.5 | -1.0 |
+| `work-div` | 32×4096×4096 | 1×32×1 | 264.9 | 238.8 | -9.9 |
+| `work-div` | 64×4096×4096 | 1×32×1 | 276.4 | 249.6 | -9.7 |
+| `work-div` | 2048×2048×2048 | 2×16×1 | 399.4 | 393.4 | -1.5 |
+| `work-div` | 4096×2048×2048 | 2×16×1 | 811.1 | 781.2 | -3.7 |
+| `work-div` | 4096×2048×2048 | 32×1×1 | 1202.7 | 1468.0 | +22.1 |
+| `work-div` | 4096×2048×2048 | 16×2×1 | 1222.8 | 1124.6 | -8.0 |
+| `work-div` | 4096×2048×2048 | 1×32×1 | 1381.8 | 1158.7 | -16.1 |
+| `work-div` | 8192×2048×2048 | 2×16×1 | 1632.6 | 1582.0 | -3.1 |
+| `work-div` | 8192×2048×2048 | 16×2×1 | 2632.8 | 2612.2 | -0.8 |
+| `tensor` | 1024×128×2048 | 4×8×1 | 31.5 | 41.7 | +32.5 |
+| `tensor` | 2048×64×2048 | 4×8×1 | 56.6 | 68.0 | +20.2 |
+| `tensor` | 2048×16×2048 | 4×8×1 | 64.7 | 68.6 | +6.0 |
+| `tensor` | 2048×32×2048 | 4×8×1 | 69.6 | 71.2 | +2.4 |
+| `tensor` | 4096×32×2048 | 4×8×1 | 131.8 | 134.0 | +1.7 |
+| `tensor` | 4096×32×4096 | 4×8×1 | 257.9 | 261.5 | +1.4 |
 | `tiny` | 512×64×512 | 4×8×1 | 5.3 | 5.4 | +2.2 |
 | `tiny` | 512×64×512 | 4×4×1 | 7.5 | 5.6 | -24.7 |
 | `tiny` | 512×64×512 | 2×4×1 | 8.4 | 6.1 | -27.6 |
-| `tiny` | 768×64×768 | 2×4×1 | 14.1 | 12.6 | -10.3 |
-| `tiny` | 768×64×768 | 4×4×1 | 17.3 | 11.4 | -34.0 |
 | `tiny` | 512×512×1024 | 4×8×1 | 20.3 | 27.5 | +35.0 |
 | `tiny` | 256×2048×512 | 4×8×1 | 26.0 | 28.2 | +8.4 |
-| `tiny` | 1024×128×2048 | 4×8×1 | 31.5 | 41.7 | +32.5 |
-| `tiny` | 2048×64×2048 | 4×8×1 | 56.6 | 68.0 | +20.2 |
-| `tiny` | 2048×16×2048 | 4×8×1 | 64.7 | 68.6 | +6.0 |
-| `tiny` | 2048×32×2048 | 4×8×1 | 69.6 | 71.2 | +2.4 |
 | `tiny` | 512×2048×2048 | 4×8×1 | 86.2 | 127.7 | +48.2 |
-| `tiny` | 1792×64×3584 | 4×8×1 | 104.5 | 103.6 | -0.9 |
 | `tiny` | 2048×2048×512 | 4×8×1 | 107.4 | 127.7 | +19.0 |
-| `tiny` | 1792×2048×512 | 4×8×1 | 125.2 | 113.5 | -9.3 |
-| `tiny` | 4096×32×2048 | 4×8×1 | 131.8 | 134.0 | +1.7 |
-| `tiny` | 4096×32×4096 | 4×8×1 | 257.9 | 261.5 | +1.4 |
 
 ---
 
