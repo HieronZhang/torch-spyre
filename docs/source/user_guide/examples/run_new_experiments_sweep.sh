@@ -47,7 +47,9 @@
 # ============================================================================
 
 set -u
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# ${BASH_SOURCE[0]} is the script's real path whether run (`bash x.sh`) or sourced;
+# plain $0 would be the shell name under `source`, breaking every path below.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR")"
 PROFILE_OPS="$SCRIPT_DIR/profile_ops.py"
 cd "$ROOT" || exit 1
