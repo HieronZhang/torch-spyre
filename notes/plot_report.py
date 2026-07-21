@@ -210,70 +210,75 @@ def fig_pointwise_vcurve(recs):
 # at w=1/3), but measured effBW DECLINES with each chained op -> a per-op derate.
 # ============================================================================
 def fig_pointwise_arity(recs):
-    # §3: the honest baseline for a fused n-input add is the SAME computation run as
-    # (n-1) separate binary adds -- which moves identical HBM bytes (each intermediate
-    # round-trips). Plot each op's kernel time RELATIVE to one `add` at the same shape:
-    # the byte model predicts add_k = k * add exactly (the gray "unfused chain" line),
-    # but the fused kernel sits ABOVE it -- it streams slower than not fusing.
-    derate = 0.075
-    ops = [("add", 1), ("add3", 2), ("add4", 3)]  # k = equivalent number of binary adds
-    shapes = {(2048, 1024), (2048, 4096), (2048, 16384)}  # the arity sweep (add3/add4 exist here)
-    recs = _load(current_only=False)  # measured times are version-independent
-    # single-add baseline per shape (add has no intermediate -> scratchpad-independent)
-    add_t = {}
+    # §3: the three-way decomposition at matched 4R:2W bytes. Normalize each variant to
+    # 2x(single add) -- the byte-count baseline for add3. Three controls:
+    #   add_indep2  = two INDEPENDENT adds, same bytes, NO read-after-write  -> the baseline
+    #   add3_sep    = SAME chain, SEPARATE kernels (dependency present, fusion absent)
+    #   add3        = fused chain (dependency + fusion)
+    # add3 - add_indep2 = the read-after-write cost; add3 - add3_sep = the fusion cost (~0).
+    # LEFT: scratchpad OFF (buf in HBM). RIGHT: scratchpad ON (buf on-chip if it fits) --
+    # only the FUSED add3 benefits; add3_sep can't (its intermediate crosses a kernel edge).
+    shapes = [1024, 4096, 16384]  # COLS (ROWS = 2048); each becomes one dot per variant
+    recs = _load(current_only=False)
+    # per (op, cols, lx): the NEWEST measurement (the run that has the controls wins)
+    best = {}
     for r in recs:
-        if r["op"] == "add" and r.get("kernel_us") and (r.get("rows"), r.get("cols")) in shapes \
-                and r.get("lx") == 0:
-            add_t.setdefault((r["rows"], r["cols"]), []).append(r["kernel_us"])
-    add_t = {k: sum(v) / len(v) for k, v in add_t.items()}
-    off = {k: [] for _, k in ops}   # scratchpad OFF (lx=0): intermediate round-trips HBM
-    on = {k: [] for _, k in ops}    # scratchpad ON  (lx=1): intermediate stays on-chip
-    for r in recs:
-        if (r.get("rows"), r.get("cols")) not in shapes or not r.get("kernel_us"):
+        if r["op"] not in ("add", "add3", "add3_sep", "add_indep2") or not r.get("kernel_us"):
             continue
-        for op, k in ops:
-            if r["op"] != op:
-                continue
-            base = add_t.get((r["rows"], r["cols"]))
-            if not base:
-                continue
-            (off if r.get("lx") == 0 else on if r.get("lx") == 1 else {k: []})[k].append(
-                r["kernel_us"] / base)
-    ks = [k for _, k in ops]
+        k = (r["op"], r.get("cols"), r.get("lx"))
+        if k not in best or (r.get("log_date") or "") > (best[k].get("log_date") or ""):
+            best[k] = r
 
-    fig, ax = plt.subplots(figsize=(6.2, 4.6))
-    # reference: k INDEPENDENT adds -- same bytes as add_k, but NO read-after-write dependency.
-    # This is what the byte model predicts (it can't see the cross-op dependency).
-    ax.plot(ks, ks, "--", color="0.55", lw=1.4, zorder=1,
-            label="k INDEPENDENT adds — same bytes, no dependency\n(what the byte count predicts)")
-    ax.plot(ks, [k * (1 + derate * (k - 1)) for k in ks], "-", color="#d62728", lw=1.3,
-            marker="s", ms=5, zorder=2, label=f"empirical derate: k·(1 + {derate}·(k−1))")
-    ax.plot(ks, [(k + 2) / 3 for k in ks], ":", color="#2ca02c", lw=1.6, zorder=1,
-            label="scratchpad on: intermediate on-chip, no round-trip (k+2)/3")
-    # measured
-    for k in ks:
-        if off[k]:
-            ax.scatter([k] * len(off[k]), off[k], s=46, color="#1f77b4", zorder=3,
-                       edgecolors="white", linewidths=0.5,
-                       label="add_k, scratchpad OFF (buf round-trips HBM)" if k == 1 else None)
-        if on[k]:
-            ax.scatter([k] * len(on[k]), on[k], s=46, color="#2ca02c", marker="D", zorder=3,
-                       edgecolors="white", linewidths=0.5,
-                       label="add_k, scratchpad ON (buf on-chip)" if k == 2 else None)
-    ax.annotate("+7.5% per round-tripped intermediate:\nop_i reads buf_{i-1} the instant it is written\n"
-                "(read-after-write not in the byte count)",
-                xy=(2.97, 3.45), xytext=(2.02, 2.45), fontsize=7.0, color="#1f4e8c",
-                ha="left", arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8))
-    ax.annotate("no HBM round-trip → derate vanishes\n(≈ the 3R:1W byte count)",
-                xy=(2, 1.35), xytext=(2.05, 1.62), fontsize=7.0, color="#1f7a1f",
+    def ratio(op, C, lx):  # kernel time / (2 x single add) at matched shape+scratchpad
+        v = best.get((op, C, lx))
+        a = best.get(("add", C, lx))
+        return (v["kernel_us"] / (2 * a["kernel_us"])) if v and a else None
+
+    # x layout: OFF group {indep, sep, fused}, gap, ON group {fused, sep}
+    groups = [("OFF", [("add_indep2", "no dep"), ("add3_sep", "sep + dep"),
+                       ("add3", "fused + dep")], 0),
+              ("ON", [("add3", "fused"), ("add3_sep", "sep")], 1)]
+    colcode = {"add_indep2": "#2ca02c", "add3_sep": "#ff7f0e", "add3": "#1f77b4"}
+    fig, ax = plt.subplots(figsize=(7.4, 4.6))
+    ax.axhline(1.0, color="0.5", lw=1.3, zorder=1,
+               label="byte-count baseline = 2× add  (no dependency)")
+    xt, xl = [], []
+    x = 0
+    for tag, variants, lx in groups:
+        for op, sub in variants:
+            ys = [ratio(op, C, lx) for C in shapes]
+            ys = [y for y in ys if y is not None]
+            if not ys:
+                x += 1
+                continue
+            ax.scatter([x] * len(ys), ys, s=42, color=colcode[op], zorder=3,
+                       edgecolors="white", linewidths=0.5)
+            ax.plot([x - 0.22, x + 0.22], [sum(ys) / len(ys)] * 2, "-",
+                    color=colcode[op], lw=2.4, zorder=4)  # mean bar
+            xt.append(x)
+            xl.append(f"{op}\n{sub}")
+            x += 1
+        x += 0.8  # gap between OFF and ON groups
+    # decomposition annotations (OFF group)
+    ax.annotate("read-after-write\n= +6.6%", xy=(2, 1.07), xytext=(2.15, 1.20),
+                fontsize=8, color="#1f4e8c", ha="left",
                 arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8))
-    ax.set_xticks(ks)
-    ax.set_xticklabels(["add\n(k=1)", "add3\n(k=2)", "add4\n(k=3)"])
-    ax.set_xlabel("n-input add  (k = number of dependent binary adds)")
-    ax.set_ylabel("kernel time  /  one `add`  (same shape)")
-    ax.set_title("§3  add_k costs more than the same bytes with no dependency\n"
-                 "(the read-after-write on the round-tripped intermediate — not in the byte count)")
-    ax.legend(loc="upper left", fontsize=6.6, framealpha=0.9)
+    ax.annotate("fusion ≈ 0\n(add3 ≈ add3_sep)", xy=(1.5, 1.065), xytext=(0.2, 1.25),
+                fontsize=8, color="0.3", ha="left")
+    ax.annotate("on-chip → the\ndependency cost is gone\n(fused only)",
+                xy=(3.8, 0.65), xytext=(3.0, 0.40), fontsize=8, color="#1f7a1f", ha="left",
+                arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8))
+    ax.text(1.0, 1.42, "scratchpad OFF  (buf in HBM)", ha="center", fontsize=9,
+            color="0.3", weight="bold")
+    ax.text(4.3, 1.42, "scratchpad ON  (buf fits on-chip)", ha="center", fontsize=9,
+            color="0.3", weight="bold")
+    ax.set_xticks(xt)
+    ax.set_xticklabels(xl, fontsize=7.5)
+    ax.set_ylabel("kernel time  /  2× add  (matched 4R:2W bytes)")
+    ax.set_ylim(0.30, 1.5)
+    ax.set_title("§3  Decomposing the dependent add-chain cost (each dot = one of 3 shapes)\n"
+                 "the margin is the read-after-write dependency, not fusion")
+    ax.legend(loc="lower center", fontsize=7.8, framealpha=0.9)
     _save(fig, "fig3_pointwise_arity")
 
 

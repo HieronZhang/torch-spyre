@@ -138,14 +138,10 @@ which is the subject of §3.
 
 **Model.** `T = (R+W)/BW_peak + α·min(R,W)`, with `BW_peak = 150`, `α = 0.00574 ns/B`.
 
-### §3. A dependent add-chain costs more than its byte count
+### §3. A dependent add-chain: isolating the read-after-write cost
 
-**Observation.** In §2's figure, `add3`/`add4` sat *below* the turnaround valley — they run slower per
-byte than a single `add`, worsening with each extra operand. "Slower per byte than a single `add`"
-understates it, though; the sharp comparison is against the **same bytes with no data dependency**.
-
-**The op is a chain of binary adds.** The loop-level IR only fuses a **2-input → 1-output**
-add, so an n-input sum compiles as a **chain of binary adds**, each writing an intermediate
+**Observation.** An n-input sum `a + b + c + …` is not a native op — the loop-level IR fuses only a
+**2-input → 1-output** add, so it compiles to a **chain of binary adds**, each writing an intermediate
 that the next reads back:
 
 ```
@@ -154,42 +150,55 @@ add3:  op0 = arg0 + arg1            add4:  op0 = arg0 + arg1
                                            op2 = buf1 + arg3  (= out)
 ```
 
-With scratchpad planning off every buffer lives in HBM, so each intermediate (`buf0`,
-`buf1`) is **written and read back** — and that traffic is already in the byte count:
+With scratchpad planning off every intermediate lives in HBM, written and read back — and that
+round-trip traffic is **fully counted**:
 
-| op | reads | writes | R | W | `w = W/(R+W)` |
-|---|---|---|---|---|---|
-| `add` | arg0, arg1 | out | 2 | 1 | 0.33 |
-| `add3` | arg0, arg1, **buf0**, arg2 | **buf0**, out | 4 | 2 | 0.33 |
-| `add4` | arg0, arg1, **buf0**, arg2, **buf1**, arg3 | **buf0**, **buf1**, out | 6 | 3 | 0.33 |
+| op | reads | writes | R | W |
+|---|---|---|---|---|
+| `add` | arg0, arg1 | out | 2 | 1 |
+| `add3` | arg0, arg1, **buf0**, arg2 | **buf0**, out | 4 | 2 |
+| `add4` | arg0, arg1, **buf0**, arg2, **buf1**, arg3 | **buf0**, **buf1**, out | 6 | 3 |
 
-**Same bytes as *k* independent adds — but slower.** `add3`'s 4R:2W is exactly 2× `add`'s 2R:1W;
-`add4`'s 6R:3W is exactly 3× (verified: `io_hbm_bytes` is 2.00× / 3.00×). So the byte model predicts
-`add_k` = *k* independent adds — a flat effective BW. Measured, it runs **~7.5 % more per round-tripped
-intermediate** (`add3` +6 %, `add4` +16 %, consistent across the three shapes). The excess is **not
-extra bytes**: it is the **read-after-write dependency** the per-kernel byte model cannot see — `op1`
-reads `buf0` the instant `op0` writes it, and that dependent read of a just-written HBM buffer does not
-stream at the independent-read peak.
+`add3`'s 4R:2W is exactly 2× `add`'s 2R:1W, `add4`'s 6R:3W exactly 3× (verified: `io_hbm_bytes` is
+2.00× / 3.00×). So the byte model predicts `add_n = (n−1)×add`. Measured, it runs a few percent
+slower — `add3` **+7 %**, rising to **~+16 %** by `add4`.
 
-![§3 add_k sits above the "k independent adds" byte line by ~7.5% per round-tripped intermediate; with scratchpad on the intermediate stays on-chip and the gap vanishes](figures/fig3_pointwise_arity.png)
+**Question.** That round-trip I/O is *already* in the `(n−1)×add` baseline, so the margin is **not**
+the intermediate traffic. Is it the **read-after-write dependency** (each op reads a just-written
+buffer), or the **fused kernel** running several passes in one launch?
 
-**What this is *not*, and what we cannot yet separate.** It is **not** a "fusion penalty": `add3`
-already *is* the dependent chain (one bundle, two passes, `buf0` through HBM) — there is no faster
-"unfused" version at the same bytes to beat. The honest baseline in the figure is *k* **independent**
-adds (same bytes, no dependency), which is what the byte count models. And we do **not** have the
-controls that would decompose the excess — a measurement of the same sum forced into two *separate*
-kernels, or of two *independent* adds bundled identically. So we attribute it to the dependent HBM
-round-trip, but cannot yet split a pure read-after-write cost from any kernel-scheduling component;
-the mechanism is a **hypothesis**, and the deciding experiment (`add3` vs two-separate-kernels vs
-independent-bundle, at matched bytes) is queued.
+**Experiment.** Three variants at *identical* 4R:2W bytes, differing only in structure:
 
-**One corroboration.** With scratchpad *on*, `buf0` stays on-chip, the HBM round-trip disappears, and
-`add3` drops to **1.35× `add`** — its 3R:1W byte count, with *no* derate (green in the figure). So the
-excess tracks the HBM round-trip of the dependent intermediate specifically, not the arity as such.
+- `add_indep2` — two **independent** adds (same bytes, **no** dependency),
+- `add3_sep` — the same chain forced into **separate** kernels (dependency present, fusion absent),
+- `add3` — the fused chain (dependency + fusion).
 
-**Model.** An empirical per-intermediate derate, linear in the chain length:
-`T × (1 + 0.075·(k − 1))` — each round-tripped intermediate adds ~7.5 %. It lands `add3` exactly
-(2 × 108 µs × 1.075 = 232 µs = measured) and `add4` within ~2 %, over the tested arities.
+`add3 − add_indep2` is the dependency cost; `add3 − add3_sep` is the fusion cost. Each is run with
+scratchpad off (intermediate in HBM) and on (on-chip if it fits).
+
+![§3 three-way decomposition at matched 4R:2W bytes, normalized to 2× add: add_indep2 (no dependency) sits on the baseline; add3 and add3_sep both sit +6.6% above it (dependency, fusion irrelevant); with scratchpad on the fused add3 drops to 0.63× while add3_sep stays put](figures/fig3_pointwise_arity.png)
+
+**Result.**
+
+- `add_indep2` sits **on** the `2×add` baseline (±1 %) — the byte model is exactly right; the same
+  bytes with no dependency carry no margin.
+- `add3` and `add3_sep` are both **+6.6 %** above it, essentially equal. So the margin is the
+  **read-after-write dependency** — the dependent read of the just-written HBM buffer cannot proceed
+  at the independent-read rate — and **fusion adds ~nothing** (`add3 − add3_sep` = +0.7 %).
+- Scratchpad **on** removes it, but **only for the fused chain**: `add3` → **0.63×** once the buffer
+  fits on-chip (no HBM read-after-write). `add3_sep` cannot benefit — its intermediate crosses a
+  kernel boundary, so it always goes through HBM. (At the largest shape the buffer exceeds LX and
+  `add3`-on returns to the off value.)
+
+**Model (provisional).** The dependency cost is **~+7 % for one dependent HBM read**, reaching
+**~+16 % for ≥ 2** (across `add3`–`add6`), and is **gated off** when the intermediate is on-chip. The
+shipped model still uses the older linear derate `T × (1 + 0.075·(k−1))`, which happens to fit `add3`
+(+7.5 %) and `add4` (+15 %) — the realistic arities — but **over-predicts higher arities, which
+saturate** rather than grow linearly. The exact curve past two reads is not yet pinned: the per-read
+cost is non-monotonic (a consistent ~2× bump at the *second* read) and the plateau rests on four
+arity points from a **cols-only** sweep. A queued extension (`add8`, plus a ROWS sweep and an
+iso-size aspect sweep, which the cols-only sweep can't separate) will fix the shape before a
+saturating term replaces the linear one.
 
 ### Part I accuracy — every pointwise data point
 

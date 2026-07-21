@@ -56,7 +56,7 @@ cd "$ROOT" || exit 1
 mkdir -p haoyang_logs
 LOG="haoyang_logs/new_experiments_$(date +%Y%m%d_%H%M%S).log"
 [[ -n "${DB_LOG:-}" ]] && LOG=/dev/null   # under run_db_sweep: master writes the unified log
-SECTIONS="${SECTIONS:-GAMMA BWCORES ARITY THINK TINY MSPLIT BMM COARSE}"
+SECTIONS="${SECTIONS:-GAMMA BWCORES ARITY ARITYX THINK TINY MSPLIT BMM COARSE}"
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1
 
 echo "==== new-experiments sweep $(date) ====" | tee "$LOG"
@@ -130,6 +130,21 @@ has ARITY && { echo "## ARITY add{,3,4,5,6}+add_indep2+add3/4_sep at 3 shapes, L
     for sh in "2048 1024" "2048 4096" "2048 16384"; do
       for op in add add3 add4 add5 add6 add_indep2 add3_sep add4_sep; do runpw "$op" $sh "$lx"; done
     done
+  done; }
+# ARITYX: the main ARITY sweep only varied COLS (fixed ROWS=2048) -> total size and stick
+# width move together, and rows-per-core never changes. This probes the curve shape AND the
+# shape-dependence the cols-only sweep can't: (a) extend to add8 + replicate to nail the
+# plateau / 2nd-read bump; (b) vary ROWS at fixed COLS (rows-per-core = ROWS/32 -> pipeline
+# depth); (c) hold total size ~constant across 3 aspect ratios. All LX off.
+has ARITYX && { echo "## ARITYX add8 + replicate + ROWS sweep + iso-size aspect sweep, LX off" | tee -a "$LOG"
+  for _ in 1 2; do
+    for op in add add3 add4 add5 add6 add8; do runpw "$op" 2048 4096 0; done
+  done
+  for R in 512 2048 8192; do
+    for op in add add3 add4; do runpw "$op" "$R" 4096 0; done
+  done
+  for sh in "512 16384" "2048 4096" "8192 1024"; do   # ~8M elems, 3 aspect ratios
+    for op in add add3 add4; do runpw "$op" $sh 0; done
   done; }
 
 # ============ THINK (M1, §12): tensor-size extreme -- thin reduction K<=128 ===

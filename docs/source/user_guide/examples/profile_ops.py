@@ -93,7 +93,7 @@ _UNARY = {  # 1 read + 1 write (gelu/relu/sigmoid/exp also probe arithmetic-free
     "exp": torch.exp,
 }
 _BINARY = {"mul": lambda a, b: a * b, "add": lambda a, b: a + b}  # 2R + 1W
-_NARY = {"add3": 3, "add4": 4, "add5": 5, "add6": 6}  # n inputs summed (dependent chain)
+_NARY = {"add3": 3, "add4": 4, "add5": 5, "add6": 6, "add8": 8}  # n inputs summed (dependent chain)
 _REDUCE = {  # read-dominated; sumall reduces to a scalar -> ring combine
     "read": lambda x: x.sum(dim=-1),
     "sumrow": lambda x: x.sum(dim=-1),  # reduce COLS -> [ROWS] (within-stick axis)
