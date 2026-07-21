@@ -574,6 +574,23 @@ def make_workload():
         # fuses the two into one kernel or emits two; both readings are informative.)
         indep = lambda a, b, c, d: (a + b, c + d)  # noqa: E731
         return torch.compile(indep), tuple(_rand(ROWS, COLS) for _ in range(4))
+    if OP in ("add3_sep", "add4_sep"):  # §3 control: the SAME dependent chain as add3/add4
+        # but forced into SEPARATE kernels (each add is its own torch.compile) with the
+        # read-after-write dependency IDENTICAL -- the intermediate is written to HBM by one
+        # kernel and read by the next. add3 vs add3_sep = the fusion/bundling cost with the
+        # dependency held fixed (the byte traffic is the same either way). NOTE: the harness
+        # cost-model dump captures only the LAST sub-kernel's feats; the MEASURED kernel time
+        # (what we compare) covers all sub-kernels.
+        f = torch.compile(lambda a, b: a + b)  # noqa: E731
+        n = 3 if OP == "add3_sep" else 4
+
+        def chain(*ts):  # ((t0+t1)+t2)+... each '+' is a distinct compiled kernel
+            acc = f(ts[0], ts[1])
+            for t in ts[2:]:
+                acc = f(acc, t)
+            return acc
+
+        return chain, tuple(_rand(ROWS, COLS) for _ in range(n))
     if OP in _CT_REDUCE:  # coarse-tiled dim0 reduction (BENCH_TILES, LX_PLANNING)
         return _ct_workload(_CT_REDUCE[OP])
     if OP == "softmax_row_tiling":  # softmax(dim=-1) NROW-tiled -> 5 ops fuse in LX
@@ -615,6 +632,8 @@ def make_workload():
             "bcastcol",
             "write",
             "add_indep2",
+            "add3_sep",
+            "add4_sep",
             "softmax_row_tiling",
             "softmax_noexp_row_tiling",
             "softmax_unrolled",
@@ -745,11 +764,15 @@ def _print_model(feats: list) -> float:
 
 
 def _run():
+    def _sync(out):  # move result(s) to host; multi-output workloads return a tuple/list
+        for t in (out if isinstance(out, (tuple, list)) else (out,)):
+            t.cpu()
+
     compiled, args = make_workload()
     for _ in range(WARMUP):  # compile (-> cost-model dump fires) + warm the kernel
         if _PREPARE is not None:  # coarse-tile: re-declare named dims before each trace
             _PREPARE()
-        compiled(*args).cpu()
+        _sync(compiled(*args))
     io = dict(dump_cost_model.LAST_IO)  # device-layout I/O the model computed
     feats = list(dump_cost_model.LAST_FEATS)  # raw OpFeatures for predict_ops()
     io_hbm_bytes = io.get("hbm_bytes", 0)
@@ -761,7 +784,7 @@ def _run():
     ) as prof:
         if _PREPARE is not None:  # coarse-tile: re-declare before the profiled trace
             _PREPARE()
-        compiled(*args).cpu()
+        _sync(compiled(*args))
 
     print(f"== {OP}[{ROWS}x{COLS}] -- profiler kernel time vs cost-model I/O ==")
     ka = prof.key_averages()

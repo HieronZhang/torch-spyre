@@ -120,11 +120,15 @@ has BWCORES && { echo "## BWCORES memory-bound op at SENCORES {1,2,4,8,16,32}" |
   for c in 1 2 4 8 16 32; do runcb softmax_row_tiling 8192 2048 "$c" 8; done
   for c in 1 2 4 8 16 32; do runcb neg 16384 4096 "$c"; done; }
 
-# ============ ARITY (P1, §3): dependent chain vs independent, ± scratchpad ====
-has ARITY && { echo "## ARITY add{,3,4,5,6}+add_indep2 at 3 shapes, LX_PLANNING 0 and 1" | tee -a "$LOG"
+# ============ ARITY (P1, §3): dependent chain vs its controls, ± scratchpad ===
+# add{,3..6}   = the dependent chain FUSED into one kernel (intermediates in HBM when LX off).
+# add3/4_sep   = the SAME dependent chain, SEPARATE kernels (identical RAW dependency + bytes)
+#               -> add3 vs add3_sep isolates the fusion/bundling cost with the dependency fixed.
+# add_indep2   = TWO INDEPENDENT adds, same 4R:2W as add3 but NO dependency (harness fix applied).
+has ARITY && { echo "## ARITY add{,3,4,5,6}+add_indep2+add3/4_sep at 3 shapes, LX 0 and 1" | tee -a "$LOG"
   for lx in 0 1; do
     for sh in "2048 1024" "2048 4096" "2048 16384"; do
-      for op in add add3 add4 add5 add6 add_indep2; do runpw "$op" $sh "$lx"; done
+      for op in add add3 add4 add5 add6 add_indep2 add3_sep add4_sep; do runpw "$op" $sh "$lx"; done
     done
   done; }
 
