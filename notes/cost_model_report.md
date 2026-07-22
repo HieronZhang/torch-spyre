@@ -138,11 +138,11 @@ which is the subject of §3.
 
 **Model.** `T = (R+W)/BW_peak + α·min(R,W)`, with `BW_peak = 150`, `α = 0.00574 ns/B`.
 
-### §3. A dependent add-chain: isolating the read-after-write cost
+### §3. Chained adds: a read-after-write dependency, and a fusion penalty
 
-**Observation.** An n-input sum `a + b + c + …` is not a native op — the loop-level IR fuses only a
-**2-input → 1-output** add, so it compiles to a **chain of binary adds**, each writing an intermediate
-that the next reads back:
+**Setup.** An n-input sum `a + b + c + …` is not a native op. The loop-level IR fuses only a
+**2-input → 1-output** add, so `add_n` compiles to a **chain of binary adds**, each writing an
+intermediate that the next reads:
 
 ```
 add3:  op0 = arg0 + arg1            add4:  op0 = arg0 + arg1
@@ -150,55 +150,99 @@ add3:  op0 = arg0 + arg1            add4:  op0 = arg0 + arg1
                                            op2 = buf1 + arg3  (= out)
 ```
 
-With scratchpad planning off every intermediate lives in HBM, written and read back — and that
-round-trip traffic is **fully counted**:
+With scratchpad off every intermediate lives in HBM, so it is written and read back — traffic that is
+**fully counted**: `add3` moves 4R:2W (exactly 2× a single `add`'s 2R:1W), `add4` moves 6R:3W (3×);
+verified, `io_hbm_bytes` is 2.00× / 3.00×. The pure-byte model therefore predicts `add_n = (n−1)×add`.
 
-| op | reads | writes | R | W |
-|---|---|---|---|---|
-| `add` | arg0, arg1 | out | 2 | 1 |
-| `add3` | arg0, arg1, **buf0**, arg2 | **buf0**, out | 4 | 2 |
-| `add4` | arg0, arg1, **buf0**, arg2, **buf1**, arg3 | **buf0**, **buf1**, out | 6 | 3 |
+**Observation.** It runs slower than that. At a representative shape (`ROWS=2048, COLS=4096`; a single
+`add` = 438 µs), averaged over two runs:
 
-`add3`'s 4R:2W is exactly 2× `add`'s 2R:1W, `add4`'s 6R:3W exactly 3× (verified: `io_hbm_bytes` is
-2.00× / 3.00×). So the byte model predicts `add_n = (n−1)×add`. Measured, it runs a few percent
-slower — `add3` **+7 %**, rising to **~+16 %** by `add4`.
+| | byte-model baseline | measured (fused) |
+|---|---:|---:|
+| `add3` (= 2 adds) | 875 µs | 937 µs (**+7 %**) |
+| `add4` (= 3 adds) | 1314 µs | 1516 µs (**+15 %**) |
 
-**Question.** That round-trip I/O is *already* in the `(n−1)×add` baseline, so the margin is **not**
-the intermediate traffic. Is it the **read-after-write dependency** (each op reads a just-written
-buffer), or the **fused kernel** running several passes in one launch?
+**Question.** The intermediate round-trip I/O is *already inside* that `(n−1)×add` baseline, so the
+margin is **not** the bytes. Two candidates remain: the **read-after-write dependency** (each add reads
+a buffer the previous add just wrote), or the **fused kernel** (one launch running n−1 passes). To
+separate them we compare variants that move the *same* HBM bytes but differ in structure.
 
-**Experiment.** Three variants at *identical* 4R:2W bytes, differing only in structure:
+**Experiment.** Three controls, all at identical byte traffic:
 
-- `add_indep2` — two **independent** adds (same bytes, **no** dependency),
-- `add3_sep` — the same chain forced into **separate** kernels (dependency present, fusion absent),
-- `add3` — the fused chain (dependency + fusion).
+- `add_indep2` — two **independent** adds `(a+b, c+d)`: the same 4R:2W as `add3`, but **no** dependency.
+- `add3_sep` / `add4_sep` — the same dependent chain, but each binary add is its **own** kernel
+  (dependency present, no fusion; the intermediate still passes through HBM between kernels).
+- `add3` / `add4` — the fused chain (dependency **and** fusion).
 
-`add3 − add_indep2` is the dependency cost; `add3 − add3_sep` is the fusion cost. Each is run with
-scratchpad off (intermediate in HBM) and on (on-chip if it fits).
+`fused − add_indep2` isolates the dependency; `fused − sep` isolates fusion.
 
-![§3 three-way decomposition at matched 4R:2W bytes, normalized to 2× add: add_indep2 (no dependency) sits on the baseline; add3 and add3_sep both sit +6.6% above it (dependency, fusion irrelevant); with scratchpad on the fused add3 drops to 0.63× while add3_sep stays put](figures/fig3_pointwise_arity.png)
+![§3 fig A: bar plot, add3 group (baseline 2× add) and add4 group (baseline 3× add), in absolute µs. add_indep2 sits on the baseline; add3 ≈ add3_sep ≈ +7%; add4_sep ≈ +5% but add4 ≈ +15%; scratchpad-on bars drop to −33%/−46%.](figures/fig3_pointwise_arity.png)
 
-**Result.**
+**Result 1 — for one dependent read, the margin is the dependency (add3, fig A left).**
+`add_indep2` (no dependency) sits **on** the baseline (+0 %): same bytes, no margin. `add3_sep` and
+`add3` both sit at **+7 %** and are equal (`fused − sep` = +0.2 %, n = 6). So the +7 % is entirely the
+**read-after-write dependency** — the read of a just-written HBM buffer cannot stream at the
+independent-read rate, because it must wait for the write to become visible. Fusion is irrelevant here.
 
-- `add_indep2` sits **on** the `2×add` baseline (±1 %) — the byte model is exactly right; the same
-  bytes with no dependency carry no margin.
-- `add3` and `add3_sep` are both **+6.6 %** above it, essentially equal. So the margin is the
-  **read-after-write dependency** — the dependent read of the just-written HBM buffer cannot proceed
-  at the independent-read rate — and **fusion adds ~nothing** (`add3 − add3_sep` = +0.7 %).
-- Scratchpad **on** removes it, but **only for the fused chain**: `add3` → **0.63×** once the buffer
-  fits on-chip (no HBM read-after-write). `add3_sep` cannot benefit — its intermediate crosses a
-  kernel boundary, so it always goes through HBM. (At the largest shape the buffer exceeds LX and
-  `add3`-on returns to the off value.)
+**Result 2 — a fusion cost appears at the second dependent read (add4, fig A right).**
+`add4_sep` (two dependent reads, *separate* kernels) is only **+5 %** — the dependency itself stays
+modest. But `add4` (the same two reads, *fused*) is **+15 %**: fusing them adds **+10 %** that the
+separate-kernel version never pays (`fused − sep` = +10.5 %, reproducible over **2 runs × 3 shapes**,
+range +9…+12 %). So at depth 1 fusion is free (`add3 ≈ add3_sep`), but at depth 2 it is not.
 
-**Model (provisional).** The dependency cost is **~+7 % for one dependent HBM read**, reaching
-**~+16 % for ≥ 2** (across `add3`–`add6`), and is **gated off** when the intermediate is on-chip. The
-shipped model still uses the older linear derate `T × (1 + 0.075·(k−1))`, which happens to fit `add3`
-(+7.5 %) and `add4` (+15 %) — the realistic arities — but **over-predicts higher arities, which
-saturate** rather than grow linearly. The exact curve past two reads is not yet pinned: the per-read
-cost is non-monotonic (a consistent ~2× bump at the *second* read) and the plateau rests on four
-arity points from a **cols-only** sweep. A queued extension (`add8`, plus a ROWS sweep and an
-iso-size aspect sweep, which the cols-only sweep can't separate) will fix the shape before a
-saturating term replaces the linear one.
+Two honest limits on this: (i) the **mechanism is open** — a candidate is that the fused kernel
+interleaves the write and re-read of its live intermediates finely within one pipeline, paying extra
+read/write turnaround (the §2 effect) that the per-kernel `min(R,W)` term does not capture; consistent
+with it being HBM-only, but not proven. (ii) The **evidence is narrow** — one op (`add`), one
+`ROWS=2048`, a single measurement per cell, and only **two depths**, so we cannot tell a one-time
+depth-2 step from a growing trend. We therefore report it as a **robust observation, not a modeled
+term or an explained mechanism.**
+
+**Both are HBM-round-trip effects.** With scratchpad *on* (the intermediate kept on-chip, when it
+fits) the fused chain drops far below the byte baseline — `add3` −33 %, `add4` −46 % — because the
+read-after-write no longer goes through HBM. The separate-kernel version cannot benefit: its
+intermediate crosses a kernel boundary and must materialize in HBM. Remove the round-trip and both
+effects vanish.
+
+**Why this matters beyond one op.** The read-after-write dependency is a real, first-class cost
+(~+7 % per dependent HBM read here) that a per-kernel byte model *cannot* see — it only appears
+**across op boundaries**. Any cost model for a **whole program or a fused subgraph** (not a single
+kernel) must carry a read-after-write term; we flag it here as the term to add when we model op
+*sequences*.
+
+**How large is each dependent read? — the marginal-cost experiment.** Extending the chain by one
+binary add adds exactly one single-`add`'s own traffic **plus one new dependent read**. So the
+marginal cost of the **k-th dependent read** is
+
+```text
+read #k  =  [ t(add_{k+2}) − t(add_{k+1}) − t(add) ] / t(add)      (read #1 = [t(add3) − 2·t(add)]/t(add))
+```
+
+i.e. going `add_{k+1} → add_{k+2}` costs one clean `add` (subtracted) plus the k-th read (what
+remains). Subtracting a clean `add` at every step is what makes the comparison fair — it removes the
+extra streaming work so only the new dependency is left. The fused chain gives reads #1–#4
+(`add3`…`add6`); the separate chain gives reads #1–#2 (`add3_sep`, `add4_sep`):
+
+![§3 fig B: marginal cost of the k-th dependent read (% of one add), fused vs separate, dots = 2 runs × 3 shapes. Separate: read #1 ≈ +13%, read #2 ≈ +3% (flat). Fused: read #1 ≈ +14% (matches separate) but read #2 spikes to ≈ +34%, then #3 ≈ +18%, #4 ≈ +14%.](figures/fig3b_pointwise_arity_reads.png)
+
+- **Separate kernels** are roughly flat: read #1 ≈ +13 %, read #2 ≈ +3 % — one modest cost per read.
+- **The fused chain** matches at read #1 (+14 %) but **spikes to +34 % at read #2**, then settles
+  (#3 +18 %, #4 +14 %). The read-#2 spike is present *only when fused* — it is Result 2 seen per-read.
+  (Reads #3–#4 are fused-only here; without `add5_sep`/`add6_sep` we cannot yet say whether the
+  fusion gap keeps growing or is a one-time depth-2 effect.)
+
+(The total-`%` view — `add4` +15 %, `add5` +16 %, `add6` +16 % — *looks* like a plateau, but only
+because the `(n−1)×add` baseline grows; in absolute terms the cost keeps rising. The per-read curve is
+the honest view, and it is **not** a simple linear or saturating function.)
+
+**Model status.** Because the per-read curve is not yet a clean function, **no arity term is re-fit
+here.** The shipped per-kernel model keeps the earlier placeholder derate `T × (1 + 0.075·(m−1))`
+(`m` = number of binary adds), which matches the fused `add3`/`add4` the compiler actually emits and
+is adequate for the realistic arities — flagged provisional. Pinning the shape (and any future
+program-level read-after-write term) is queued as a **properly-powered** run: `add3`–`add6` *and*
+`add3_sep`–`add6_sep` at four depths, **replicated** for a per-cell noise floor, across ROWS and
+iso-size aspect ratios — enough to say whether the depth-2 fusion gap is a step or a trend, and to
+separate size from shape (the current cols-only, single-measurement evidence cannot).
 
 ### Part I accuracy — every pointwise data point
 

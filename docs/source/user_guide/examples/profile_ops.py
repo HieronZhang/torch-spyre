@@ -574,15 +574,16 @@ def make_workload():
         # fuses the two into one kernel or emits two; both readings are informative.)
         indep = lambda a, b, c, d: (a + b, c + d)  # noqa: E731
         return torch.compile(indep), tuple(_rand(ROWS, COLS) for _ in range(4))
-    if OP in ("add3_sep", "add4_sep"):  # §3 control: the SAME dependent chain as add3/add4
-        # but forced into SEPARATE kernels (each add is its own torch.compile) with the
-        # read-after-write dependency IDENTICAL -- the intermediate is written to HBM by one
-        # kernel and read by the next. add3 vs add3_sep = the fusion/bundling cost with the
-        # dependency held fixed (the byte traffic is the same either way). NOTE: the harness
-        # cost-model dump captures only the LAST sub-kernel's feats; the MEASURED kernel time
-        # (what we compare) covers all sub-kernels.
+    import regex as _re
+    _sepm = _re.fullmatch(r"add(\d+)_sep", OP)
+    if _sepm:  # add{N}_sep -- §3 control: the SAME dependent chain as add{N} but forced into
+        # SEPARATE kernels (each add is its own torch.compile), read-after-write dependency
+        # IDENTICAL (the intermediate is written to HBM by one kernel and read by the next).
+        # add{N} vs add{N}_sep = the fusion cost with the dependency held fixed (same bytes).
+        # NOTE: the cost-model dump captures only the LAST sub-kernel's feats; the MEASURED
+        # kernel time (what we compare) covers all sub-kernels.
         f = torch.compile(lambda a, b: a + b)  # noqa: E731
-        n = 3 if OP == "add3_sep" else 4
+        n = int(_sepm[1])
 
         def chain(*ts):  # ((t0+t1)+t2)+... each '+' is a distinct compiled kernel
             acc = f(ts[0], ts[1])

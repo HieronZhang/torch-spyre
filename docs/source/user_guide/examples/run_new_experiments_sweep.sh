@@ -125,26 +125,31 @@ has BWCORES && { echo "## BWCORES memory-bound op at SENCORES {1,2,4,8,16,32}" |
 # add3/4_sep   = the SAME dependent chain, SEPARATE kernels (identical RAW dependency + bytes)
 #               -> add3 vs add3_sep isolates the fusion/bundling cost with the dependency fixed.
 # add_indep2   = TWO INDEPENDENT adds, same 4R:2W as add3 but NO dependency (harness fix applied).
-has ARITY && { echo "## ARITY add{,3,4,5,6}+add_indep2+add3/4_sep at 3 shapes, LX 0 and 1" | tee -a "$LOG"
-  for lx in 0 1; do
+# The FUSED chain (add{3..6}) vs the SAME chain in SEPARATE kernels (add{3..6}_sep), the
+# no-dependency control (add_indep2), and a single add -- the whole §3 decomposition at ALL
+# FOUR depths, REPLICATED x3 (independent compile+measure each -> a per-cell noise floor),
+# at 3 shapes. `add{3..6}_sep - add{3..6}` at each depth tells whether the fusion gap is a
+# one-time depth-2 STEP or keeps GROWING. lx=0 (the effect); scratchpad (lx=1) at the ref
+# shape only, for the on-chip control.
+has ARITY && { echo "## ARITY fused-vs-sep depth curve (add3..6 vs add3..6_sep), x3 reps, 3 shapes" \
+    | tee -a "$LOG"
+  for rep in 1 2 3; do
     for sh in "2048 1024" "2048 4096" "2048 16384"; do
-      for op in add add3 add4 add5 add6 add_indep2 add3_sep add4_sep; do runpw "$op" $sh "$lx"; done
+      for op in add add3 add4 add5 add6 add3_sep add4_sep add5_sep add6_sep add_indep2; do
+        runpw "$op" $sh 0
+      done
     done
+  done
+  for rep in 1 2 3; do   # scratchpad ON at the reference shape (fused benefits, sep cannot)
+    for op in add add3 add4 add3_sep add4_sep; do runpw "$op" 2048 4096 1; done
   done; }
-# ARITYX: the main ARITY sweep only varied COLS (fixed ROWS=2048) -> total size and stick
-# width move together, and rows-per-core never changes. This probes the curve shape AND the
-# shape-dependence the cols-only sweep can't: (a) extend to add8 + replicate to nail the
-# plateau / 2nd-read bump; (b) vary ROWS at fixed COLS (rows-per-core = ROWS/32 -> pipeline
-# depth); (c) hold total size ~constant across 3 aspect ratios. All LX off.
-has ARITYX && { echo "## ARITYX add8 + replicate + ROWS sweep + iso-size aspect sweep, LX off" | tee -a "$LOG"
-  for _ in 1 2; do
-    for op in add add3 add4 add5 add6 add8; do runpw "$op" 2048 4096 0; done
-  done
-  for R in 512 2048 8192; do
-    for op in add add3 add4; do runpw "$op" "$R" 4096 0; done
-  done
-  for sh in "512 16384" "2048 4096" "8192 1024"; do   # ~8M elems, 3 aspect ratios
-    for op in add add3 add4; do runpw "$op" $sh 0; done
+# ARITYX: shape-dependence the cols-only ARITY sweep can't separate -- vary ROWS (rows-per-core
+# = ROWS/32 -> pipeline depth) and hold total size ~constant across aspect ratios. Full op set
+# (fused + separate, all depths) so the fusion gap is checked off the ROWS=2048 line too.
+has ARITYX && { echo "## ARITYX ROWS sweep + iso-size aspect, full op set (fused+sep), LX off" \
+    | tee -a "$LOG"
+  for sh in "512 4096" "8192 4096" "512 16384" "8192 1024"; do   # 2 ROWS + 2 iso-size aspects
+    for op in add add3 add4 add5 add6 add3_sep add4_sep add5_sep add6_sep; do runpw "$op" $sh 0; done
   done; }
 
 # ============ THINK (M1, §12): tensor-size extreme -- thin reduction K<=128 ===
