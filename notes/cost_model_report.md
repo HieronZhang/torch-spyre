@@ -22,7 +22,6 @@ whole model, then the Parts for why each piece takes the form it does.
 | group | ops | torch expression |
 |---|---|---|
 | pointwise | `neg` `gelu` `exp` `mul` `add` `copy` | `-x`, `gelu(x)`, `exp(x)`, `a*b`, `a+b`, `x+1.0` (`copy` is a broadcast op) |
-| pointwise n-ary | `add3` `add4` | `a+b+c`, `a+b+c+d` (2 / 3 chained adds) |
 | reduction | `sumrow` `sumcol` `amax` `mean` `sumall` `read` | `sum(x,dim=1)`, `sum(x,dim=0)`, `amax(x)`, `mean(x,dim=1)`, `sum(x)`, `x` (pure read) |
 | broadcast | `bcast` `mulbcast` `bcastcol` `write` | `a[R,C]+b[1,C]`, `a[R,C]*b[1,C]`, `a[R,C]+b[R,1]`, `b[1,C]+c[R,1]` |
 | transport | `transpose` `transpose_outer` `cat0` `cat1` | `[R,C].transpose(0,1)` (stick dim swapped into a row); `[R,8,C].transpose(0,1)`→`[8,R,C]` (swap the two **outer** axes, inner 64-stick `C` kept); `cat([x,x],dim=0/1)` |
@@ -37,7 +36,7 @@ does not apply. The right column names the section where it is derived.
 ```text
 T   = compute + mem − γ·min(compute, mem) + split      mem = HBM / (eff · s_lx)
 
-  HBM     = [ (R+W)/BW + α·min(R,W) ] · (n-ary derate)  +  spill  +  write_extra
+  HBM     = [ (R+W)/BW + α·min(R,W) ]  +  spill  +  write_extra
   compute = MACs / cores / (peak · pt_eff)
   s_lx    = min(1, (512KB / ws)^0.15)   for a coarse-tiled kernel with ws > 512KB   (else 1)
 ```
@@ -46,7 +45,6 @@ T   = compute + mem − γ·min(compute, mem) + split      mem = HBM / (eff · s
 |---|---|---|
 | `(R+W)/BW` | `BW` = 150 (pointwise / matmul); `BW_red(ROWS)=min(150, 114+61·e^(−ROWS/3700))` (row-reductions); per-op `BW_eff` for access-pattern ops | §1, §5, §6, §8 |
 | `α·min(R,W)` | `α = 0.00574 ns/B` — read↔write bus **turnaround** (0 for one-directional traffic) | §2 |
-| n-ary derate | `× (1 + 0.075·(n_ops−1))` — multi-pass pointwise chain (`add3/add4`) | §3 |
 | `spill` | `(A_bytes+B_bytes)·f(area)`, `area=(M/m)·(N/n)`, `f=min(1.5, max(0, 0.45·log₂(area/65536)))` — matmul operand **re-read** when the per-core output tile overflows on-chip capacity | §11 |
 | `split` | `max(0,area−a₀)·[c_L·max(0,log₂(fan_long/8)) + c_S·max(0,log₂(fan_short/16))]`, `area=(M/m)·(N/n)`, `a₀=131072`, `c_L=2.6e−3`, `c_S=2.9e−3 µs/elem` — extra matmul operand re-read when a **large** per-core tile is **also** split many ways; two-sided (splitting the longer output dim bites sooner than the shorter); 0 for balanced or small tiles | §12 |
 | `write_extra` | `2.148e-7·ROWS^1.6·COLS^2.2` (÷BW) — `write` outer-product, empirical | §4 |
@@ -129,16 +127,14 @@ the minimum at `w=0.5`.
 ![§2 effective BW vs write fraction: a symmetric turnaround valley, read-only ≈ write-only](figures/fig2_pointwise_vcurve.png)
 
 Each class is one op swept at several sizes, so each shows several points; the small
-vertical spread within a class is a mild size drift (~2–3 %). Two things to read off the
-plot: (a) the two ends of the valley reach the **same height** — read-dominated (~150) ≈
+vertical spread within a class is a mild size drift (~2–3 %). The key thing to read off the
+plot: the two ends of the valley reach the **same height** — read-dominated (~150) ≈
 write-dominated (~144) — so reads and writes share **one** rate, and a single `BW_peak` is
-right (not separate read/write rates); (b) the `n-ary` crosses (`add3`/`add4`) sit at the
-same `w=0.33` as `add` but **below** the curve — they do not fit this two-parameter model,
-which is the subject of §3.
+right (not separate read/write rates).
 
 **Model.** `T = (R+W)/BW_peak + α·min(R,W)`, with `BW_peak = 150`, `α = 0.00574 ns/B`.
 
-### §3. Chained adds: a read-after-write dependency, and a fusion penalty
+### §3. A dependency effect in chained OPs — chained adds
 
 **Setup.** An n-input sum `a + b + c + …` is not a native op. The loop-level IR fuses only a
 **2-input → 1-output** add, so `add_n` compiles to a **chain of binary adds**, each writing an
@@ -154,103 +150,88 @@ With scratchpad off every intermediate lives in HBM, so it is written and read b
 **fully counted**: `add3` moves 4R:2W (exactly 2× a single `add`'s 2R:1W), `add4` moves 6R:3W (3×);
 verified, `io_hbm_bytes` is 2.00× / 3.00×. The pure-byte model therefore predicts `add_n = (n−1)×add`.
 
-**Observation.** It runs slower than that. At a representative shape (`ROWS=2048, COLS=4096`; a single
-`add` = 438 µs), averaged over two runs:
+**Observation.** It runs slower than that. At `ROWS=2048, COLS=4096` (a single `add` = 438 µs,
+averaged over runs and replicates):
 
 | | byte-model baseline | measured (fused) |
 |---|---:|---:|
-| `add3` (= 2 adds) | 875 µs | 937 µs (**+7 %**) |
-| `add4` (= 3 adds) | 1314 µs | 1516 µs (**+15 %**) |
+| `add3` (= 2 adds) | 876 µs | 936 µs (**+7 %**) |
+| `add4` (= 3 adds) | 1314 µs | 1520 µs (**+16 %**) |
 
-**Question.** The intermediate round-trip I/O is *already inside* that `(n−1)×add` baseline, so the
-margin is **not** the bytes. Two candidates remain: the **read-after-write dependency** (each add reads
-a buffer the previous add just wrote), or the **fused kernel** (one launch running n−1 passes). To
-separate them we compare variants that move the *same* HBM bytes but differ in structure.
+**Question — what is the margin?** The intermediate round-trip I/O is *already inside* the `(n−1)×add`
+byte baseline, so the margin is **not** the bytes. It has two plausible sources: a **read-after-write
+dependency** (each add reads a buffer the previous add just wrote), or the **fused kernel** itself (one
+launch running several passes). We separate them with controls that move the *same* HBM bytes but
+differ in structure:
 
-**Experiment.** Three controls, all at identical byte traffic:
+- `add_indep2` — two **independent** adds `(a+b, c+d)`: the same bytes as `add3`, but **no** dependency.
+- `add3_sep` — the same dependent chain, but each binary add is its **own** kernel (dependency present,
+  no fusion; the intermediate still passes through HBM between kernels).
+- `add3` — the fused chain (dependency **and** fusion).
 
-- `add_indep2` — two **independent** adds `(a+b, c+d)`: the same 4R:2W as `add3`, but **no** dependency.
-- `add3_sep` / `add4_sep` — the same dependent chain, but each binary add is its **own** kernel
-  (dependency present, no fusion; the intermediate still passes through HBM between kernels).
-- `add3` / `add4` — the fused chain (dependency **and** fusion).
+**The margin is the dependency; fusion is free.**
 
-`fused − add_indep2` isolates the dependency; `fused − sep` isolates fusion.
+![§3 fig A: single-panel bar chart at ROWS=2048, COLS=4096. add_indep2 (no dependency) sits on the 2×add byte baseline; add3_sep and add3 both sit +7% above it; add3 with scratchpad on drops to −34%.](figures/fig3_pointwise_arity.png)
 
-![§3 fig A: bar plot, add3 group (baseline 2× add) and add4 group (baseline 3× add), in absolute µs. add_indep2 sits on the baseline; add3 ≈ add3_sep ≈ +7%; add4_sep ≈ +5% but add4 ≈ +15%; scratchpad-on bars drop to −33%/−46%.](figures/fig3_pointwise_arity.png)
+- `add_indep2` (no dependency) sits **on** the baseline (+0 %): same bytes, no margin — so it is not a
+  byte effect.
+- `add3` and `add3_sep` both sit at **+7 %** and are equal — the margin is there with *or* without
+  fusion. It is the **read-after-write dependency**: the read of a just-written HBM buffer cannot stream
+  at the independent-read rate, because it must wait for the write to become visible.
 
-**Result 1 — for one dependent read, the margin is the dependency (add3, fig A left).**
-`add_indep2` (no dependency) sits **on** the baseline (+0 %): same bytes, no margin. `add3_sep` and
-`add3` both sit at **+7 %** and are equal (`fused − sep` = +0.2 %, n = 6). So the +7 % is entirely the
-**read-after-write dependency** — the read of a just-written HBM buffer cannot stream at the
-independent-read rate, because it must wait for the write to become visible. Fusion is irrelevant here.
-
-**Result 2 — a fusion cost appears at the second dependent read (add4, fig A right).**
-`add4_sep` (two dependent reads, *separate* kernels) is only **+5 %** — the dependency itself stays
-modest. But `add4` (the same two reads, *fused*) is **+15 %**: fusing them adds **+10 %** that the
-separate-kernel version never pays (`fused − sep` = +10.5 %, reproducible over **2 runs × 3 shapes**,
-range +9…+12 %). So at depth 1 fusion is free (`add3 ≈ add3_sep`), but at depth 2 it is not.
-
-Two honest limits on this: (i) the **mechanism is open** — a candidate is that the fused kernel
-interleaves the write and re-read of its live intermediates finely within one pipeline, paying extra
-read/write turnaround (the §2 effect) that the per-kernel `min(R,W)` term does not capture; consistent
-with it being HBM-only, but not proven. (ii) The **evidence is narrow** — one op (`add`), one
-`ROWS=2048`, a single measurement per cell, and only **two depths**, so we cannot tell a one-time
-depth-2 step from a growing trend. We therefore report it as a **robust observation, not a modeled
-term or an explained mechanism.**
-
-**Both are HBM-round-trip effects.** With scratchpad *on* (the intermediate kept on-chip, when it
-fits) the fused chain drops far below the byte baseline — `add3` −33 %, `add4` −46 % — because the
-read-after-write no longer goes through HBM. The separate-kernel version cannot benefit: its
-intermediate crosses a kernel boundary and must materialize in HBM. Remove the round-trip and both
-effects vanish.
+**The model captures the on-chip case too.** Turn scratchpad *on* and the intermediate stays on-chip —
+the dependency no longer goes through HBM — so `add3` drops to **581 µs (−34 %)** (`add3_sep` cannot
+benefit; its intermediate crosses a kernel boundary and must materialize in HBM). Crucially the cost
+model, which sees the reduced HBM traffic when the buffer is on-chip, predicts **both** cases within a
+few percent — `add3`: −0.7 % (off) / +1.0 % (on); `add4`: −2.3 % / +5.1 %. So "remove the round-trip
+and the margin is gone" is not hand-waving: the byte-driven model quantitatively tracks scratchpad on
+*and* off.
 
 **Why this matters beyond one op.** The read-after-write dependency is a real, first-class cost
-(~+7 % per dependent HBM read here) that a per-kernel byte model *cannot* see — it only appears
-**across op boundaries**. Any cost model for a **whole program or a fused subgraph** (not a single
-kernel) must carry a read-after-write term; we flag it here as the term to add when we model op
-*sequences*.
+(~+7 % per dependent HBM read) that a per-kernel byte model *cannot* see — it appears only **across op
+boundaries**. Any cost model for a **whole program or fused subgraph** (not a single kernel) must carry
+a read-after-write term; we flag it here as the term to add when modelling op *sequences*.
 
-**How large is each dependent read? — the marginal-cost experiment.** Extending the chain by one
-binary add adds exactly one single-`add`'s own traffic **plus one new dependent read**. So the
-marginal cost of the **k-th dependent read** is
+**Does the dependency accumulate, and does fusion stay free?** For one dependent read the margin is
++7 % and fusion-free. To see whether it grows with chain length — and whether fusion stays free — we
+measure the whole ladder `add3`…`add6` (fused) *and* `add3_sep`…`add6_sep` (separate), ×3 replicates
+over seven shapes, and plot the **excess cost** — extra single-`add`s of time beyond the byte count:
 
 ```text
-read #k  =  [ t(add_{k+2}) − t(add_{k+1}) − t(add) ] / t(add)      (read #1 = [t(add3) − 2·t(add)]/t(add))
+excess(add_n)  =  t(add_n) / t(add)  −  (n−1)
 ```
 
-i.e. going `add_{k+1} → add_{k+2}` costs one clean `add` (subtracted) plus the k-th read (what
-remains). Subtracting a clean `add` at every step is what makes the comparison fair — it removes the
-extra streaming work so only the new dependency is left. The fused chain gives reads #1–#4
-(`add3`…`add6`); the separate chain gives reads #1–#2 (`add3_sep`, `add4_sep`):
+The dependency is then the *height* of a curve; any fusion cost is the *gap* between the fused and
+separate curves.
 
-![§3 fig B: marginal cost of the k-th dependent read (% of one add), fused vs separate, dots = 2 runs × 3 shapes. Separate: read #1 ≈ +13%, read #2 ≈ +3% (flat). Fused: read #1 ≈ +14% (matches separate) but read #2 spikes to ≈ +34%, then #3 ≈ +18%, #4 ≈ +14%.](figures/fig3b_pointwise_arity_reads.png)
+![§3 fig B: excess cost vs number of dependent reads (1-4 = add3...add6), fused vs separate, dots = replicates × shapes. Both curves rise together and coincide at 1, 3, 4 reads; they diverge only at add4.](figures/fig3b_pointwise_arity_reads.png)
 
-- **Separate kernels** are roughly flat: read #1 ≈ +13 %, read #2 ≈ +3 % — one modest cost per read.
-- **The fused chain** matches at read #1 (+14 %) but **spikes to +34 % at read #2**, then settles
-  (#3 +18 %, #4 +14 %). The read-#2 spike is present *only when fused* — it is Result 2 seen per-read.
-  (Reads #3–#4 are fused-only here; without `add5_sep`/`add6_sep` we cannot yet say whether the
-  fusion gap keeps growing or is a one-time depth-2 effect.)
+**The dependency accumulates; fusion stays free.** Both curves rise together — excess climbs from
+≈ 0.13 (one read) to ≈ 0.78 (four reads) — and **fused and separate coincide at 1, 3, and 4 reads**
+(within the ±0.02–0.03 replicate noise floor). So the read-after-write dependency accumulates with
+chain length, and fusing it is free. (The one exception is `add4`, where the fused excess is ~3× the
+separate one; it reproduces across all seven shapes but is gone by `add5` — a lone, chain-length-specific
+wrinkle. We re-examined the collection code and confirmed it is correct: ops are constructed and byte-
+counted correctly, work-division is identical, and the gap is in the pure compute time — so it is real
+but unexplained, and we **do not model it.**)
 
-(The total-`%` view — `add4` +15 %, `add5` +16 %, `add6` +16 % — *looks* like a plateau, but only
-because the `(n−1)×add` baseline grows; in absolute terms the cost keeps rising. The per-read curve is
-the honest view, and it is **not** a simple linear or saturating function.)
-
-**Model status.** Because the per-read curve is not yet a clean function, **no arity term is re-fit
-here.** The shipped per-kernel model keeps the earlier placeholder derate `T × (1 + 0.075·(m−1))`
-(`m` = number of binary adds), which matches the fused `add3`/`add4` the compiler actually emits and
-is adequate for the realistic arities — flagged provisional. Pinning the shape (and any future
-program-level read-after-write term) is queued as a **properly-powered** run: `add3`–`add6` *and*
-`add3_sep`–`add6_sep` at four depths, **replicated** for a per-cell noise floor, across ROWS and
-iso-size aspect ratios — enough to say whether the depth-2 fusion gap is a step or a trend, and to
-separate size from shape (the current cols-only, single-measurement evidence cannot).
+**Model status — not a single-op term.** `add_n` is **not a native op** — it is a multi-op dependent
+chain — so the read-after-write cost is **not** part of the single-op model, which stays pure
+(`T = (R+W)/BW + α·min(R,W)`; a single op has no round-tripped intermediate). An earlier draft carried
+a `×(1 + 0.075·(m−1))` arity derate for the chained adds; that has been **removed**. The read-after-write
+dependency is instead a **program-level / cross-op** effect, to be modeled by the byte-keyed term
+proposed in `new_experiments_plan.md` ("Next model") and unified with the coarse-tiling LX-spill (§15),
+which is the same phenomenon (a fused-op intermediate that round-trips HBM). It is not fit yet — the
+add-chain data alone is too irregular (the `add4` wrinkle), and it needs multi-op-chain data beyond
+softmax — so it is scoped there, not patched in here.
 
 ### Part I accuracy — every pointwise data point
 
-Predicted vs measured for all pointwise ops (`T = (R+W)/BW_peak + α·min(R,W)`, with the
-arity derate for the chained adds). **RMS 1.9 %, mean −0.2 %, range −3.0…+4.3 %** over
-28 points — every point within ~4 %. (`copy` is *not* a pointwise op and is excluded here:
-`x + 1.0` lowers to an `add` with a resident broadcast constant, so it is a broadcast op —
-its accuracy is reported with the broadcast ops in §4.)
+Predicted vs measured for every **single** pointwise op (`T = (R+W)/BW_peak + α·min(R,W)`).
+**RMS 1.9 %, mean +0.1 %, range −2.6…+4.3 %** over 22 points — every point within ~4 %. (The chained
+adds `add3`/`add4` are **not** single ops — they are multi-op dependent chains, whose read-after-write
+cost is a program-level effect not modeled here; see §3. `copy` is excluded too: `x + 1.0` lowers to an
+`add` with a resident broadcast constant, so it is a broadcast op, reported in §4.)
 
 | op | R×C | measured µs | predicted µs | err % |
 |---|---|---:|---:|---:|
@@ -276,12 +257,6 @@ its accuracy is reported with the broadcast ops in §4.)
 | `add` | 2048×1024 | 107.0 | 108.0 | +0.9 |
 | `add` | 2048×4096 | 431.7 | 431.8 | +0.0 |
 | `add` | 2048×16384 | 1757.0 | 1727.4 | −1.7 |
-| `add3` | 2048×1024 | 232.2 | 232.1 | −0.0 |
-| `add3` | 2048×4096 | 934.4 | 928.5 | −0.6 |
-| `add3` | 2048×16384 | 3740.3 | 3713.9 | −0.7 |
-| `add4` | 2048×1024 | 375.6 | 372.5 | −0.8 |
-| `add4` | 2048×4096 | 1523.1 | 1489.9 | −2.2 |
-| `add4` | 2048×16384 | 6146.0 | 5959.5 | −3.0 |
 
 ---
 
@@ -1139,6 +1114,7 @@ All coarse ops we have measured, scored on the current model (rows averaged over
 | `softmax_row_tiling` | 34 | 20 | -4 | **modeled** (§14–§16); small `COLS≤128` rows underfill (cores=1) |
 | `softmax_noexp_row_tiling` | 3 | 5 | +5 | **modeled** (§14–§16, control) |
 | `softmax_unrolled` | 8 | 91 | -91 | extractor under-counts unrolled loop (cores=1, no `CoarseTileInfo`) |
+| `ctsum`/`ctamax`/`ctamin` | 18 | 4 | +2 | **modeled** (coarse dim0 reduction, tiled over ROWS — control) |
 
 Per-row detail:
 
@@ -1268,6 +1244,19 @@ Per-row detail:
 | `softmax_unrolled` | 2048×512 | 8 | 1 | 584 | 42 | -93 |
 | `softmax_unrolled` | 2048×512 | 16 | 1 | 596 | 42 | -93 |
 | `softmax_unrolled` | 2048×512 | 32 | 1 | 675 | 42 | -94 |
+| `ctsum` | 2048×512 | 1 | 2 | 18 | 19 | +2 |
+| `ctsum` | 4096×2048 | 1 | 2 | 142 | 149 | +5 |
+| `ctsum` | 4096×2048 | 2 | 2 | 144 | 149 | +3 |
+| `ctsum` | 4096×2048 | 4 | 2 | 146 | 149 | +2 |
+| `ctsum` | 4096×2048 | 8 | 2 | 151 | 149 | -1 |
+| `ctamax` | 4096×2048 | 1 | 1 | 142 | 149 | +5 |
+| `ctamax` | 4096×2048 | 2 | 1 | 144 | 149 | +3 |
+| `ctamax` | 4096×2048 | 4 | 1 | 147 | 149 | +1 |
+| `ctamax` | 4096×2048 | 8 | 1 | 150 | 149 | -1 |
+| `ctamin` | 4096×2048 | 1 | 1 | 141 | 149 | +5 |
+| `ctamin` | 4096×2048 | 2 | 1 | 152 | 149 | -2 |
+| `ctamin` | 4096×2048 | 4 | 1 | 148 | 149 | +1 |
+| `ctamin` | 4096×2048 | 8 | 1 | 153 | 150 | -2 |
 ---
 
 ### Appendix — reproducibility

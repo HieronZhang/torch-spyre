@@ -21,7 +21,7 @@ Model (per fused bundle / single-op kernel):
 
     T   = compute + mem - gamma*min(compute, mem)          mem = HBM / (eff * s_lx)
 
-    HBM = [ (R+W)/BW + alpha*min(R,W) ] * (1 + arity_derate*(n-1)) + spill + write_extra
+    HBM = [ (R+W)/BW + alpha*min(R,W) ] + spill + write_extra
     s_lx = min(1, (512KB/ws)**0.15)   for a coarse-tiled kernel with ws > 512KB   (else 1)
 
   where R = HBM bytes READ (inputs), W = HBM bytes WRITTEN (outputs). LX-resident
@@ -106,8 +106,9 @@ extractor from the LoopLevel IR index/layout -- these fold turnaround into one m
 rate): "restickify" transpose (stick swapped -> ~116, FASTER), "stick_scatter" cat0 on a
 partition dim (fine sub-stick interleave -> SHAPE-dependent, falls with row width C:
 clamp(intercept - rows_coef*log2(R) - cols_coef*log2(C), floor, bw_peak)), "reduce_outer"
-sumcol (cross-row reduce -> ~113). Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) get a
-``pointwise_arity_derate`` (~7.5%/extra op). All land within ~4% after these.
+sumcol (cross-row reduce -> ~113). (A dependent multi-op chain like add3/add4 costs more than its byte
+count -- a read-after-write ACROSS op boundaries, §3 -- but that is a program-level effect, not a
+single-op cost, so it is NOT modeled here; add_n is not a native op.) All land within ~4%.
 BROADCAST-operand ops (copy/bcast/bcastcol/mulbcast: a full input + a small broadcast
 operand) run ~118 GB/s -- ``bw_broadcast_gbps`` (mechanism open). ``write`` (b[1,C]+c[R,1],
 BOTH operands broadcast -> outer-product) is slow + super-linear; modeled by an EMPIRICAL
@@ -425,9 +426,6 @@ class CostParams:
     write_reread_coef: float = 2.148e-7
     write_reread_r_exp: float = 1.60
     write_reread_c_exp: float = 2.20
-    # Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) run slower per
-    # byte -- ~7.5% per extra op beyond the first. Fit on the arity sweep (add/add3/add4).
-    pointwise_arity_derate: float = 0.075
 
 
 def underfill_eff(
@@ -698,17 +696,12 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         mem = (r + w) / reduction_read_bw(_reduction_rows(ops[0]), p)
     else:
         mem = (r + w) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(r, w)
-        # Multi-pass pointwise chain (add3/add4): intermediates round-trip HBM, so the
-        # bundle runs slower per byte than a single op. ~7.5% per extra HBM op.
-        n_pw = sum(
-            1
-            for o in ops
-            if not o.is_reduction
-            and not getattr(o, "is_matmul", False)
-            and not o.tiles_output_dim
-        )
-        if n_pw > 1:
-            mem *= 1.0 + p.pointwise_arity_derate * (n_pw - 1)
+        # NOTE: a multi-op dependent chain (e.g. add3/add4 = chained binary adds) runs slower
+        # than its byte count because the intermediate is written then read back through HBM --
+        # a READ-AFTER-WRITE dependency ACROSS op boundaries (§3). That is a program-level /
+        # coarse-tiling effect, NOT a single-op cost, so it is deliberately NOT modeled here.
+        # `add_n` is not a native op; the single-op model stays pure. See notes/new_experiments_plan.md
+        # ("Next model") for the byte-keyed read-after-write term to unify with the coarse §15 spill.
     # `write` outer-product re-read: empirical extra HBM traffic, super-linear in the
     # output shape (both operands broadcast, no full input). Charged at bw_peak.
     mem += (

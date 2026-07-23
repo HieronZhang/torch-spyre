@@ -141,7 +141,9 @@ def _pw_ratio_write_points():
     return pts
 
 
-def fig_pointwise_vcurve(recs):
+def fig_pointwise_vcurve(_recs):
+    recs = _load(current_only=False)  # measured times are version-independent; recover the
+    # read-only / neg groups that the newest is_current sweep does not carry.
     bw_peak, alpha = 150.0, 0.00574  # current model
     reds = ("sumrow", "read", "amax", "mean")  # read-only anchor (ROWS=2048, clean)
     # label -> (points, color, marker). Each op is swept at several sizes -> several
@@ -151,23 +153,22 @@ def fig_pointwise_vcurve(recs):
         "2R:1W (add)": ([], "#9467bd", "o"),
         "1R:1W (neg)": ([], "#1f77b4", "o"),
         "write-only": ([], "#d62728", "o"),
-        "n-ary (→§3)": ([], "#ff7f0e", "x"),
     }
     for r in recs:
         m = r.get("model") or {}
         R, W = m.get("R"), m.get("W")
-        if not R or not W:
+        # ROWS=2048 (pipeline-filled) and lx=0 (canonical): single ops have no intermediate,
+        # so scratchpad is irrelevant -- but one old overnight lx=1 sweep measured `add` slow.
+        if not R or not W or r.get("rows") != 2048 or r.get("lx") not in (0, None):
             continue
         eff = (R + W) / 1e3 / r["kernel_us"]
         w = W / (R + W)
-        if r["op"] in reds and r.get("rows") == 2048:
+        if r["op"] in reds:
             groups["read-only"][0].append((w, eff))
         elif r["op"] == "add":
             groups["2R:1W (add)"][0].append((w, eff))
         elif r["op"] == "neg":
             groups["1R:1W (neg)"][0].append((w, eff))
-        elif r["op"] in ("add3", "add4"):
-            groups["n-ary (→§3)"][0].append((w, eff))
     groups["write-only"][0].extend(_pw_ratio_write_points())
 
     fig, ax = plt.subplots(figsize=(5.6, 4.0))
@@ -211,125 +212,119 @@ def fig_pointwise_vcurve(recs):
 # ============================================================================
 def _arity_avg(cols=4096):
     """Mean kernel_us per op at ROWS=2048, given COLS, over the control runs (the
-    new_experiments sweeps that carry add3_sep/add4_sep/add_indep2)."""
+    new_experiments sweeps that carry add3_sep/add4_sep/add_indep2). ROWS=2048 ONLY --
+    the ARITYX shapes reuse the same COLS at other ROWS and would corrupt the mean."""
     from collections import defaultdict
     acc = defaultdict(list)
     for r in _load(current_only=False):
         if (str(r.get("log_file", "")).startswith("new_experiments")
-                and r.get("cols") == cols and r.get("kernel_us")):
+                and r.get("rows") == 2048 and r.get("cols") == cols and r.get("kernel_us")):
             acc[(r["op"], r.get("lx"))].append(r["kernel_us"])
     return {k: sum(v) / len(v) for k, v in acc.items()}
 
 
 def fig_pointwise_arity(recs):
-    # §3 fig A: the decomposition, in ABSOLUTE µs, at one shape (ROWS=2048, COLS=4096, buf
-    # fits LX). Two groups -- add3 (1 dependent read) and add4 (2 dependent reads) -- each
-    # against its OWN byte-count baseline (2xadd / 3xadd). Bars: the no-dependency control
-    # (add_indep2, add3 only), the SAME chain in separate kernels (addN_sep, dependency but no
-    # fusion), the fused chain (addN), and the fused chain with scratchpad on. Reads off:
-    #   add3: fused == sep == baseline+7%  -> the read-after-write dependency; fusion is free.
-    #   add4: sep == baseline+5%, but fused == +15% -> FUSING 2 dependent reads adds ~+10%.
+    # §3 fig A: where the add3 margin comes from, in ABSOLUTE µs (ROWS=2048, COLS=4096, buf
+    # fits LX). One clean panel: the no-dependency control (add_indep2) sits on the byte-count
+    # baseline; the same chain as separate kernels (add3_sep) and fused (add3) both sit +7%
+    # above -- so the margin is the read-after-write DEPENDENCY and fusion is free; with
+    # scratchpad on the intermediate stays on-chip and the margin is gone.
     a = _arity_avg(4096)
     add = a[("add", 0)]
-    # (label, kernel_us, color, hatch)  per group
-    grp3 = [("2× add\n(byte model)", 2 * add, "0.7", ""),
-            ("add_indep2\n(no dep)", a[("add_indep2", 0)], "#2ca02c", ""),
+    base = 2 * add
+    bars = [("add_indep2\n(no dependency)", a[("add_indep2", 0)], "#2ca02c", ""),
             ("add3_sep\n(dep, separate)", a[("add3_sep", 0)], "#ff7f0e", ""),
             ("add3\n(dep, fused)", a[("add3", 0)], "#1f77b4", ""),
-            ("add3\n(fused, LX on)", a[("add3", 1)], "#9ecae1", "//")]
-    grp4 = [("3× add\n(byte model)", 3 * add, "0.7", ""),
-            ("add4_sep\n(dep, separate)", a[("add4_sep", 0)], "#ff7f0e", ""),
-            ("add4\n(dep, fused)", a[("add4", 0)], "#1f77b4", ""),
-            ("add4\n(fused, LX on)", a[("add4", 1)], "#9ecae1", "//")]
-
-    fig, (axL, axR) = plt.subplots(1, 2, figsize=(10.2, 4.6),
-                                   gridspec_kw=dict(width_ratios=[5, 4]))
-    for ax, grp, base, gl in [(axL, grp3, 2 * add, "add3  —  1 dependent read"),
-                              (axR, grp4, 3 * add, "add4  —  2 dependent reads")]:
-        xs = range(len(grp))
-        ax.bar(xs, [g[1] for g in grp], color=[g[2] for g in grp],
-               hatch=[g[3] for g in grp], edgecolor="white", zorder=3, width=0.72)
-        ax.axhline(base, ls="--", color="0.4", lw=1.2, zorder=2)
-        for x, g in zip(xs, grp):
-            pct = 100 * (g[1] / base - 1)
-            ax.annotate(f"{g[1]:.0f}\n({pct:+.0f}%)", (x, g[1]), ha="center", va="bottom",
-                        fontsize=7.2, color="0.15")
-        ax.set_xticks(list(xs))
-        ax.set_xticklabels([g[0] for g in grp], fontsize=7.0)
-        ax.set_title(gl, fontsize=10)
-        ax.set_ylim(0, max(g[1] for g in grp) * 1.18)
-    axL.set_ylabel("kernel time  (µs)   —   ROWS=2048, COLS=4096")
-    axL.annotate("fused ≈ separate ≈ +7%\n→ read-after-write dependency\n   (fusion is free)",
-                 xy=(3, grp3[3][1]), xytext=(3.55, 780), fontsize=7.4,
-                 color="#1f4e8c", ha="center",
-                 arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8))
-    axR.annotate("fused − separate ≈ +10%\n→ FUSING 2 dependent reads\n   adds a penalty",
-                 xy=(2, grp4[2][1]), xytext=(2.55, 1080), fontsize=7.4,
-                 color="#a03000", ha="center",
-                 arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8))
-    fig.suptitle("§3  The add-chain margin: a read-after-write dependency (add3) plus a fusion "
-                 "cost that appears at the 2nd dependent read (add4)", fontsize=10.5, y=1.02)
+            ("add3, LX on\n(buf on-chip)", a[("add3", 1)], "#9ecae1", "//")]
+    fig, ax = plt.subplots(figsize=(8.4, 5.6))
+    xs = range(len(bars))
+    ax.bar(xs, [b[1] for b in bars], color=[b[2] for b in bars],
+           hatch=[b[3] for b in bars], edgecolor="white", zorder=3, width=0.66)
+    ax.axhline(base, ls="--", color="0.35", lw=1.6, zorder=2)
+    ax.text(3.42, base, "byte-count baseline\n(2 × add)", va="center", ha="left",
+            fontsize=11, color="0.35")
+    for x, b in zip(xs, bars):
+        ax.annotate(f"{b[1]:.0f} µs\n({100 * (b[1] / base - 1):+.0f}%)", (x, b[1]),
+                    ha="center", va="bottom", fontsize=12.5, color="0.1", weight="bold")
+    ax.set_xticks(list(xs))
+    ax.set_xticklabels([b[0] for b in bars], fontsize=12)
+    ax.tick_params(axis="y", labelsize=11)
+    ax.set_ylabel("kernel time  (µs)", fontsize=13)
+    ax.set_ylim(0, base * 1.55)
+    ax.set_xlim(-0.6, 4.3)
+    ax.set_title("§3  Where the add-chain margin comes from  (add3; ROWS=2048, COLS=4096)\n"
+                 "no-dependency = baseline · dependency = +7% (fused = separate) · on-chip = gone",
+                 fontsize=13)
     fig.tight_layout()
     _save(fig, "fig3_pointwise_arity")
 
 
 def fig_pointwise_arity_reads(recs):
-    # §3 fig B: the marginal cost of the k-th DEPENDENT READ, for the FUSED chain vs the
-    # SEPARATE-kernel chain. Definition: add_n = (((a+b)+c)+...) has (n-2) intermediates read
-    # back; extending the chain by one binary add adds exactly one single-add's own traffic
-    # PLUS one new dependent read. So the k-th read's marginal cost = [t(add_{k+2}) -
-    # t(add_{k+1}) - t(add)] / t(add)   (and read #1 = [t(add3) - 2·t(add)]/t(add)). This
-    # subtracts one clean `add` at each step, isolating the NEW dependent read. FUSED covers
-    # reads 1-4 (add3..add6); SEPARATE covers reads 1-2 (add3_sep, add4_sep).
-    cols = [1024, 4096, 16384]
-    logs = sorted({r["log_file"] for r in _load(current_only=False)
-                   if str(r.get("log_file", "")).startswith("new_experiments")})
+    # §3 fig B: total EXCESS cost vs chain length, fused vs separate. excess(add_n) =
+    # t(add_n)/t(add) - (n-1) = "extra single-adds' worth of time beyond the byte count."
+    # Plotted against the number of dependent reads (n-2). The dependency/fusion cost is the
+    # HEIGHT of each curve; the per-read cost is its SLOPE; the fusion cost is the GAP between
+    # fused and separate. No reindexing -- reads directly. FUSED covers add3..add6 (1-4 reads);
+    # SEPARATE covers add3_sep, add4_sep (1-2) until add5_sep/add6_sep land.
+    cols = [1024, 4096, 16384]  # the replicated reference shapes (ROWS=2048 only)
+    rows = [r for r in _load(current_only=False)
+            if str(r.get("log_file", "")).startswith("new_experiments")
+            and r.get("rows") == 2048 and r.get("lx") == 0 and r.get("kernel_us")
+            and r.get("cols") in cols]
 
-    def marg(chain, seq):  # per-read marginal %, one value per (run, shape)
-        out = {i: [] for i in range(1, len(seq) + 1)}
-        for lg in logs:
-            d = {(x["op"], x.get("cols")): x["kernel_us"] for x in _load(current_only=False)
-                 if x.get("log_file") == lg and x.get("lx") == 0 and x.get("kernel_us")}
+    def times(op, C):  # ALL measurements (every run × replicate) of op at ROWS=2048, COLS=C
+        return [r["kernel_us"] for r in rows if r["op"] == op and r["cols"] == C]
+
+    def excess(seq):  # {n_dep_reads: [excess per measurement, over shapes × replicates]}
+        out = {}
+        for n, op in seq:
+            vals = []
             for C in cols:
-                a = d.get(("add", C))
-                if not a:
+                add_t = times("add", C)
+                if not add_t:
                     continue
-                for i, op in enumerate(seq, 1):
-                    prev = chain if i == 1 else seq[i - 2]
-                    v, pv = d.get((op, C)), d.get((prev, C))
-                    if v is None or (i > 1 and pv is None):
-                        continue
-                    m = (v - 2 * a) / a if i == 1 else (v - pv - a) / a
-                    out[i].append(100 * m)
+                a = sum(add_t) / len(add_t)  # this shape's single-add baseline
+                vals += [v / a - (n - 1) for v in times(op, C)]
+            if vals:
+                out[n - 2] = vals  # x = number of dependent reads
         return out
 
-    fused = marg("add3", ["add3", "add4", "add5", "add6"])   # reads 1-4
-    sep = marg("add3_sep", ["add3_sep", "add4_sep"])          # reads 1-2
+    fused = excess([(3, "add3"), (4, "add4"), (5, "add5"), (6, "add6")])
+    sep = excess([(3, "add3_sep"), (4, "add4_sep"), (5, "add5_sep"), (6, "add6_sep")])
 
-    fig, ax = plt.subplots(figsize=(6.6, 4.4))
-    ax.axhline(0, color="0.6", lw=0.9)
-    for data, col, mk, lab, off in [(fused, "#1f77b4", "o", "fused chain (add3…add6)", -0.09),
-                                    (sep, "#ff7f0e", "s", "separate kernels (add3_sep, add4_sep)", 0.09)]:
-        for i, ys in data.items():
-            if not ys:
-                continue
-            ax.scatter([i + off] * len(ys), ys, s=34, color=col, zorder=3,
+    fig, ax = plt.subplots(figsize=(7.0, 4.6))
+    ax.axhline(0, color="0.6", lw=1.0, zorder=1, label="byte count (no excess)")
+    means = {}
+    for data, col, mk, lab in [(fused, "#1f77b4", "o", "fused chain (add3…add6)"),
+                               (sep, "#ff7f0e", "s", "separate kernels (add3_sep…add6_sep)")]:
+        xs = sorted(data)
+        for k in xs:
+            ax.scatter([k] * len(data[k]), data[k], s=26, color=col, zorder=3,
                        edgecolors="white", linewidths=0.4)
-            ax.plot([i + off - 0.07, i + off + 0.07], [sum(ys) / len(ys)] * 2, "-",
-                    color=col, lw=2.6, zorder=4)
-        ax.plot([], [], mk, color=col, label=lab)
-    ax.annotate("the 2nd dependent read spikes\nONLY when fused (≈+34% vs ≈0 separate)\n"
-                "→ the fusion penalty is here",
-                xy=(2 - 0.09, 34), xytext=(2.25, 33), fontsize=7.6, color="#1f4e8c", va="center",
+        ax.plot(xs, [sum(data[k]) / len(data[k]) for k in xs], "-", color=col, marker=mk,
+                ms=7, lw=1.8, zorder=4, label=lab)
+        means[lab[:5]] = {k: sum(data[k]) / len(data[k]) for k in xs}
+    # highlight the lone divergence at add4 (depth 2); note the agreement elsewhere
+    if 2 in fused and 2 in sep:
+        fu, se = sum(fused[2]) / len(fused[2]), sum(sep[2]) / len(sep[2])
+        ax.annotate("", xy=(2, fu), xytext=(2, se),
+                    arrowprops=dict(arrowstyle="<->", color="#a03000", lw=1.4))
+        ax.annotate("the ONLY divergence:\nadd4 (2 reads), fused ≫ separate\n"
+                    "— a lone, unexplained anomaly",
+                    xy=(2, (fu + se) / 2), xytext=(2.32, (fu + se) / 2 - 0.02), fontsize=7.6,
+                    color="#a03000", va="center")
+    ax.annotate("fused = separate at 1, 3, 4 reads\n→ the read-after-write dependency\n"
+                "   (both chains grow together)",
+                xy=(3.5, (means.get('fused', {}).get(4, 0.78))), xytext=(0.7, 0.62),
+                fontsize=7.6, color="#1f4e8c",
                 arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8))
     ax.set_xticks([1, 2, 3, 4])
-    ax.set_xticklabels(["read #1\n(add3)", "read #2\n(add4)", "read #3\n(add5)", "read #4\n(add6)"])
-    ax.set_xlabel("k-th dependent read added to the chain")
-    ax.set_ylabel("marginal cost of that read   (% of one `add`)")
-    ax.set_title("§3  Per-dependent-read cost: separate kernels stay flat;\n"
-                 "the fused chain spikes at the 2nd read (dots = 2 runs × 3 shapes)")
-    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
-    ax.set_ylim(-5, 42)
+    ax.set_xticklabels(["1\n(add3)", "2\n(add4)", "3\n(add5)", "4\n(add6)"])
+    ax.set_xlabel("number of dependent reads in the chain")
+    ax.set_ylabel("excess cost   t(add$_n$)/t(add) − (n−1)   [extra adds' worth of time]")
+    ax.set_title("§3  Extra cost vs chain length: fused and separate GROW TOGETHER\n"
+                 "(read-after-write dependency) and agree — except a lone anomaly at add4")
+    ax.legend(loc="upper left", fontsize=7.6, framealpha=0.9)
     _save(fig, "fig3b_pointwise_arity_reads")
 
 

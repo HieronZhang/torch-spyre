@@ -42,6 +42,8 @@ Examples:
 """
 
 import os
+import statistics
+import time
 
 # Enable the cost-model dump so we read ITS device-layout I/O size (the same byte
 # accounting the model uses), and force compile so the dump fires.
@@ -59,6 +61,11 @@ OP = os.environ.get("BENCH_OP", "gelu")
 ROWS = int(os.environ.get("BENCH_ROWS", "512"))
 COLS = int(os.environ.get("BENCH_COLS", "16384"))
 WARMUP = int(os.environ.get("BENCH_WARMUP", "5"))
+# Noise protocol: take BENCH_REPS back-to-back PROFILED measurements (not one) and report
+# min/median/mean/std/cv of kernel_us, so a jittery point is visible (cv) instead of read
+# as a model error. The profiled kernel is a small fraction of the run and the profiler
+# adds at most ~3x, so extra reps are nearly free. kernel_us in the SUMMARY = the median.
+REPS = max(1, int(os.environ.get("BENCH_REPS", "7")))
 SENCORES = os.environ.get("SENCORES", "")  # core count (read only to tag the SUMMARY)
 TILES = int(os.environ.get("BENCH_TILES", "0"))  # coarse-tile dim0 into K (>=2 on)
 LX = os.environ.get("LX_PLANNING", "1")  # scratchpad planning on(1)/off(0); SUMMARY tag
@@ -68,6 +75,12 @@ WD_B = os.environ.get("WD_B")  # forced work-div split (spyre_hint work_div). co
 WD_M = os.environ.get("WD_M")  # WD_B*WD_M*WD_N*WD_K. Unset dim -> stays 1 (the hint is
 WD_N = os.environ.get("WD_N")  # FINAL, not floor-filled). WD_M/N/K used by `mmwd`; all
 WD_K = os.environ.get("WD_K")  # four (incl. WD_B) used by `bmm_wd`/`bmm_wd_3d2d`.
+# Device tensor-layout dim_order for the two bmm operands (op `bmm_layout`), e.g. "1,0,2".
+# The LAST element is the stick dim -- keep it = the original last axis (K for arg A, N for
+# arg B) so the compiler does NOT insert a restickify/clone (which would change the counted
+# bytes and confound the layout signal). "1,0,2" only reorders the two OUTER axes.
+WD_LAYOUT_A = os.environ.get("WD_LAYOUT_A")  # dim_order for A [B,M,K]
+WD_LAYOUT_B = os.environ.get("WD_LAYOUT_B")  # dim_order for B [B,K,N]
 
 torch.manual_seed(0xAFFE)
 
@@ -93,7 +106,13 @@ _UNARY = {  # 1 read + 1 write (gelu/relu/sigmoid/exp also probe arithmetic-free
     "exp": torch.exp,
 }
 _BINARY = {"mul": lambda a, b: a * b, "add": lambda a, b: a + b}  # 2R + 1W
-_NARY = {"add3": 3, "add4": 4, "add5": 5, "add6": 6, "add8": 8}  # n inputs summed (dependent chain)
+_NARY = {
+    "add3": 3,
+    "add4": 4,
+    "add5": 5,
+    "add6": 6,
+    "add8": 8,
+}  # n inputs summed (dependent chain)
 _REDUCE = {  # read-dominated; sumall reduces to a scalar -> ring combine
     "read": lambda x: x.sum(dim=-1),
     "sumrow": lambda x: x.sum(dim=-1),  # reduce COLS -> [ROWS] (within-stick axis)
@@ -418,6 +437,23 @@ def _mm_nested_m_k():
     return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
 
 
+def _to_dev(t: torch.Tensor, layout_spec):
+    """Place a CPU tensor on the device, optionally with a chosen ``dim_order`` device
+    layout (op ``bmm_layout``). ``layout_spec`` is a comma-separated order like ``"1,0,2"``
+    (or None for the default placement). The LAST element must be the tensor's original
+    last axis so the compiler inserts NO restickify/clone (verified by the sweep's IR
+    grep). Lazy-init caveat: the very first ``.to(DEVICE)`` in the process must be plain,
+    so we do a tiny plain ``.to`` first to initialize before any ``device_layout`` copy."""
+    if not layout_spec:
+        return t.to(DEVICE)
+    from torch_spyre._C import SpyreTensorLayout
+
+    order = [int(x) for x in layout_spec.split(",")]
+    torch.zeros(1, dtype=t.dtype).to(DEVICE)  # plain to() first (fragile lazy init)
+    stl = SpyreTensorLayout(list(t.size()), list(t.stride()), t.dtype, order)
+    return t.to(DEVICE, device_layout=stl)
+
+
 def _bmm_workload(kind: str):
     """Batched matmul -- mirrors coarse_tile/run_bmm_*.py. B=BENCH_B, M=ROWS, K=COLS,
     N=BENCH_N; TILES>=2 tiles K (else untiled). ``kind``:
@@ -497,7 +533,9 @@ def _bmm_workload(kind: str):
     fn(xa, yb)  # eager reference call
     torch._dynamo.reset_code_caches()
     FxGraphCache.clear()
-    return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
+    # Operand placement: default `.to(DEVICE)`, or a chosen device dim_order when
+    # WD_LAYOUT_A/B is set (op `bmm_layout`) -- see `_to_dev`.
+    return torch.compile(fn), (_to_dev(xa, WD_LAYOUT_A), _to_dev(yb, WD_LAYOUT_B))
 
 
 def _softmax_unrolled():
@@ -547,6 +585,99 @@ def _softmax_unrolled():
     return torch.compile(fn), (x_cpu.to(DEVICE),)
 
 
+def _flash_attn_workload():
+    """Spyre flash-attention (mirrors flash_attn_example.py::flash_spyre) with the
+    coarse-tiling + work-division HINTS made env-configurable, so a sweep can vary the
+    block sizes and read the measured time for each. A MULTI-OP coarse-tiled program
+    (~28 ops): two batched matmuls (QK^T reduces over D, PV reduces over Lk) glued by the
+    online-softmax reductions, fused under one tiled loop nest -- see notes/flash_attn_hints.md.
+    Knobs: FA_B/FA_H/FA_LQ/FA_LK/FA_D (shape); FA_B_TILES/FA_H_TILES/FA_LQ_TILES/
+    FA_LK_TILES (coarse tile COUNTS per dim -> loop nest); FA_WD ("H:4,Lq:8,Lk:8" work_div
+    -> intra-tile cores). We are NOT modeling flash attn yet; this is data + IR capture."""
+    import math as _math
+
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    B = int(os.environ.get("FA_B", "1"))
+    H = int(os.environ.get("FA_H", "32"))
+    Lq = int(os.environ.get("FA_LQ", "4096"))
+    Lk = int(os.environ.get("FA_LK", "4096"))
+    D = int(os.environ.get("FA_D", "128"))
+    bt = int(os.environ.get("FA_B_TILES", "1"))
+    ht = int(os.environ.get("FA_H_TILES", "8"))
+    qt = int(os.environ.get("FA_LQ_TILES", "4"))
+    kt = int(os.environ.get("FA_LK_TILES", "1"))
+    wd = {}
+    for part in os.environ.get("FA_WD", "H:4,Lq:8,Lk:8").split(","):
+        nm, val = part.split(":")
+        wd[nm.strip()] = int(val)
+    scale = 1.0 / _math.sqrt(_math.sqrt(D))
+
+    def _declare():
+        pnd.declare_tensor_dim("B", B)
+        pnd.declare_tensor_dim("H", H)
+        pnd.declare_tensor_dim("Lq", Lq)
+        pnd.declare_tensor_dim("Lk", Lk)
+        pnd.declare_tensor_dim("D", D)
+
+    _declare()
+
+    def _name(q, k, v, m):
+        pnd.name_tensor_dims(q, ["B", "H", "Lq", "D"])
+        pnd.name_tensor_dims(k, ["B", "H", "Lk", "D"])
+        pnd.name_tensor_dims(v, ["B", "H", "Lk", "D"])
+        pnd.name_tensor_dims(m, ["B", "H", "Lq", "Lk"])
+
+    def flash(queries, keys, values, mask):
+        _name(queries, keys, values, mask)
+        output = torch.zeros_like(queries)
+        # sparse running max / denominator (the example's reduction hack)
+        real_max = torch.full(
+            (B, H, Lq, 64), float("-inf"), device=queries.device, dtype=torch.float16
+        ).amax(dim=-1)
+        denominator = torch.zeros(
+            (B, H, Lq, 64), device=queries.device, dtype=torch.float16
+        ).amax(dim=-1)
+        with spyre_hint(tiles={"B": bt}):
+            with spyre_hint(tiles={"H": ht}):
+                with spyre_hint(tiles={"Lq": qt}):
+                    with spyre_hint(tiles={"Lk": kt}):
+                        with spyre_hint(work_div=wd):
+                            keys_t = (keys * scale).transpose(-1, -2)
+                            scores = torch.matmul(queries * scale, keys_t) + mask
+                            block_max = torch.amax(scores, dim=-1)
+                            running_max = torch.maximum(real_max, block_max)
+                            exp_scores = torch.exp(scores - running_max.unsqueeze(-1))
+                            correction = torch.exp(real_max - running_max)
+                            denominator.copy_(
+                                denominator * correction + exp_scores.sum(dim=-1)
+                            )
+                            output.copy_(
+                                output * correction.unsqueeze(-1)
+                                + torch.matmul(exp_scores, values)
+                            )
+                            real_max.copy_(running_max)
+        return output / denominator.unsqueeze(-1)
+
+    q = torch.randn(B, H, Lq, D, dtype=torch.float16)
+    k = torch.randn(B, H, Lk, D, dtype=torch.float16)
+    v = torch.randn(B, H, Lk, D, dtype=torch.float16)
+    causal = torch.tril(torch.ones(Lq, Lk, dtype=torch.bool))
+    m = torch.zeros(1, 1, Lq, Lk, dtype=torch.float16)
+    m.masked_fill_(~causal, float("-inf"))
+    flash(q, k, v, m)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    _PREPARE = _declare
+    return (
+        torch.compile(flash),
+        (q.to(DEVICE), k.to(DEVICE), v.to(DEVICE), m.to(DEVICE)),
+    )
+
+
 def make_workload():
     if OP in _UNARY:
         return torch.compile(_UNARY[OP]), (_rand(ROWS, COLS),)
@@ -568,15 +699,20 @@ def make_workload():
         return torch.compile(lambda a, b: a + b), (_rand(ROWS, COLS), _rand(ROWS, 1))
     if OP == "write":  # write-only: both inputs broadcast -> cached
         return torch.compile(lambda b, c: b + c), (_rand(1, COLS), _rand(ROWS, 1))
-    if OP == "add_indep2":  # §3 control: two INDEPENDENT adds, same 4R:2W as add3 but NO
+    if (
+        OP == "add_indep2"
+    ):  # §3 control: two INDEPENDENT adds, same 4R:2W as add3 but NO
         # read-after-write dependency (op0=a+b, op1=c+d). add3 − add_indep2 isolates the
         # dependent round-trip cost from the byte count. (Verify in the IR whether Inductor
         # fuses the two into one kernel or emits two; both readings are informative.)
         indep = lambda a, b, c, d: (a + b, c + d)  # noqa: E731
         return torch.compile(indep), tuple(_rand(ROWS, COLS) for _ in range(4))
     import regex as _re
+
     _sepm = _re.fullmatch(r"add(\d+)_sep", OP)
-    if _sepm:  # add{N}_sep -- §3 control: the SAME dependent chain as add{N} but forced into
+    if (
+        _sepm
+    ):  # add{N}_sep -- §3 control: the SAME dependent chain as add{N} but forced into
         # SEPARATE kernels (each add is its own torch.compile), read-after-write dependency
         # IDENTICAL (the intermediate is written to HBM by one kernel and read by the next).
         # add{N} vs add{N}_sep = the fusion cost with the dependency held fixed (same bytes).
@@ -614,6 +750,10 @@ def make_workload():
         return _bmm_workload("k")
     if OP == "bmm_wd_3d2d":  # matmul [B,M,K]@[K,N] shared weight, FORCED split
         return _bmm_workload("3d2d")
+    if OP == "bmm_layout":  # full bmm with a chosen device dim_order (WD_LAYOUT_A/B), +
+        return _bmm_workload("k")  # optional forced split (WD_B/M/N/K) -- see _to_dev
+    if OP == "flash_attn":  # multi-op coarse-tiled flash attention (FA_* hint knobs)
+        return _flash_attn_workload()
     if OP == "softmax_unrolled":  # unrolled softmax chain over B (no CoarseTileInfo)
         return _softmax_unrolled()
     if OP == "mm":  # matmul [M=ROWS, K=COLS] @ [K=COLS, N=BENCH_N]: a Reduction over K
@@ -646,6 +786,8 @@ def make_workload():
             "bmm_nested_b_k",
             "bmm_wd",
             "bmm_wd_3d2d",
+            "bmm_layout",
+            "flash_attn",
             "mm",
             "mmwd",
             "transpose_outer",
@@ -765,8 +907,10 @@ def _print_model(feats: list) -> float:
 
 
 def _run():
-    def _sync(out):  # move result(s) to host; multi-output workloads return a tuple/list
-        for t in (out if isinstance(out, (tuple, list)) else (out,)):
+    def _sync(
+        out,
+    ):  # move result(s) to host; multi-output workloads return a tuple/list
+        for t in out if isinstance(out, (tuple, list)) else (out,):
             t.cpu()
 
     compiled, args = make_workload()
@@ -778,41 +922,77 @@ def _run():
     feats = list(dump_cost_model.LAST_FEATS)  # raw OpFeatures for predict_ops()
     io_hbm_bytes = io.get("hbm_bytes", 0)
 
-    with profile(
-        activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1],
-        record_shapes=True,
-        profile_memory=True,
-    ) as prof:
-        if _PREPARE is not None:  # coarse-tile: re-declare before the profiled trace
-            _PREPARE()
-        _sync(compiled(*args))
+    def _profile_once():
+        """One profiled trace -> (kernel_us, memset_us, other_us), classified by
+        EXCLUSION (a Memset / Memcpy is NOT the fused compute kernel; the new image
+        leaves the kernel event name BLANK, so a name match silently reports 0)."""
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1],
+            record_shapes=True,
+            profile_memory=True,
+        ) as prof:
+            if (
+                _PREPARE is not None
+            ):  # coarse-tile: re-declare before the profiled trace
+                _PREPARE()
+            _sync(compiled(*args))
+        kernel = memset = other = 0.0
+        for ev in prof.key_averages():
+            us = getattr(ev, "self_device_time_total", 0) or getattr(
+                ev, "self_cuda_time_total", 0
+            )
+            if not us or us <= 0:
+                continue
+            key = ev.key or ""
+            if "Memset" in key:
+                memset += us
+            elif "Memcpy" in key:
+                other += us
+            else:
+                kernel += (
+                    us  # fused compute kernel (sdsc_fused / inductor-spyre / BLANK)
+                )
+        return prof, kernel, memset, other
+
+    # NOISE PROTOCOL: REPS back-to-back profiled measurements. The kernel time is
+    # jitter-prone (esp. large-COLS memory ops), so a single measurement can read as a
+    # model error; we report min/median/mean/std/cv and use the MEDIAN as kernel_us.
+    kernels, memsets, others = [], [], []
+    first_prof = None
+    t_prof0 = time.perf_counter()
+    for i in range(REPS):
+        prof, k, ms, ot = _profile_once()
+        if i == 0:
+            first_prof = prof
+        if k > 0:
+            kernels.append(k)
+            memsets.append(ms)
+            others.append(ot)
+    prof_wall_s = time.perf_counter() - t_prof0
 
     print(f"== {OP}[{ROWS}x{COLS}] -- profiler kernel time vs cost-model I/O ==")
-    ka = prof.key_averages()
-    print(ka.table(sort_by="cuda_time_total", row_limit=20).replace("CUDA", "AIU"))
+    if first_prof is not None:  # show the first trace's event table (diagnostic)
+        print(
+            first_prof.key_averages()
+            .table(sort_by="cuda_time_total", row_limit=20)
+            .replace("CUDA", "AIU")
+        )
     _print_io(io)
     pred_us = _print_model(feats)  # cost-model estimate + rough calc (after I/O dump)
 
-    # Parseable one-liner for a size sweep -> re-fit fill + BW on the GOLDEN kernel
-    # time, and track the (non-deterministic) Memset overhead separately. The fused
-    # compute kernel is the SPYRE device time that is neither a Memset nor a Memcpy
-    # (DtoH/HtoD copy). We classify by EXCLUSION, not by name: older runtimes named it
-    # sdsc_fused_*/inductor-spyre-*, but the new image leaves the kernel event name
-    # BLANK -- so a name match silently reports 0. Memcpy copies go to `other`.
-    kernel = memset = other = 0.0
-    for ev in ka:
-        us = getattr(ev, "self_device_time_total", 0) or getattr(
-            ev, "self_cuda_time_total", 0
-        )
-        if not us or us <= 0:
-            continue
-        key = ev.key or ""
-        if "Memset" in key:
-            memset += us
-        elif "Memcpy" in key:
-            other += us
-        else:
-            kernel += us  # fused compute kernel (sdsc_fused / inductor-spyre / BLANK)
+    # Aggregate the replicate kernel times. MEDIAN is the reported kernel_us (robust);
+    # MIN is the cleanest true-kernel estimate; CV is the noise gate for the analysis.
+    if kernels:
+        k_med = statistics.median(kernels)
+        k_min = min(kernels)
+        k_mean = statistics.fmean(kernels)
+        k_std = statistics.pstdev(kernels) if len(kernels) > 1 else 0.0
+        k_cv = (k_std / k_mean * 100.0) if k_mean > 0 else 0.0
+        memset = statistics.median(memsets)
+        other = statistics.median(others)
+    else:
+        k_med = k_min = k_mean = k_std = k_cv = memset = other = 0.0
+    kernel = k_med  # SUMMARY kernel_us = median (back-compat)
     # Effective BW from the GOLDEN kernel time and the model's device-layout I/O.
     bw = io_hbm_bytes / (kernel * 1000) if kernel > 0 else 0.0
     err = (pred_us - kernel) / kernel * 100.0 if kernel > 0 else 0.0
@@ -820,12 +1000,21 @@ def _run():
     # forced (mmwd) split uses cores = m*n*k, which may be < SENCORES.
     mcores = max((getattr(o, "cores", 0) for o in feats), default=0)
     cores_tag = mcores if mcores > 0 else (SENCORES or "-")
+    # Per-run TIMING feedback: profiled-region wall time + per-rep, so future sweeps can
+    # be sized from real numbers instead of guessing. Prefixed TIMING for the sweep grep.
+    print(
+        f"TIMING op={OP} reps={len(kernels)}/{REPS} prof_wall_s={prof_wall_s:.2f} "
+        f"per_rep_s={prof_wall_s / max(1, REPS):.3f}"
+    )
     print(
         f"SUMMARY op={OP} rows={ROWS} cols={COLS} cores={cores_tag} "
         f"tiles={TILES} lx={LX} io_hbm_bytes={io_hbm_bytes} "
         f"kernel_us={kernel:.3f} pred_us={pred_us:.3f} err_pct={err:+.1f} "
         f"bw_gbps={bw:.1f} memset_us={memset:.3f} "
-        f"other_dev_us={other:.3f} total_dev_us={kernel + memset + other:.3f}"
+        f"other_dev_us={other:.3f} total_dev_us={kernel + memset + other:.3f} "
+        f"kernel_us_min={k_min:.3f} kernel_us_median={k_med:.3f} "
+        f"kernel_us_mean={k_mean:.3f} kernel_us_std={k_std:.3f} "
+        f"kernel_us_cv={k_cv:.2f} reps={len(kernels)}"
     )
 
 

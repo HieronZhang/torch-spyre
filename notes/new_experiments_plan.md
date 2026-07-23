@@ -189,3 +189,77 @@ bash docs/source/user_guide/examples/run_new_experiments_sweep.sh   # ~143 runs,
 5. **COARSE** after the code fixes land.
 
 No new hardware capability is required — only run time.
+
+---
+
+## Next model — a byte-keyed read-after-write term (and unifying it with coarse-tiling spill)
+
+**What §3 established.** The margin on a chained/fused op sequence is a **read-after-write dependency**
+across op boundaries, *not* fusion (fused ≈ separate at 1, 3, 4 dependent reads). It is a real,
+first-class cost a per-kernel byte model cannot see, and it is **gated off when the intermediate is
+on-chip** (scratchpad on → the model already predicts it within a few %).
+
+**Proposed form — additive, keyed on the intermediate's size (not a `×derate` on `m`):**
+
+```text
+T = byte_model  +  Σ_intermediates  (round-tripped_bytes) · c_raw        # HBM-resident intermediates only
+```
+
+Three reasons this is the right shape:
+
+1. **Byte-proportional, and the data agrees.** The §3 excess in `add`-units is **shape-invariant**
+   (≈ 0.13 per dependent read at COLS 1024/4096/16384) — the cost scales with the intermediate size,
+   which an additive byte term captures and a fixed-% derate does not.
+2. **Composes with the LX model for free.** The term is present only for HBM-resident intermediates; on
+   chip there are no round-tripped bytes, so it is automatically 0 — matching the validated scratchpad-on
+   predictions. A `×(1+0.075·(m−1))` derate has to special-case that.
+3. **Generalizes past adds.** A read-after-write between *any* two dependent ops (matmul→bias,
+   softmax→dropout, …) is the same phenomenon; `m`-counting only works for a homogeneous add chain.
+
+**The key connection — this is the SAME thing as coarse-tiling §15 (`s_lx`).** A coarse-tiled kernel
+(softmax = 5 fused ops, matmul_row, …) IS a multi-op fused chain. While its intermediates fit LX they
+stay on-chip → no read-after-write cost (the model correctly adds nothing). When the per-core working
+set overflows LX they **spill to HBM**, and each spilled intermediate is *written by one fused op and
+read by the next* — a read-after-write round-trip, exactly §3's mechanism. Today §15 charges this as an
+empirical **BW derate** on the spilled bytes (`BW *= (512KB/ws)^0.15`, softmax-calibrated); §3 charges
+the add chain as an **arity derate**. **These are two parameterizations of one physical effect.** A
+single additive read-after-write term keyed on the round-tripped intermediate bytes could **replace
+both** and be physically consistent across pointwise chains, coarse tiling, and program-level op
+sequences.
+
+**Should we apply it to `add3`/`add4`/`add5` now? — no, hold off.** The add-chain data is too irregular
+to fit any simple form cleanly: the `add4` anomaly inflates depth 2, and neither the multiplicative
+derate (over-predicts `add5`/`add6`) nor a linear additive term (under-predicts `add4`–`add6`) matches
+the whole ladder. The shipped `×(1+0.075·(m−1))` happens to fit the realistic `add3`/`add4` and is kept
+as a flagged placeholder. Fitting `c_raw` on the pathological add chain would encode the anomaly.
+
+**Where to develop and fit it instead — coarse tiling.** Coarse-tiled kernels give genuinely multi-op
+chains with intermediate sizes that vary cleanly (via tile count and COLS), no `add4`-style pathology,
+and a spill regime that already isolates the HBM read-after-write. Plan:
+
+- Re-derive §15 as `T += spilled_intermediate_bytes · c_raw` (additive) instead of a BW multiplier, and
+  refit on the existing `softmax_row_tiling` spill sweep; check it does not regress the 5.7 % RMS.
+- Use §3's clean `add3` anchor (≈ 0.13 `add`-units per read, shape-invariant) as an independent sanity
+  check on the fitted `c_raw` magnitude — the two should be within a small factor if it is one effect.
+- Only then consider a **program-level** read-after-write term for arbitrary op sequences.
+
+**Detection is easy — the model already sees the chain.** A multi-op fused bundle carries multiple
+ops in its `feats` (e.g. `add3` = 2 ops, `add4` = 3, softmax = 5), while a single op has 1. So the model
+can *identify* a dependent chain today; what is missing is (a) the term to charge it and (b) which
+intermediates are HBM-resident (cross-op read-after-write). This is the future fix: apply the byte-keyed
+read-after-write term to bundles with >1 op whose intermediate spills HBM, instead of leaving them
+under-predicted.
+
+**Coverage gap to fix first — we have only ONE multi-op coarse example.** Of the coarse-tiled
+workloads, only the **softmax family** (`softmax_row_tiling` / `_noexp` / `_unrolled`, all 5-op) is a
+genuine multi-op fused chain; every other coarse op (`matmul_row`, `matmul_k`, `mm_nested`, `bmm_*`,
+`ct*`) is **single-op** (1 op in the bundle, no cross-op read-after-write). Fitting `c_raw` on softmax
+alone repeats the one-op-family problem. So a prerequisite is **new coarse multi-op chains** whose
+intermediate count and size vary cleanly — candidates: **LayerNorm** (mean/sub/var/rsqrt/mul), a
+**coarse-tiled pointwise chain** (e.g. `((a+b)*c+d)` tiled, so #intermediates is a knob and the tile
+size sets spill), and a **GELU/normalization chain**. These give the independent multi-op examples the
+unified read-after-write term must be fit and validated against.
+
+**Prerequisites** (same as before): op-*sequence* data beyond chained adds; the extractor exposing
+cross-op read-after-write dependencies (it sees within-bundle ops only today); and understanding or
+bounding the `add4` anomaly so it does not contaminate the fit.

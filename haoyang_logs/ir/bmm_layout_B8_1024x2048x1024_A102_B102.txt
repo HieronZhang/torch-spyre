@@ -1,0 +1,1 @@
+SUMMARY op=bmm_layout kernel_us=1.0 cores=32

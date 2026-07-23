@@ -1,0 +1,1 @@
+SUMMARY op=softmax_row_tiling kernel_us=1.0 cores=32
