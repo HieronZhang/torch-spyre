@@ -82,9 +82,17 @@ _over() { [[ "$MAX_SECONDS" -gt 0 && "$SECONDS" -ge "$MAX_SECONDS" ]]; }  # wall
 # `run` gate: a section is entered only if enabled AND under budget; a helper early-returns
 # (silently, so the tail drains fast) once the budget is hit mid-section.
 do_sect() { has "$1" && ! _over; }
-_emit() {  # keep the parseable lines (incl. per-run TIMING) for parse_sweep_logs.py
-  local out; out=$(grep -E 'op_it_space_splits|^IO |^MODEL |^SUMMARY|^TIMING ')
-  echo "${out:-SUMMARY $1 FAILED}" | tee -a "$LOG"
+_emit() {  # keep the parseable lines for parse_sweep_logs.py; on a crash, surface WHY
+  local all out; all=$(cat)   # the run's full stdout+stderr
+  out=$(printf '%s\n' "$all" | grep -E 'op_it_space_splits|^IO |^MODEL |^SUMMARY|^TIMING ')
+  if printf '%s\n' "$out" | grep -q '^SUMMARY'; then
+    printf '%s\n' "$out" | tee -a "$LOG"      # a SUMMARY (ok OR profile_ops' own FAILED reason)
+  else
+    # no SUMMARY at all -> crashed before main() (e.g. import error). Log the tail so the
+    # error is diagnosable instead of a bare FAILED.
+    { echo "SUMMARY $1 FAILED"
+      printf '%s\n' "$all" | grep -vE '^\s*$' | tail -6 | sed 's/^/FAILDIAG /'; } | tee -a "$LOG"
+  fi
 }
 sect() { SECT="$1"; SECT_T0=$SECONDS; echo "## $1 -- ${2:-}" | tee -a "$LOG"; }
 esect() { echo "## $SECT DONE in $((SECONDS - SECT_T0))s" | tee -a "$LOG"; }
