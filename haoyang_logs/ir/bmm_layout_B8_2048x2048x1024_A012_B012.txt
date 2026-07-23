@@ -1,1 +1,1032 @@
-SUMMARY op=bmm_layout kernel_us=1.0 cores=32
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+[W723 08:15:53.313724848 collection.cpp:1077] Warning: Detected an event which was likely passed to kineto by the PyTorch profiler, but is not present in the set of known events: [memory] This most likely means that Kineto has not maintained address stability for this event. Please report this to the PyTorch team. (function operator())
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (8, 2048, 2048) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (8, 2048, 1024) spyre:0
+%bmm : [num_users=1] = call_function[target=torch.ops.aten.bmm.default](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (8, 2048, 1024) spyre:0
+return (bmm,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[8, 2048, 1024], stride=[2097152, 1024, 1], device_layout=SpyreTensorLayout(device_size=[2048, 16, 8, 64], stride_map =[1024, 64, 2097152, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 1, d1: 4, d2: 8, d3: 1}
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, i1, i2 = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i1 + 4194304 * i0)
+      tmp1 = ops.load(arg1_1, i2 + 1024 * r0_0 + 2097152 * i0)
+      return (OpsValue('tmp0'), OpsValue('tmp1'))
+  ,
+  ranges=[8, 2048, 1024],
+  reduction_ranges=[2048],
+  reduction_type=batchmatmul,
+  origin_node=bmm,
+  origins=OrderedSet([bmm]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 508, in torch_dynamo_resume_in_fn_at_506,
+      return mm(a, b),
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  bmm          read=100663296B write=33554432B lx=0B
+      output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+      input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM  | 33554432 elems x 2B = 67108864 B (hbm counted: 67108864 B)
+      input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM  | 16777216 elems x 2B = 33554432 B (hbm counted: 33554432 B)
+  -- prediction (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+     R=100663296B (read)   W=33554432B (write)
+     compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+     base = R/150 + W/150 = 894.78 us
+     turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+     => T_model = 1596.00 us
+
+== bmm_layout[2048x2048] -- profiler kernel time vs cost-model I/O ==
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    Self SPYRE  Self SPYRE %   SPYRE total  SPYRE time avg       CPU Mem  Self CPU Mem     SPYRE Mem  Self SPYRE Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+sdsc_fused_bmm_0_wsch8ae1/spyreCodeDir/bundle.mlir#2...         0.00%       0.000us         0.00%       0.000us       0.000us       7.408ms        72.62%       7.408ms       7.408ms           0 B           0 B           0 B           0 B             1  
+                                          Memcpy (DtoH)         0.00%       0.000us         0.00%       0.000us       0.000us       2.130ms        20.88%       2.130ms     266.275us           0 B           0 B           0 B           0 B             8  
+                                        Memset (Device)         0.00%       0.000us         0.00%       0.000us       0.000us     424.409us         4.16%     424.409us      42.441us           0 B           0 B           0 B           0 B            10  
+                                          Memcpy (HtoD)         0.00%       0.000us         0.00%       0.000us       0.000us     238.525us         2.34%     238.525us     119.262us           0 B           0 B           0 B           0 B             2  
+                               TorchDynamo Cache Lookup         0.01%     111.236us         0.01%     111.236us      18.539us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             6  
+                             Torch-Compiled Region: 0/0         0.03%     429.578us        96.74%        1.585s        1.585s       0.000us         0.00%       0.000us       0.000us           0 B           0 B      32.09 MB           0 B             1  
+                             Torch-Compiled Region: 1/0         0.00%       9.425us         0.00%      63.871us      63.871us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                             Torch-Compiled Region: 2/0         0.00%      10.975us         0.00%      10.975us      10.975us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                             Torch-Compiled Region: 4/0         0.00%       5.725us         0.00%      19.723us      19.723us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                             Torch-Compiled Region: 2/1         0.00%       3.077us         0.00%       3.077us       3.077us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                                                 dynamo         0.11%       1.725ms        96.67%        1.584s        1.584s       0.000us         0.00%       0.000us       0.000us           0 B           0 B      89.12 KB           0 B             1  
+                            dynamo_data: compile_id=6/5         0.00%      22.010us         0.00%      22.010us      22.010us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                                   entire_frame_compile         0.00%      27.970us        96.56%        1.582s        1.582s       0.000us         0.00%       0.000us       0.000us           0 B           0 B      89.12 KB           0 B             1  
+entire_frame_compile_data: fn_name=_compile.compile_...         0.00%       6.671us         0.00%       6.671us       6.671us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                  _compile.compile_inner (dynamo_timed)         0.04%     603.028us        96.56%        1.582s        1.582s       0.000us         0.00%       0.000us       0.000us           0 B           0 B      89.12 KB           0 B             1  
+                                      compile_attempt_0         0.00%      23.614us        95.76%        1.569s        1.569s       0.000us         0.00%       0.000us       0.000us           0 B           0 B      89.12 KB           0 B             1  
+                 compile_attempt_0_data: compile_id=6/5         0.00%       8.504us         0.00%       8.504us       8.504us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                       compile_attempt_0 (dynamo_timed)         0.15%       2.520ms        95.75%        1.569s        1.569s       0.000us         0.00%       0.000us       0.000us           0 B           0 B      89.12 KB           0 B             1  
+                                       bytecode_tracing         0.00%      27.060us         0.24%       3.951ms       3.951ms       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                  bytecode_tracing_data: compile_id=6/5         0.00%      11.709us         0.00%      11.709us      11.709us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 1.638s
+Self SPYRE time total: 10.201ms
+
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op bmm [reduction]
+IO     output op0                    torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM = 16777216 elems x 2B = 33554432 B  (hbm counted: 33554432 B)
+IO     input  arg0_1                 torch [8, 2048, 2048] -> device [2048, 32, 8, 64] in HBM = 33554432 elems x 2B = 67108864 B  (hbm counted: 67108864 B)
+IO     input  arg1_1                 torch [8, 2048, 1024] -> device [2048, 16, 8, 64] in HBM = 16777216 elems x 2B = 33554432 B  (hbm counted: 33554432 B)
+IO   => HBM I/O total = 134217728 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = compute + (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=100663296 B (read)   W=33554432 B (write)   loop_trip L=1
+MODEL   compute = MACs/cores/(mac_peak*pt_eff) = 34359738368/32/(1140*1.000) = 941.88 us  (M/m=512, pt_eff=1.000)
+MODEL   base = R/150+W/150 = 894.78 us
+MODEL   turn = a*min(R,W) = 0.00574*33554432 = 192.60 us
+MODEL   => T_model = 1596.00 us
+MODEL FEATS [{"name":"bmm","is_reduction":true,"out_elems":16777216,"cores":32,"dtype_bytes":2,"args":[{"name":"op0","role":"output","mem":"hbm","elems":16777216,"broadcast":false,"dims":[2048,16,8,64],"logical":[8,2048,1024],"loop_factor":1},{"name":"arg0_1","role":"input","mem":"hbm","elems":33554432,"broadcast":false,"dims":[2048,32,8,64],"logical":[8,2048,2048],"loop_factor":1},{"name":"arg1_1","role":"input","mem":"hbm","elems":16777216,"broadcast":false,"dims":[2048,16,8,64],"logical":[8,2048,1024],"loop_factor":1}],"reduction_cores":1,"loop_trip":1,"tiles_output_dim":false,"tile_rows_per_core":0.0,"is_matmul":true,"matmul_macs":34359738368,"matmul_rows_per_core":512.0,"matmul_cols_per_core":128.0,"matmul_a_bytes":8388608,"matmul_b_bytes":4194304,"matmul_m_split":4,"matmul_n_split":8,"hbm_pattern":""}]
+TIMING op=bmm_layout reps=7/7 prof_wall_s=11.75 per_rep_s=1.679
+SUMMARY op=bmm_layout rows=2048 cols=2048 cores=32 tiles=0 lx=1 io_hbm_bytes=134217728 kernel_us=7423.874 pred_us=1596.002 err_pct=-78.5 bw_gbps=18.1 memset_us=498.199 other_dev_us=2346.355 total_dev_us=10268.428 kernel_us_min=7383.663 kernel_us_median=7423.874 kernel_us_mean=7418.964 kernel_us_std=23.816 kernel_us_cv=0.32 reps=7

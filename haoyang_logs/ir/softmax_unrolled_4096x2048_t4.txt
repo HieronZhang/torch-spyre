@@ -1,1 +1,3722 @@
-SUMMARY op=softmax_unrolled kernel_us=1.0 cores=32
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=2)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=2)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=2)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=2)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=2)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=3)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=3)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=3)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=3)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=3)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=4)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=4)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=4)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=4)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=4)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=5)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=5)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=5)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=5)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=5)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=6)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=6)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=6)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=6)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=6)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=7)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=7)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=7)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=7)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=7)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+[W723 09:36:33.736585932 collection.cpp:1077] Warning: Detected an event which was likely passed to kineto by the PyTorch profiler, but is not present in the set of known events: [memory] This most likely means that Kineto has not maintained address stability for this event. Please report this to the PyTorch team. (function operator())
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=8)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=8)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=8)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=8)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=8)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=9)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=9)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=9)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=9)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=9)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=10)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=10)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=10)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=10)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=10)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+[W723 09:36:36.723998544 CPUAllocator.cpp:245] Memory block of unknown size was allocated before the profiling started, profiler results will not include the deallocation event
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=11)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=11)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=11)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=11)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=11)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=12)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=12)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=12)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=12)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=12)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=2] = placeholder[target=arg0_1]    # torch.float16 (4096, 2048) spyre:0
+%amax : [num_users=1] = call_function[target=torch.ops.aten.amax.default](args = (%arg0_1, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%sub : [num_users=1] = call_function[target=torch.ops.aten.sub.Tensor](args = (%arg0_1, %amax), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%exp : [num_users=2] = call_function[target=torch.ops.aten.exp.default](args = (%sub,), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+%sum_1 : [num_users=1] = call_function[target=torch.ops.aten.sum.dim_IntList](args = (%exp, [-1], True), kwargs = {})    # torch.float16 (4096, 1) spyre:0
+%div : [num_users=1] = call_function[target=torch.ops.aten.div.Tensor](args = (%exp, %sum_1), kwargs = {})    # torch.float16 (4096, 2048) spyre:0
+return (div,)
+[7 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[4096, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 1], stride=[1, 4096])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[4096, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[4096, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op5: SpyreEmptyFallback
+
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=13)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=max,
+  origin_node=amax,
+  origins=OrderedSet([amax]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 561, in _softmax,
+      mx = x.amax(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=13)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 2048 * i0)
+      tmp1 = ops.load(buf0, i0)
+      tmp2 = tmp0 - tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=sub,
+  origins=OrderedSet([sub]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 2048], stride=[2048, 1], device_layout=SpyreTensorLayout(device_size=[32, 1024, 64], stride_map =[64, 2048, 1], device_dtype=DataFormats.SEN169_FP16))
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=13)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 2048 * i0)
+      tmp1 = ops.exp(tmp0)
+      return tmp1
+  ,
+  ranges=[1024, 2048],
+  origin_node=exp,
+  origins=OrderedSet([exp]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 562, in _softmax,
+      e = (x - mx).exp(),
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[1024, 1], stride=[1, 1], device_layout=SpyreTensorLayout(device_size=[1, 1, 1024, 64], stride_map =[-1, -1, 1, -1], device_dtype=DataFormats.SEN169_FP16))
+  allocation={'lx': 0}
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=13)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Reduction(
+  'spyre',
+  torch.float16,
+  def inner_fn(index, rindex):
+      i0, _ = index
+      r0_0 = rindex
+      tmp0 = ops.load(buf2, r0_0 + 2048 * i0)
+      return tmp0
+  ,
+  ranges=[1024, 1],
+  reduction_ranges=[2048],
+  reduction_type=sum,
+  origin_node=sum_1,
+  origins=OrderedSet([sum_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=MutationLayoutSHOULDREMOVE('spyre:0', torch.float16, size=[4096, 2048], stride=[2048, 1])
+  dim_hints=[DimHint(dim_names=['B'], split_count=4, loop_var=d0, is_reduction=False, hint_id=13)]
+  loop_info=CoarseTileInfo(loop_group_id=(0,), loop_count=[4], loop_tiled_dims=[[0]], loop_tiled_reduction_dims=[[]])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 2048 * i0)
+      tmp1 = ops.load(buf3, i0)
+      tmp2 = tmp0 / tmp1
+      return tmp2
+  ,
+  ranges=[1024, 2048],
+  origin_node=div,
+  origins=OrderedSet([div]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 570, in torch_dynamo_resume_in_fn_at_568,
+      return _softmax(x),
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 563, in _softmax,
+      return e / e.sum(dim=-1, keepdim=True),
+  ,
+  }
+)
+
+[6 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         read=16777216B write=0B lx=131072B loop_trip=4
+      output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  sub          read=16777216B write=4194304B lx=131072B loop_trip=4
+      output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  exp          read=4194304B write=4194304B lx=0B loop_trip=4
+      output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  sum_1        read=4194304B write=0B lx=131072B loop_trip=4
+      output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+  div          read=4194304B write=16777216B lx=131072B loop_trip=4
+      output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM  | 2097152 elems x 2B = 4194304 B (hbm counted: 4194304 B)
+      input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX  | 65536 elems x 2B = 131072 B (hbm counted: 0 B) broadcast (loaded once)
+  -- prediction (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+     R=29360128B (read)   W=25165824B (write)
+     base = (R+W)/150 = 363.51 us
+     turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+     eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950  -> (base+turn)/eff = 534.69 us
+     => T_model = 810.44 us
+
+== softmax_unrolled[4096x2048] -- profiler kernel time vs cost-model I/O ==
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    Self SPYRE  Self SPYRE %   SPYRE total  SPYRE time avg       CPU Mem  Self CPU Mem     SPYRE Mem  Self SPYRE Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+sdsc_fused_amax_div_exp_sub_sum_0_xbo_qn2i/spyreCode...         0.00%       0.000us         0.00%       0.000us       0.000us       5.461ms        81.75%       5.461ms       5.461ms           0 B           0 B           0 B           0 B             1  
+                                          Memcpy (DtoH)         0.00%       0.000us         0.00%       0.000us       0.000us     678.350us        10.16%     678.350us     169.587us           0 B           0 B           0 B           0 B             4  
+                                        Memset (Device)         0.00%       0.000us         0.00%       0.000us       0.000us     298.100us         4.46%     298.100us      49.683us           0 B           0 B           0 B           0 B             6  
+                                          Memcpy (HtoD)         0.00%       0.000us         0.00%       0.000us       0.000us     242.442us         3.63%     242.442us     121.221us           0 B           0 B           0 B           0 B             2  
+                               TorchDynamo Cache Lookup         0.01%      67.116us         0.01%      67.116us      22.372us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             3  
+                             Torch-Compiled Region: 0/0         0.05%     433.959us        95.24%     849.841ms     849.841ms       0.000us         0.00%       0.000us       0.000us      16.00 MB           0 B      16.15 MB           0 B             1  
+                             Torch-Compiled Region: 1/0         0.00%      12.097us         0.00%      12.097us      12.097us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                                                 dynamo         0.20%       1.751ms        95.12%     848.778ms     848.778ms       0.000us         0.00%       0.000us       0.000us      16.00 MB           0 B     155.12 KB           0 B             1  
+                            dynamo_data: compile_id=3/5         0.00%      17.671us         0.00%      17.671us      17.671us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                                   entire_frame_compile         0.00%      29.091us        94.92%     847.009ms     847.009ms       0.000us         0.00%       0.000us       0.000us      16.00 MB           0 B     155.12 KB           0 B             1  
+entire_frame_compile_data: fn_name=_compile.compile_...         0.00%       6.401us         0.00%       6.401us       6.401us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                  _compile.compile_inner (dynamo_timed)         0.07%     628.954us        94.91%     846.974ms     846.974ms       0.000us         0.00%       0.000us       0.000us      16.00 MB           0 B     155.12 KB           0 B             1  
+                                      compile_attempt_0         0.00%      23.740us        93.54%     834.732ms     834.732ms       0.000us         0.00%       0.000us       0.000us      16.00 MB           0 B     155.12 KB           0 B             1  
+                 compile_attempt_0_data: compile_id=3/5         0.00%       7.943us         0.00%       7.943us       7.943us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                       compile_attempt_0 (dynamo_timed)         0.27%       2.433ms        93.54%     834.700ms     834.700ms       0.000us         0.00%       0.000us       0.000us      16.00 MB           0 B     155.12 KB           0 B             1  
+                                       bytecode_tracing         0.00%      27.631us         0.54%       4.776ms       4.776ms       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                  bytecode_tracing_data: compile_id=3/5         0.00%      13.051us         0.00%      13.051us      13.051us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                        bytecode_tracing (dynamo_timed)         0.45%       4.041ms         0.53%       4.736ms       4.736ms       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                                    aten::empty_strided         0.04%     313.387us         0.05%     418.561us       7.217us       0.000us         0.00%       0.000us       0.000us      16.01 MB      16.01 MB           0 B           0 B            58  
+                                           aten::detach         0.01%     104.954us         0.03%     259.486us       3.327us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B            78  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 892.356ms
+Self SPYRE time total: 6.679ms
+
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op amax [reduction]
+IO     output op0                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX = 65536 elems x 2B = 131072 B  (hbm counted: 0 B)
+IO     input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   op sub
+IO     output op1                    torch [1024, 2048] -> device [32, 1024, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  arg0_1                 torch [4096, 2048] -> device [32, 4096, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  buf0                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX = 65536 elems x 2B = 131072 B  (hbm counted: 0 B) broadcast (loaded once)
+IO   op exp
+IO     output op2                    torch [1024, 2048] -> device [32, 1024, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  buf1                   torch [1024, 2048] -> device [32, 1024, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   op sum_1 [reduction]
+IO     output op3                    torch [1024, 1] -> device [1, 1, 1024, 64] in LX = 65536 elems x 2B = 131072 B  (hbm counted: 0 B)
+IO     input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO   op div
+IO     output op4                    torch [4096, 2048] -> device [4096, 2048] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  buf2                   torch [1024, 2048] -> device [32, 1024, 64] in HBM = 2097152 elems x 2B = 4194304 B  (hbm counted: 4194304 B)
+IO     input  buf3                   torch [1024, 1] -> device [1, 1, 1024, 64] in LX = 65536 elems x 2B = 131072 B  (hbm counted: 0 B) broadcast (loaded once)
+IO   => HBM I/O total = 71303168 B  (lx 524288 B, ~free)
+MODEL -- estimate (turnaround): T = [(R+W)/BW_PEAK + a*min(R,W)] / eff_underfill --
+MODEL   R=29360128 B (read)   W=25165824 B (write)   loop_trip L=4
+MODEL   base = (R+W)/150 = 363.51 us
+MODEL   turn = a*min(R,W) = 0.00574*25165824 = 144.45 us
+MODEL   eff_underfill = min(0.95,(1024.0/13)**0.68) = 0.950 -> (base+turn)/eff = 534.69 us
+MODEL   => T_model = 810.44 us
+MODEL FEATS [{"name":"amax","is_reduction":true,"out_elems":65536,"cores":1,"dtype_bytes":2,"args":[{"name":"op0","role":"output","mem":"lx","elems":65536,"broadcast":false,"dims":[1,1,1024,64],"logical":[1024,1],"loop_factor":1},{"name":"arg0_1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[32,4096,64],"logical":[4096,2048],"loop_factor":1}],"reduction_cores":1,"loop_trip":4,"tiles_output_dim":true,"tile_rows_per_core":1024.0,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""},{"name":"sub","is_reduction":false,"out_elems":2097152,"cores":1,"dtype_bytes":2,"args":[{"name":"op1","role":"output","mem":"hbm","elems":2097152,"broadcast":false,"dims":[32,1024,64],"logical":[1024,2048],"loop_factor":1},{"name":"arg0_1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[32,4096,64],"logical":[4096,2048],"loop_factor":1},{"name":"buf0","role":"input","mem":"lx","elems":65536,"broadcast":true,"dims":[1,1,1024,64],"logical":[1024,1],"loop_factor":1}],"reduction_cores":1,"loop_trip":4,"tiles_output_dim":true,"tile_rows_per_core":256.0,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""},{"name":"exp","is_reduction":false,"out_elems":2097152,"cores":1,"dtype_bytes":2,"args":[{"name":"op2","role":"output","mem":"hbm","elems":2097152,"broadcast":false,"dims":[32,1024,64],"logical":[1024,2048],"loop_factor":1},{"name":"buf1","role":"input","mem":"hbm","elems":2097152,"broadcast":false,"dims":[32,1024,64],"logical":[1024,2048],"loop_factor":1}],"reduction_cores":1,"loop_trip":4,"tiles_output_dim":true,"tile_rows_per_core":256.0,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""},{"name":"sum_1","is_reduction":true,"out_elems":65536,"cores":1,"dtype_bytes":2,"args":[{"name":"op3","role":"output","mem":"lx","elems":65536,"broadcast":false,"dims":[1,1,1024,64],"logical":[1024,1],"loop_factor":1},{"name":"buf2","role":"input","mem":"hbm","elems":2097152,"broadcast":false,"dims":[32,1024,64],"logical":[1024,2048],"loop_factor":1}],"reduction_cores":1,"loop_trip":4,"tiles_output_dim":true,"tile_rows_per_core":1024.0,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""},{"name":"div","is_reduction":false,"out_elems":8388608,"cores":1,"dtype_bytes":2,"args":[{"name":"op4","role":"output","mem":"hbm","elems":8388608,"broadcast":false,"dims":[4096,2048],"logical":[4096,2048],"loop_factor":1},{"name":"buf2","role":"input","mem":"hbm","elems":2097152,"broadcast":false,"dims":[32,1024,64],"logical":[1024,2048],"loop_factor":1},{"name":"buf3","role":"input","mem":"lx","elems":65536,"broadcast":true,"dims":[1,1,1024,64],"logical":[1024,1],"loop_factor":1}],"reduction_cores":1,"loop_trip":4,"tiles_output_dim":true,"tile_rows_per_core":1024,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""}]
+TIMING op=softmax_unrolled reps=7/7 prof_wall_s=6.72 per_rep_s=0.961
+SUMMARY op=softmax_unrolled rows=4096 cols=2048 cores=1 tiles=4 lx=1 io_hbm_bytes=71303168 kernel_us=5504.430 pred_us=810.443 err_pct=-85.3 bw_gbps=13.0 memset_us=298.582 other_dev_us=904.919 total_dev_us=6707.931 kernel_us_min=5460.582 kernel_us_median=5504.430 kernel_us_mean=5503.159 kernel_us_std=23.726 kernel_us_cv=0.43 reps=7
