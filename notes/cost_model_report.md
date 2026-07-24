@@ -48,7 +48,7 @@ T   = compute + mem − γ·min(compute, mem) + split      mem = HBM / (eff · s
 | `spill` | `(A_bytes+B_bytes)·f(area)`, `area=(M/m)·(N/n)`, `f=min(1.5, max(0, 0.45·log₂(area/65536)))` — matmul operand **re-read** when the per-core output tile overflows on-chip capacity | §11 |
 | `split` | `max(0,area−a₀)·[c_L·max(0,log₂(fan_long/8)) + c_S·max(0,log₂(fan_short/16))]`, `area=(M/m)·(N/n)`, `a₀=131072`, `c_L=2.6e−3`, `c_S=2.9e−3 µs/elem` — extra matmul operand re-read when a **large** per-core tile is **also** split many ways; two-sided (splitting the longer output dim bites sooner than the shorter); 0 for balanced or small tiles | §12 |
 | `write_extra` | `min(2.0e-9·ROWS^1.75·COLS^2.6, 2.4·out_bytes)` (÷BW) — `write` outer-product, empirical + capped | §4.5 |
-| `compute` | `MACs / cores / (peak · pt_eff)`, `peak = 1140 MAC/ns/core`; 0 for non-matmul | §9 |
+| `compute` | `MACs / cores / (peak · pt_eff)`, `peak = 1140 MAC/ns/core` (→ **160** for a default-`[0,1,2]`-layout bmm, B≥4, cores≥8); 0 for non-matmul | §9, §13 |
 | `pt_eff` (derates **compute**) | systolic-array fill: `min(1,(rows/64)^0.35)` (`rows` = per-core rows); a coarse-tiled matmul's extra per-tile underfill is flagged, not modeled (`pt_eff=1`) | §9, §16 |
 | `eff` (derates **memory**) | `min(0.95, (h/13)^0.68)`, `h = per-core tile height = ROWS/(cores·tiles)` — streaming-pipeline fill, coarse memory-bound | §16 |
 | `s_lx` (derates **memory**) | `min(1, (512KB/ws)^0.15)` for `ws > 512KB` (coarse-tiled), `ws = 2·(rows/core)·COLS·2B` — per-core working set overflows LX; spilled traffic runs slower | §15 |
@@ -1179,8 +1179,9 @@ Representative realistic points (the regime the model is built for):
 ### §13. Batched matmul: serial batches run below the single-matmul rate
 
 **Observation.** In batched matmul the compiler **never splits the batch across cores** — it keeps every batch on the same
-cores and iterates — so the model charges `B ×` a single matmul's compute and HBM. Measured, it runs
-much slower. At a balanced split the kernel is a **shape-dependent 2–4.6× the prediction**, and the
+cores and iterates — so the **base** model (no bmm term) charges `B ×` a single matmul's compute and HBM. Measured, it runs
+much slower. (The figures and the 2–4.6× factor in this observation are all vs that *base* model; the
+slow-compute-rate term derived below closes the default-layout case to ~6 %.) At a balanced split the kernel is a **shape-dependent 2–4.6× the prediction**, and the
 factor is **flat in `B`** once `B ≥ 4`: a genuine per-batch floor, not a one-off start-up cost.
 (`B = 1` is excluded from the fit — with a single batch the compiler collapses the batch dimension
 into a different plan: its `op_it_space_splits` has three dims where `B ≥ 2` has four.)
@@ -1224,9 +1225,11 @@ runs slower still. Applied to the memory half of the prediction (these shapes ar
 ~half compute), it cuts the mean error on the batched rows from **~68 % to ~36 %** (projection ~27 %,
 full ~39 %). A single bandwidth cannot fit both — the full bmm needs a much lower rate than the
 projection — which is the two-rate model's point. The remaining ~36 % is honest residual: `BW_stream`
-and `BW_reread` are constants, yet the implied rates still drift ~2× with shape, so a **shape-dependent
-rate is the open item**, and the term is not yet in the model (it needs the extractor to expose the
-per-batch re-read bytes).
+and `BW_reread` are constants, yet the implied rates still drift ~2× with shape. **This two-rate
+(weight-reread-bytes) model is now SUPERSEDED** — the layout experiment below shows the bytes are
+layout-identical, so the penalty is not a re-read of extra bytes but a slow *compute rate*; the shipped
+term is the `mac_peak` override described two paragraphs down. The two-rate write-up is kept as the
+record of how the effect was first (approximately) captured before it was disentangled.
 
 **The mechanism, disentangled: it is the device tile-order, not extra bytes.** A controlled layout
 experiment settles what the two-rate model above could only infer through a bytes proxy. For a fixed
@@ -1256,61 +1259,63 @@ rate. Recovering the full 3.3× needs *both* operands on `[1,0,2]`; swapping onl
 repeat-backed (the reps = 7 sweep gives 1840 / 546 µs for default / best, matching the IR run). The
 full split-keyed rate across `B` and shape awaits the complete layout sweep — this run stalled before
 the other quads finished — but this matched quad plus the IR confirm the mechanism and the default
-rate. **Implication for the model:** the bmm penalty should be a layout-keyed *effective bandwidth*
-(the compiler's default `[0,1,2]` → ~23 GB/s), not an invented re-read-bytes term; and a planner that
-placed bmm operands `[1,0,2]` would remove ~⅔ of the penalty outright.
+rate. **It is a slow COMPUTE rate, not a bandwidth derate — and it is now shipped.** The tell is that
+`µs/GMAC` is **flat at ~215** across the default-layout bmm cohort (16 distinct shapes, reps = 7,
+cores = 32, B ≥ 4) — constant over a 16× MAC range and across varying `rpc`/`cpc`/`K` — a
+**compute-bound** signature. A bandwidth effect would make `µs/GMAC` vary with the shape's byte/MAC
+ratio; it does not (the per-shape `eff BW` above only *looks* variable because `io_hbm/MACs` varies).
+So the strided per-batch stick re-gather of the default `[0,1,2]` order throttles the systolic array
+to a **slow sustained rate ~160 MAC/ns/core** (vs 1140 for a plain 2-D matmul). The model now charges
+this via a per-op `mac_peak` override (`_matmul_mac_peak`): a matmul whose **both** rank-3 operands sit
+on the default `[0,1,2]` device order (batch at device pos −2), with **B ≥ 4** and **cores ≥ 8**, uses
+`bmm_default_mac_peak_per_core_ns = 160`; every other matmul keeps 1140. On the clean repeat-backed
+cohort this cuts the default-bmm error from **~420 % to a mean |err| of ~6 %**, and it is **provably
+gold-safe** — 0 change on all 1514 non-bmm records (max |Δ| = 0.000000 µs), plain 2-D matmul
+byte-identical. It fires only on genuine both-batched bmm, so the `3d2d` projection (one rank-3
+operand) and the fast `[1,0,2]` layout are untouched. **Gates, honestly:** the slow rate is a
+*many-core* effect (implied per-core peak 407/241/168 at cores 1/2/4 → ~160 only at cores ≥ 8) so
+low-core bmm keeps 1140 and stays a large unmodeled residual; and at **B = 2** (batch ≪ the 32-way
+`m·n` split) the penalty roughly halves (~108 µs/GMAC), a distinct small-batch corner left on the
+plain rate. The remaining >10 % residuals are these gated corners plus thin single-stick tiles
+(`M`/`N` ≤ 512) and old **single-shot** bmm points that disagree with the reps = 7 cohort (distrusted
+per the noise protocol). A planner that placed bmm operands `[1,0,2]` would remove ~⅔ of the penalty
+outright.
 
 Two interactions are recorded so they are not later double-counted. A **lopsided** bmm split still
 pays §12 on top of the floor, so a short-dim-fanned bmm is worse again (up to ~15×). And **forcing the
 batch across cores** — which the planner never does — is catastrophic (~11× for the full bmm), because
 every core then reloads a full weight per batch; it is a guard case, not something to model.
 
-**Every batched-matmul data point** (balanced `4×8` per-batch split; `err %` is the **shipped** model,
-which has no bmm term — this is the gap the two-rate model above closes to ~36 %). `err = (pred − meas)/meas`:
+**Accuracy with the shipped bmm term.** On the clean repeat-backed default-layout cohort
+(`bmm_wd` + both-default `bmm_layout`, B ≥ 4, cores = 32, reps = 7, non-single-stick;
+`err = (pred − meas)/meas`, generated from the live model):
 
-| path | M×K×N | B | meas µs | pred µs | err % |
-|---|---|---:|---:|---:|---:|
-| full | 512×2048×512 | 2 | 267.9 | 84.8 | -68.3 |
-| full | 512×2048×512 | 4 | 351.2 | 169.7 | -51.7 |
-| full | 512×2048×512 | 8 | 938.8 | 339.3 | -63.9 |
-| full | 512×2048×512 | 16 | 1868.3 | 678.6 | -63.7 |
-| full | 512×2048×512 | 32 | 4002.2 | 1357.2 | -66.1 |
-| full | 512×2048×1024 | 8 | 1736.3 | 566.8 | -67.4 |
-| full | 1024×256×1024 | 8 | 658.9 | 247.7 | -62.4 |
-| full | 1024×512×1024 | 4 | 557.5 | 191.8 | -65.6 |
-| full | 1024×512×1024 | 8 | 1105.9 | 383.6 | -65.3 |
-| full | 1024×1024×1024 | 2 | 252.3 | 139.7 | -44.6 |
-| full | 1024×1024×1024 | 4 | 969.2 | 279.5 | -71.2 |
-| full | 1024×1024×1024 | 8 | 1980.1 | 559.0 | -71.8 |
-| full | 1024×1024×1024 | 16 | 3842.5 | 1118.0 | -70.9 |
-| full | 1024×2048×512 | 8 | 1833.4 | 566.8 | -69.1 |
-| full | 1024×2048×1024 | 2 | 470.2 | 227.5 | -51.6 |
-| full | 1024×2048×1024 | 4 | 1843.5 | 454.9 | -75.3 |
-| full | 1024×2048×1024 | 8 | 3666.5 | 909.8 | -75.2 |
-| full | 1024×2048×1024 | 16 | 7340.0 | 1819.7 | -75.2 |
-| full | 1024×2048×2048 | 4 | 3705.7 | 798.0 | -78.5 |
-| full | 1024×2048×2048 | 8 | 7244.9 | 1596.0 | -78.0 |
-| full | 1024×4096×1024 | 4 | 3523.0 | 805.8 | -77.1 |
-| full | 1024×4096×1024 | 8 | 7120.7 | 1611.5 | -77.4 |
-| full | 1024×8192×1024 | 4 | 6974.5 | 1507.5 | -78.4 |
-| full | 2048×2048×1024 | 2 | 936.6 | 399.0 | -57.4 |
-| full | 2048×2048×1024 | 4 | 3702.6 | 798.0 | -78.4 |
-| full | 2048×2048×1024 | 8 | 7437.9 | 1596.0 | -78.5 |
-| full | 2048×2048×2048 | 2 | 2028.7 | 736.5 | -63.7 |
-| 3d2d | 1024×1024×1024 | 2 | 162.9 | 125.8 | -22.8 |
-| 3d2d | 1024×1024×1024 | 4 | 286.9 | 237.6 | -17.2 |
-| 3d2d | 1024×1024×1024 | 8 | 769.6 | 461.1 | -40.1 |
-| 3d2d | 1024×1024×1024 | 16 | 1587.6 | 908.3 | -42.8 |
-| 3d2d | 1024×2048×1024 | 2 | 279.4 | 199.5 | -28.6 |
-| 3d2d | 1024×2048×1024 | 4 | 486.7 | 371.0 | -23.8 |
-| 3d2d | 1024×2048×1024 | 8 | 1396.9 | 719.2 | -48.5 |
-| 3d2d | 1024×2048×1024 | 16 | 2755.4 | 1423.4 | -48.3 |
-| 3d2d | 2048×2048×1024 | 2 | 548.8 | 371.0 | -32.4 |
-| 3d2d | 2048×2048×1024 | 4 | 999.9 | 719.2 | -28.1 |
-| 3d2d | 2048×2048×1024 | 8 | 2706.4 | 1423.4 | -47.4 |
+| M×K×N | B | meas µs | pred µs | err % |
+|---|---:|---:|---:|---:|
+| 512×2048×512 | 4 | 348 | 494 | +42 |
+| 1024×1024×1024 | 4 | 962 | 955 | -1 |
+| 1024×2048×1024 | 4 | 1838 | 1855 | +1 |
+| 1024×2048×2048 | 4 | 3682 | 3649 | -1 |
+| 2048×2048×1024 | 4 | 3688 | 3649 | -1 |
+| 2048×2048×2048 | 4 | 7368 | 7204 | -2 |
+| 1024×256×1024 | 8 | 656 | 536 | -18 |
+| 1024×512×1024 | 8 | 1107 | 1012 | -9 |
+| 512×2048×512 | 8 | 937 | 988 | +5 |
+| 1024×1024×1024 | 8 | 1956 | 1911 | -2 |
+| 1024×2048×1024 | 8 | 3654 | 3709 | +2 |
+| 1024×2048×2048 | 8 | 7261 | 7298 | +1 |
+| 1024×4096×1024 | 8 | 7091 | 7306 | +3 |
+| 2048×2048×1024 | 8 | 7383 | 7298 | -1 |
+| 512×2048×512 | 16 | 1879 | 1976 | +5 |
+| 1024×2048×1024 | 16 | 7309 | 7419 | +2 |
 
-Mean shipped-model error: **full −68 %** (n = 27), **3d2d −35 %** (n = 11) — the full bmm's extra
-weight re-read is the gap between them, and the two-rate model closes both to ~36 %.
+**Mean |err| ~6 %** over these 16 distinct clean shapes, most within ±5 %. The two outliers are the
+thin corners — `512×2048×512` (`M=N=512`, +42 %) and `1024×256×1024` (thin `K`, −18 %) — where a small
+per-core tile underfills *on top of* the slow rate (a follow-up bmm `pt_eff`). The `3d2d` shared-weight
+projection (one rank-3 operand) and the fast `[1,0,2]` layout do NOT take the term and keep their prior
+errors; low-core and B = 2 bmm are gated out and remain unmodeled. So the term closes the *normal* bmm
+case (the old −68 % category) to ~6 % while leaving the flagged corners honest. (The earlier two-rate
+weight-reread model is superseded — the bytes are layout-identical; the penalty is a compute rate.)
 
 ---
 

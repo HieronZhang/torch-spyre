@@ -8,6 +8,19 @@ FINALIZE the numeric coefficients (peak, γ, spill) on the clean forced-core swe
 (`run_matmul_overlap_iso_sweep.sh` + `run_coarse_bwcores_sweep.sh`) — the values here are from the
 noisy overnight data and are provisional. Full spec + validation in `cost_model_status.md`.
 
+> **🛑 2026-07-24 (session 2) CLEAN-DATA VERDICT — DO NOT MERGE THIS REWORK.** The clean, reps=7
+> forced-core sweep (`MMISO_CORE`, model sha fe3de66) landed. On it the **shipped** model (peak 1140,
+> γ 0.46, shipped overlap form) scores **RMS 6.0 %, mean +0.1 %, every point < 12 %** — it is already
+> adequate. The full Part-III package (read-overlap + 2·min + γ 0.70 + peak 1046) scores **5.6 %** — a
+> 0.4 pt gain that is *within the 0.8 % cv noise floor* — and peak 1046 *alone* REGRESSES the clean data
+> to **9.0 % (mean −6.5 %)**. So the large improvement that motivated this rework (5.4 % vs 9.0 % on the
+> OLD c201383 cohort) was a **noisy-data artifact**: the cohort was saturated/high-CV, γ was
+> unidentifiable, and the co-fit terms were compensating for each other. **Decision: keep the shipped
+> peak/γ/overlap form; shelve §9/§10 (peak/γ) and the coordinated re-fit.** The operand-min spill (§11)
+> and the bmm-layout / coarse terms are SEPARATE, per-op effects and are handled on the shipped model,
+> not as a coupled Part-III change. This whole draft is retained only as a record of the (noise-driven)
+> investigation.
+>
 > **⚠️ 2026-07-24 ADVERSARIAL DOWNGRADES (apply before merging — see the status-doc block):**
 > (1) peak is **≈1040**, not 1046 (1046 folds in M=4096's outlier 1073). (2) **γ is NOT a proven
 > constant** — it is UNIDENTIFIABLE on the clean (saturated, low-core) data and binds only on ~30

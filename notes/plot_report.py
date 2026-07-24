@@ -1230,7 +1230,10 @@ def fig_matmul_bmm(_recs):
     ax.get_xaxis().set_major_formatter(plt.matplotlib.ticker.ScalarFormatter())
     ax.set_xlabel("batch  B   (batches run serially on the same cores)")
     ax.set_ylabel("measured / predicted   (base model = B × one matmul)")
-    ax.set_title("§13  Batched matmul runs 2–4.6× the predicted cost, flat in B")
+    ax.set_title(
+        "§13  Base model (no bmm term): batched matmul runs 2–4.6× predicted, flat in B\n"
+        "(the slow-compute-rate term closes the default-layout case to ~6%)"
+    )
     ax.legend(
         loc="upper center",
         bbox_to_anchor=(0.5, -0.14),

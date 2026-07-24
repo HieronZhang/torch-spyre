@@ -54,8 +54,9 @@ cm = _cm()
 p = cm.CostParams()
 
 
-def _load(section_prefix="MMCORE", repeat_only=True):
-    """Repeat-backed MMCORE mm/mmwd, deduped to the MIN measured us per (M,K,N,cores)."""
+def _load(section_prefix=("MMISO_CORE", "MMCORE"), repeat_only=True):
+    """Repeat-backed forced-core mm/mmwd, deduped to the MIN measured us per (M,K,N,cores).
+    Loads the new clean MMISO_CORE sweep AND the older MMCORE cohort."""
     recs = json.load(open(os.path.join(_HERE, "sweep_records.json")))["records"]
     best = {}
     for r in recs:

@@ -399,6 +399,26 @@ class CostParams:
     # AND physical. Read/write are not separately identifiable from these data. (See §8.)
     mm_bw_read_gbps: float = 150.0
     mm_bw_write_gbps: float = 150.0
+    # DEFAULT-LAYOUT BMM slow compute rate (cat 4). A batched matmul whose BOTH rank-3
+    # operands carry the COMPILER-DEFAULT [0,1,2] device tile order -- the batch dim B sits
+    # just inside the stick (device pos -2) -- runs the systolic array at a much SLOWER
+    # sustained rate than a plain 2D matmul: on clean reps=7 data (bmm_wd + bmm_layout
+    # both-default, cores=32, B>=4) the effective rate is a stable ~160 MAC/ns/core (us/GMAC
+    # ~214, mac_peak 145-147 raw; 160 the overlap-corrected fit), vs 1140 for a 2D matmul.
+    # The [1,0,2] "fast" layout (B outermost) sustains ~460-490; the compiler emits the slow
+    # [0,1,2] for every real bmm, so the model must charge the slow rate. It is COMPUTE-bound
+    # (us/GMAC is shape-flat; the effective HBM BW only appears to vary because io_hbm/MACs
+    # varies), so the fix is a per-op mac_peak override, NOT a bandwidth change. Detector:
+    # ``_default_layout_bmm_batch`` (both batched operands default at dev pos -2). GATED to
+    # B >= ``bmm_default_min_batch``: at B=2 (batch << the 32-way M*N split) the slow penalty
+    # halves (us/GMAC ~108, rate ~290) -- a distinct small-batch corner left on the plain
+    # rate. Also GATED to cores >= ``bmm_default_min_cores``: the slow rate is a many-core
+    # contention effect (implied per-core peak 407@c1, 241@c2, 168@c4 -> ~160 only at c>=8;
+    # the clean fit is all cores=32), so low-core bmm keeps the plain peak. Gold-safe: never
+    # fires on plain 2D ``mmwd`` (0/343) or the 3d-2d projection bmm.
+    bmm_default_mac_peak_per_core_ns: float = 160.0
+    bmm_default_min_batch: int = 4
+    bmm_default_min_cores: int = 8
 
     # Access-pattern effective HBM BW (GB/s) for non-matmul ops whose stick layout is
     # reorganized -- these fold turnaround into the single rate (measured io/kernel on
@@ -437,6 +457,19 @@ class CostParams:
     red_read_bw_floor_gbps: float = 114.0
     red_read_bw_amp_gbps: float = 61.0
     red_read_bw_scale_rows: float = 3700.0
+    # A reduction streams a full-tensor READ over the shared HBM bus; with FEWER active
+    # cores fewer parallel LX request streams are in flight, so a smaller fraction of peak
+    # HBM bandwidth is realized. reduction_read_bw() above is the cores=32 (full-bus)
+    # calibration; this table derates it below 32 cores. g(cores)=BW(cores)/BW(32), the mean
+    # over the clean plain reductions (read/amax/sumrow/mean) at their non-underfilled
+    # anchor shapes. It is SUB-linear/saturating (a single core drives ~11% of the bus, not
+    # 1/32=3%); g=cores/32 is falsified 3.6x. g(32)=1.0 EXACTLY -> the cores=32 gold path is
+    # untouched. c8/c16 are single-shot (no reps); the measured plateau ~0.54 is shipped
+    # as-is (a repeated low-core reduction sweep is the deciding experiment). Applies ONLY on
+    # the standalone-reduction branch below; fused softmax (len>1) is a separate io_hbm effect.
+    red_bw_cores_g: dict = dataclasses.field(
+        default_factory=lambda: {1: 0.11, 2: 0.22, 4: 0.43, 8: 0.54, 16: 0.54, 32: 1.0}
+    )
     # Ops that stream a FULL input plus a small BROADCAST operand (loaded once) -- copy
     # (x+const), bcast, bcastcol, mulbcast -- run FASTER than a plain 1R:1W op (~118 vs
     # ~105 GB/s; mechanism open). NOT `write` (both operands broadcast, no full input).
@@ -569,6 +602,47 @@ def _lx_spill_bw_derate(ops: list, params: CostParams | None = None) -> float:
     if ws <= p.lx_spill_cap_bytes:
         return 1.0
     return (p.lx_spill_cap_bytes / ws) ** p.lx_spill_exp
+
+
+def _default_layout_bmm_batch(o) -> int:
+    """Return the batch size B if ``o`` is a DEFAULT-LAYOUT batched matmul, else 0.
+
+    A batched matmul (rank-3 operands, B>=2) whose operands carry the compiler-default
+    ``[0, 1, 2]`` device tile order places the batch dim just INSIDE the stick -- at device
+    position -2 (e.g. logical ``[B, X, Y]`` -> device ``[X, Y/64, B, 64]``). The alternate
+    ``[1, 0, 2]`` layout puts B outermost (device pos 0) and runs ~3x faster (cat 4). We
+    require BOTH rank-3 batched inputs to be default (the full ~3x penalty needs both
+    operands slow; a single-operand swap is only ~1.5x). Returns B for the slow case so the
+    caller can gate on batch size, 0 otherwise. NEVER matches a plain 2D matmul (no rank-3
+    input) or a 3d-2d projection bmm (only one rank-3 operand)."""
+    if not getattr(o, "is_matmul", False):
+        return 0
+    batched = [
+        a
+        for a in o.args
+        if a.role == "input" and len(a.logical) == 3 and a.logical[0] >= 2
+    ]
+    if len(batched) < 2:
+        return 0
+    b = batched[0].logical[0]
+    for a in batched:
+        # default [0,1,2] <=> batch dim B lands at device pos -2 (just before the stick)
+        if not (len(a.dims) >= 2 and a.dims[-2] == a.logical[0]):
+            return 0
+    return b
+
+
+def _matmul_mac_peak(o, params: "CostParams") -> float:
+    """Per-core sustained MAC/ns for a matmul op. A DEFAULT-LAYOUT bmm (both operands on the
+    slow ``[0,1,2]`` tile order) with batch B >= ``bmm_default_min_batch`` AND cores >=
+    ``bmm_default_min_cores`` runs the array at the slow
+    ``bmm_default_mac_peak_per_core_ns`` (~160) instead of the plain-matmul
+    ``mac_peak_per_core_ns`` (1140). All other matmuls (plain 2D, fast-layout bmm, small-batch
+    bmm, low-core bmm) keep the plain peak -- so the gold 2D-matmul path is untouched."""
+    b = _default_layout_bmm_batch(o)
+    if b >= params.bmm_default_min_batch and o.cores >= params.bmm_default_min_cores:
+        return params.bmm_default_mac_peak_per_core_ns
+    return params.mac_peak_per_core_ns
 
 
 def mm_spill_frac(tile_area: float, params: CostParams | None = None) -> float:
@@ -820,6 +894,24 @@ def reduction_read_bw(rows, p):
     )
 
 
+def _reduction_bw_cores_factor(cores, p):
+    """g(cores)=BW(cores)/BW(32): the fraction of full-bus reduction bandwidth realized
+    with `cores` active cores. Piecewise-linear in log2(cores) over the measured anchor
+    table; 1.0 at cores>=32 (or unknown) so the cores=32 gold path is unchanged."""
+    g = p.red_bw_cores_g
+    if cores is None or cores >= 32:
+        return 1.0
+    if cores <= 1:
+        return g[1]
+    ks = sorted(g)
+    lc = math.log2(cores)
+    for a, b in zip(ks, ks[1:]):
+        if a <= cores <= b:
+            la, lb = math.log2(a), math.log2(b)
+            return g[a] + (g[b] - g[a]) * (lc - la) / (lb - la)
+    return 1.0
+
+
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
     """Predicted device latency (ns) for a bundle of ops (one fused kernel).
 
@@ -899,8 +991,14 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         # reads at a rate that FALLS with ROWS. The rate is fit as (R+W)/time, so it
         # already includes the read/write turnaround -- do NOT add it again. sumcol takes
         # the reduce_outer path above; a FUSED coarse kernel (len>1, e.g. softmax) stays on
-        # bw_peak below so its input dedup is not broken.
-        mem = (r + w) / reduction_read_bw(_reduction_rows(ops[0]), p)
+        # bw_peak below so its input dedup is not broken. The ROWS rate is the cores=32
+        # calibration; below 32 cores fewer streams drive the HBM bus, so derate by g(cores)
+        # (g(32)=1 -> gold untouched). Only read/amax/sumrow/mean reach here at cores<32;
+        # ctsum/ctamax/ctamin/sumall structurally qualify too but only ever run at cores=32.
+        _bw = reduction_read_bw(_reduction_rows(ops[0]), p) * _reduction_bw_cores_factor(
+            ops[0].cores, p
+        )
+        mem = (r + w) / _bw
     else:
         mem = (r + w) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(r, w)
         # NOTE: a multi-op dependent chain (e.g. add3/add4 = chained binary adds) runs slower
@@ -941,7 +1039,10 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
                 pt_eff = underfill_eff(
                     o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
                 )
-            compute += o.matmul_macs / o.cores / (p.mac_peak_per_core_ns * pt_eff)
+            # A DEFAULT-LAYOUT bmm (both operands on the slow [0,1,2] tile order, B>=gate)
+            # runs the array at the slow rate; every other matmul keeps the plain peak.
+            mac_peak = _matmul_mac_peak(o, p)
+            compute += o.matmul_macs / o.cores / (mac_peak * pt_eff)
     # SPLIT-SHAPE re-read (§12): a large per-core output tile that is ALSO split many ways
     # re-reads operands beyond what the symmetric area spill counts. Two-sided: splitting the
     # LONGER output dim (knee 8) is penalized sooner/harder than the SHORTER (knee 16). An
@@ -1028,15 +1129,21 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     mm_us, mm_lines = 0.0, []
     for o in ops:
         if o.is_matmul and o.matmul_macs > 0 and o.cores > 0:
-            pe = underfill_eff(
-                o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
+            pe = (
+                1.0
+                if o.tiles_output_dim
+                else underfill_eff(
+                    o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
+                )
             )
-            c_ns = o.matmul_macs / o.cores / (p.mac_peak_per_core_ns * pe)
+            mac_peak = _matmul_mac_peak(o, p)
+            c_ns = o.matmul_macs / o.cores / (mac_peak * pe)
             mm_us += c_ns / 1000
+            slow = " [default-layout bmm slow rate]" if mac_peak != p.mac_peak_per_core_ns else ""
             mm_lines.append(
                 f"     compute = MACs/cores/(mac_peak*pt_eff) = {o.matmul_macs}/"
-                f"{o.cores}/({p.mac_peak_per_core_ns:.0f}*{pe:.3f}) = {c_ns / 1000:.2f}"
-                f" us  (M/m={o.matmul_rows_per_core:.0f}, pt_eff={pe:.3f})"
+                f"{o.cores}/({mac_peak:.0f}*{pe:.3f}) = {c_ns / 1000:.2f}"
+                f" us  (M/m={o.matmul_rows_per_core:.0f}, pt_eff={pe:.3f}){slow}"
             )
     t = predict_ops(ops, p)
     parts = "(R+W)/BW_PEAK + a*min(R,W)"

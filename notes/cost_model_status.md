@@ -57,6 +57,23 @@ is reviewing the revisions.
   was crushed by the 0–4000µs range + a mean-merge annotation, not filtered). Prose now agrees with the
   §11–§12 work-div table (2×16 measured ~399µs).
 
+### ✅ SESSION 2 (2026-07-24 pm) RESULTS — clean reps=7 mm_family data folded, cats 3–6 resolved
+
+The clean forced-core sweep (`mm_family_20260724_082545.log`) is folded. Outcomes (all
+adversarially reviewed + self-verified; details in the per-cat lines below):
+
+- **Cat 3 — SHELVED the Part-III rework.** Shipped model is already 6.0% RMS (all <12%) on clean data;
+  the rework gives 5.6% (within noise) and peak 1046 REGRESSES to 9.0%. The gain was a noisy-data artifact.
+- **Cat 4 — ✅ SHIPPED** the default-layout-bmm slow COMPUTE-rate term (`_matmul_mac_peak`→160 MAC/ns,
+  gated B≥4 & cores≥8). Gold-safe (max|Δ|=0 on 1514 non-bmm); clean cohort ~420%→~6%.
+- **Cat 5 (fused-reduction bw-cores) — DEFER.** Needed g(cores) is shape-divergent + entangled with the
+  already-active underfill & LX-spill terms; all low-core softmax_row_tiling data is SINGLE-SHOT. Sweep:
+  `run_coarse_reduction_sweep.sh` (also covers softmax_unrolled's clean ~0.57 ns/out-elem const-rate).
+- **Cat 6 (coarse matmul) — DEFER.** matmul_row_tiling is U-shaped + anti-monotonic (LX-residency speedup
+  vs per-tile underfill, both invisible since io_hbm is tile-constant) on ~7 thin points → unfittable
+  without curve-fit. Sweep WRITTEN: `run_coarse_matmul_tile_sweep.sh` (dense tile ladder, fixed-rpc rows).
+- The shipped **cat-5 plain-reduction g(cores)** (session 1) re-validated on the new BWCORES `read` c1 (+2%).
+
 ### ⚠️ ADVERSARIAL REVIEW (2026-07-24) — DOWNGRADES that SUPERSEDE the cat 3–7 claims below
 
 A 6-agent challenge panel + noise-weighting lead re-derived every load-bearing number from
@@ -68,7 +85,12 @@ cats 5/6 is actually UNVERIFIED until the real overnight IR lands. Also: only **
 records carry repeat structure, ALL model_sha c201383, ALL `is_current=False` — the whole cat-3/4/6
 quantitative story rests on that one noisy cohort.
 
-- **Cat 3:** peak **≈1040** (not 1046 — 1046 only if M=4096's 1073 folds in); peak survives STRONGLY
+- **Cat 3 — 🛑 CLEAN-DATA VERDICT (2026-07-24 pm): SHELVE the rework, keep the shipped model.** The
+  clean reps=7 `MMISO_CORE` sweep (sha fe3de66) is now folded. On it the SHIPPED model (peak 1140,
+  γ 0.46) scores **RMS 6.0 %, mean +0.1 %, every point < 12 %**; the full Part-III package is 5.6 %
+  (within the 0.8 % cv noise) and peak 1046 alone REGRESSES to 9.0 % (mean −6.5 %). The rework's big
+  gain was a noisy-data artifact. NO cat-3 model change. (The detail below is retained as the record.)
+- **Cat 3 (old noisy-data analysis):** peak **≈1040** (not 1046 — 1046 only if M=4096's 1073 folds in); peak survives STRONGLY
   (13 single-core pts, CV≈0). γ=0.6 is a **HYPOTHESIS, not a proven constant** — γ is UNIDENTIFIABLE
   on all clean data (low-core pts saturated: overlap=read for any γ≳0.2), binds ONLY on ~30 noisy
   16/32-core pts (CV median 0.55, max 3.87) where the RMS-vs-γ valley is flat 0.4–0.7. What the DATA
@@ -97,7 +119,18 @@ quantitative story rests on that one noisy cohort.
   a copy artifact. Times: A012/B012=1847µs (slow default), A012/B102=1293, A102/B012=1062, A102/B102=556
   (fast) → def/best=**3.32×**; swapping ONLY A→1.74×, only B→1.43×, so the full ~3.3× needs BOTH operands
   on [1,0,2]. Direction fully closed; only the split-keyed RATE (for the shipped term) still needs
-  repeat-backed bmm_wd data.
+  repeat-backed bmm_wd data. **✅ SHIPPED (2026-07-24 pm) after the reps=7 mm_family fold + adversarial
+  review:** the "215→2118 spread" was a CONFOUND (mixed coarse bmm_k_tiling + low-core into the flat-rate
+  claim). On the isolated clean cohort (bmm_wd + both-default bmm_layout, B≥4, cores=32, reps=7, non-thin,
+  16 shapes) **us/GMAC is FLAT ~215 across a 16× MAC range** → it is a slow COMPUTE rate (~160 MAC/ns/core),
+  NOT a bandwidth effect. Term: `_matmul_mac_peak` returns `bmm_default_mac_peak_per_core_ns=160` when
+  `_default_layout_bmm_batch` (both rank-3 operands batch at device pos −2) ≥ `bmm_default_min_batch=4`
+  AND cores ≥ `bmm_default_min_cores=8`, else 1140. **Gold-safe VERIFIED (self, not just agent):
+  max|Δ|=0.000000 over all 1514 non-bmm records**; clean cohort mean|err| **~420%→~6%** (n=25 reps-backed).
+  Gated corners left honest: low-core bmm (peak 407/241/168 @ c1/2/4 → 160 only c≥8), B=2 (~2× faster,
+  ~108 us/GMAC), thin single-stick (M/N≤512), and old SINGLE-SHOT bmm_wd points (distrusted per noise
+  protocol). §13 + coeff table regenerated from the live model; ruff clean. Follow-ups (NOT curve-fit
+  now): B=2 small-batch rate + a bmm-specific pt_eff for thin tiles + coarse bmm_k_tiling → cat-6.
 - **Cat 5:** −91% under-count is SOLID; cores=1 is **CORRECT (by design** — harness sets sencores=1),
   NOT an "extractor bug" → the defect was a missing **BW(cores)** term in the COST MODEL. **PARTIALLY
   SHIPPED (2026-07-24):** a mechanistic `g(cores)` reduction-bandwidth derate (`red_bw_cores_g` +

@@ -82,6 +82,9 @@ ircap() {  # ircap <tag> <ENV=VAL ...> -- last arg style: pass BENCH_* via env b
   echo "-- IRCAP $tag (IR -> $irf)" | tee -a "$LOG"
   SENCORES="${SENCORES:-32}" SPYRE_DUMP_IR=1 SPYRE_DUMP_COST=1 "$@" \
     timeout -k 30 "${IRCAP_TIMEOUT:-400}" python "$PROFILE_OPS" > "$irf" 2>&1
+  # assert the LoopLevel IR actually dumped (a silent capture failure = a wasted slot)
+  grep -q 'LoopLevel IR - AFTER pre-scheduling' "$irf" \
+    || echo "   WARN: no LoopLevel IR in $irf -- dump may have failed for $tag" | tee -a "$LOG"
   # surface the SUMMARY + whether a restickify/clone got inserted (bmm_layout check)
   grep -E '^SUMMARY|op_it_space_splits' "$irf" | head -3 | sed 's/^/   /' | tee -a "$LOG"
   grep -qiE 'restickify|insert_copy|\bclone\b' "$irf" && echo "   (note: copy/restickify present in IR)" | tee -a "$LOG"

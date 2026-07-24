@@ -14,25 +14,30 @@
 # limitations under the License.
 #
 # ============================================================================
-# FLASH-ATTENTION RE-SWEEP (cost-model category 7) -- fixed after the overnight run.
+# FLASH-ATTENTION RE-SWEEP (cost-model category 7) -- data + IR capture.
 #
-# WHY THE OVERNIGHT FLASH RUNS FAILED (diagnosed): the swept work_div hints were
-# INVALID on two independent counts, so the compiler rejected them
-# (InductorError: "work_division_hint: buf5 dim d0 size=2 is not evenly divisible
-# by split=4" etc.):
-#   1. CORE OVER-SUBSCRIPTION. The default "H:4,Lq:8,Lk:8" multiplies to 4*8*8=256
-#      intra-tile cores, but a Spyre accelerator has 32. The work_div product per op
-#      must be <= 32.
-#   2. NON-DIVISIBLE SPLIT. A split must divide the PER-TILE size of the dim for
-#      EVERY buffer that uses it, including small softmax intermediates. With H=32,
-#      htiles=8 the per-tile H is only 32/8=4, and some intermediate (buf5) is as
-#      small as 2 -- so a split of 8 (or even 4) does not divide it and is rejected.
+# WHY THE OVERNIGHT FLASH RUNS FAILED -- CORRECTED DIAGNOSIS (2026-07-24 review):
+# The earlier "product 256 > 32 cores caused the rejections" story was WRONG.
+#   * CORE OVER-SUBSCRIPTION IS NOT AN ERROR. The work-division pass SILENTLY SKIPS a
+#     split it cannot place (source: `continue`, not `raise`); a work_div product > 32
+#     is absorbed, not rejected -- the same product-256 config both timed out AND
+#     succeeded elsewhere, so it is neither the failure cause nor an error condition.
+#   * THE DOMINANT FAILURE WAS A COMPILE TIMEOUT (~600 s), ~15/18 of the failed configs
+#     -- the flash compile is simply heavy; the timeout was mis-read as a "rejection."
+#   * DIVISIBILITY is a REAL but MINORITY compile-error mode (~2/18): a split must divide
+#     the op's stick-adjusted iteration-space extent of that named dim, checked per dim
+#     AFTER the over-subscription skip -- and some softmax INTERMEDIATE (e.g. buf5, as
+#     small as 2) is smaller than the per-tile dim, so a split can divide the per-tile
+#     dim yet still fail on the intermediate. The front end cannot see buf5 up front, so
+#     a divisibility guard here is a NECESSARY (not sufficient) filter; the true
+#     intermediate constraint surfaces in the captured IR.
 #
-# FIX HERE: sweep only work_div whose product is <= 32 (guarded), with SMALL splits
-# (<=4) that divide the per-tile dims, and capture the loop IR for the survivors so
-# the exact intermediate-buffer constraint (buf5's dims) is finally visible. Invalid
-# configs are SKIPPED with a clear reason (the guard), not run. We are NOT modeling
-# flash attn yet -- this is data + IR capture (see notes/flash_attn_hints.md).
+# FIX HERE: (a) guard work_div product <= 32 (harmless -- avoids a silently-skipped,
+# not-what-you-asked split); (b) guard per-tile divisibility (the necessary condition);
+# (c) RAISE the timeout (FLASH_TIMEOUT, default 900 s) and log TIMEOUT distinctly from
+# FAILED so the timeout-dominance is measurable; (d) capture the loop IR / the actual
+# compile error for both survivors and failures. NOT modeling flash attn yet -- this is
+# data + IR capture (see notes/flash_attn_hints.md).
 #
 #   bash docs/source/user_guide/examples/run_flash_resweep.sh
 # Output: <repo-root>/haoyang_logs/flash_resweep_<timestamp>.log + IR in
@@ -66,7 +71,23 @@ runfa() {  # runfa <H> <Lq> <Lk> <D> <htiles> <qtiles> <ktiles> <wd>  -- work_di
   local H=$1 Lq=$2 Lk=$3 D=$4 ht=$5 qt=$6 kt=$7 wd=$8 _t0=$SECONDS
   local prod; prod=$(_wd_product "$wd")
   if (( prod > 32 )); then
-    echo "SKIP flash wd=$wd product=$prod > 32 cores (H=$H ht=$ht Lq=$Lq qt=$qt)" | tee -a "$LOG"; return 0
+    echo "SKIP flash wd=$wd product=$prod > 32 cores (would be silently skipped, not run: H=$H ht=$ht Lq=$Lq qt=$qt)" | tee -a "$LOG"; return 0
+  fi
+  # per-tile divisibility guard (NECESSARY, not sufficient -- intermediate buffers may be
+  # smaller than the per-tile dim and still fail; that surfaces in the captured IR).
+  local part dim s pt bad=""
+  for part in ${wd//,/ }; do
+    dim=${part%:*}; s=${part#*:}
+    case "$dim" in
+      H)  pt=$(( H / ht )) ;;
+      Lq) pt=$(( Lq / qt )) ;;
+      Lk) pt=$(( Lk / kt )) ;;
+      *)  pt=0 ;;
+    esac
+    if (( pt == 0 || s > pt || pt % s != 0 )); then bad="$dim:$s(per-tile=$pt)"; break; fi
+  done
+  if [[ -n "$bad" ]]; then
+    echo "SKIP flash wd=$wd non-divisible per-tile split $bad (H=$H ht=$ht Lq=$Lq qt=$qt Lk=$Lk kt=$kt)" | tee -a "$LOG"; return 0
   fi
   local wdtag="${wd//:/}"; wdtag="${wdtag//,/-}"
   local irf="haoyang_logs/ir/flashRS_H${H}_Lq${Lq}_Lk${Lk}_h${ht}q${qt}k${kt}_${wdtag}.txt"
@@ -75,9 +96,13 @@ runfa() {  # runfa <H> <Lq> <Lk> <D> <htiles> <qtiles> <ktiles> <wd>  -- work_di
     BENCH_OP=flash_attn FA_H="$H" FA_LQ="$Lq" FA_LK="$Lk" FA_D="$D" \
     FA_H_TILES="$ht" FA_LQ_TILES="$qt" FA_LK_TILES="$kt" FA_WD="$wd" \
     BENCH_ROWS="$Lq" BENCH_COLS="$D" BENCH_TILES="$qt" \
-    timeout -k 30 "${FLASH_TIMEOUT:-600}" python "$PROFILE_OPS" 2>&1 | tee "$irf" \
+    timeout -k 30 "${FLASH_TIMEOUT:-900}" python "$PROFILE_OPS" 2>&1 | tee "$irf" \
     | _emit "flash_attn H=$H Lq=$Lq Lk=$Lk D=$D htiles=$ht qtiles=$qt ktiles=$kt wd=$wdtag"
-  echo "TIMING_RUN flash H=$H Lq=$Lq h=$ht q=$qt k=$kt wd=$wdtag $((SECONDS - _t0))s" | tee -a "$LOG"
+  local rc=${PIPESTATUS[0]}  # timeout(1) returns 124 (or 128+9=137 on -k kill)
+  if (( rc == 124 || rc == 137 )); then
+    echo "   TIMEOUT (rc=$rc) after ${FLASH_TIMEOUT:-900}s -- the DOMINANT overnight failure mode (heavy compile, not a rejected config)" | tee -a "$LOG"
+  fi
+  echo "TIMING_RUN flash H=$H Lq=$Lq h=$ht q=$qt k=$kt wd=$wdtag rc=$rc $((SECONDS - _t0))s" | tee -a "$LOG"
 }
 
 # ---- preflight ----
