@@ -142,7 +142,9 @@ def _pw_ratio_write_points():
 
 
 def fig_pointwise_vcurve(_recs):
-    recs = _load(current_only=False)  # measured times are version-independent; recover the
+    recs = _load(
+        current_only=False
+    )  # measured times are version-independent; recover the
     # read-only / neg groups that the newest is_current sweep does not carry.
     bw_peak, alpha = 150.0, 0.00574  # current model
     reds = ("sumrow", "read", "amax", "mean")  # read-only anchor (ROWS=2048, clean)
@@ -215,10 +217,15 @@ def _arity_avg(cols=4096):
     new_experiments sweeps that carry add3_sep/add4_sep/add_indep2). ROWS=2048 ONLY --
     the ARITYX shapes reuse the same COLS at other ROWS and would corrupt the mean."""
     from collections import defaultdict
+
     acc = defaultdict(list)
     for r in _load(current_only=False):
-        if (str(r.get("log_file", "")).startswith("new_experiments")
-                and r.get("rows") == 2048 and r.get("cols") == cols and r.get("kernel_us")):
+        if (
+            str(r.get("log_file", "")).startswith("new_experiments")
+            and r.get("rows") == 2048
+            and r.get("cols") == cols
+            and r.get("kernel_us")
+        ):
             acc[(r["op"], r.get("lx"))].append(r["kernel_us"])
     return {k: sum(v) / len(v) for k, v in acc.items()}
 
@@ -232,29 +239,54 @@ def fig_pointwise_arity(recs):
     a = _arity_avg(4096)
     add = a[("add", 0)]
     base = 2 * add
-    bars = [("add_indep2\n(no dependency)", a[("add_indep2", 0)], "#2ca02c", ""),
-            ("add3_sep\n(dep, separate)", a[("add3_sep", 0)], "#ff7f0e", ""),
-            ("add3\n(dep, fused)", a[("add3", 0)], "#1f77b4", ""),
-            ("add3, LX on\n(buf on-chip)", a[("add3", 1)], "#9ecae1", "//")]
+    bars = [
+        ("add_indep2\n(no dependency)", a[("add_indep2", 0)], "#2ca02c", ""),
+        ("add3_sep\n(dep, separate)", a[("add3_sep", 0)], "#ff7f0e", ""),
+        ("add3\n(dep, fused)", a[("add3", 0)], "#1f77b4", ""),
+        ("add3, LX on\n(buf on-chip)", a[("add3", 1)], "#9ecae1", "//"),
+    ]
     fig, ax = plt.subplots(figsize=(8.4, 5.6))
     xs = range(len(bars))
-    ax.bar(xs, [b[1] for b in bars], color=[b[2] for b in bars],
-           hatch=[b[3] for b in bars], edgecolor="white", zorder=3, width=0.66)
+    ax.bar(
+        xs,
+        [b[1] for b in bars],
+        color=[b[2] for b in bars],
+        hatch=[b[3] for b in bars],
+        edgecolor="white",
+        zorder=3,
+        width=0.66,
+    )
     ax.axhline(base, ls="--", color="0.35", lw=1.6, zorder=2)
-    ax.text(3.42, base, "byte-count baseline\n(2 × add)", va="center", ha="left",
-            fontsize=11, color="0.35")
+    ax.text(
+        3.42,
+        base,
+        "byte-count baseline\n(2 × add)",
+        va="center",
+        ha="left",
+        fontsize=11,
+        color="0.35",
+    )
     for x, b in zip(xs, bars):
-        ax.annotate(f"{b[1]:.0f} µs\n({100 * (b[1] / base - 1):+.0f}%)", (x, b[1]),
-                    ha="center", va="bottom", fontsize=12.5, color="0.1", weight="bold")
+        ax.annotate(
+            f"{b[1]:.0f} µs\n({100 * (b[1] / base - 1):+.0f}%)",
+            (x, b[1]),
+            ha="center",
+            va="bottom",
+            fontsize=12.5,
+            color="0.1",
+            weight="bold",
+        )
     ax.set_xticks(list(xs))
     ax.set_xticklabels([b[0] for b in bars], fontsize=12)
     ax.tick_params(axis="y", labelsize=11)
     ax.set_ylabel("kernel time  (µs)", fontsize=13)
     ax.set_ylim(0, base * 1.55)
     ax.set_xlim(-0.6, 4.3)
-    ax.set_title("§3  Where the add-chain margin comes from  (add3; ROWS=2048, COLS=4096)\n"
-                 "no-dependency = baseline · dependency = +7% (fused = separate) · on-chip = gone",
-                 fontsize=13)
+    ax.set_title(
+        "§3  Where the add-chain margin comes from  (add3; ROWS=2048, COLS=4096)\n"
+        "no-dependency = baseline · dependency = +7% (fused = separate) · on-chip = gone",
+        fontsize=13,
+    )
     fig.tight_layout()
     _save(fig, "fig3_pointwise_arity")
 
@@ -267,15 +299,24 @@ def fig_pointwise_arity_reads(recs):
     # fused and separate. No reindexing -- reads directly. FUSED covers add3..add6 (1-4 reads);
     # SEPARATE covers add3_sep, add4_sep (1-2) until add5_sep/add6_sep land.
     cols = [1024, 4096, 16384]  # the replicated reference shapes (ROWS=2048 only)
-    rows = [r for r in _load(current_only=False)
-            if str(r.get("log_file", "")).startswith("new_experiments")
-            and r.get("rows") == 2048 and r.get("lx") == 0 and r.get("kernel_us")
-            and r.get("cols") in cols]
+    rows = [
+        r
+        for r in _load(current_only=False)
+        if str(r.get("log_file", "")).startswith("new_experiments")
+        and r.get("rows") == 2048
+        and r.get("lx") == 0
+        and r.get("kernel_us")
+        and r.get("cols") in cols
+    ]
 
-    def times(op, C):  # ALL measurements (every run × replicate) of op at ROWS=2048, COLS=C
+    def times(
+        op, C
+    ):  # ALL measurements (every run × replicate) of op at ROWS=2048, COLS=C
         return [r["kernel_us"] for r in rows if r["op"] == op and r["cols"] == C]
 
-    def excess(seq):  # {n_dep_reads: [excess per measurement, over shapes × replicates]}
+    def excess(
+        seq,
+    ):  # {n_dep_reads: [excess per measurement, over shapes × replicates]}
         out = {}
         for n, op in seq:
             vals = []
@@ -295,35 +336,70 @@ def fig_pointwise_arity_reads(recs):
     fig, ax = plt.subplots(figsize=(7.0, 4.6))
     ax.axhline(0, color="0.6", lw=1.0, zorder=1, label="byte count (no excess)")
     means = {}
-    for data, col, mk, lab in [(fused, "#1f77b4", "o", "fused chain (add3…add6)"),
-                               (sep, "#ff7f0e", "s", "separate kernels (add3_sep…add6_sep)")]:
+    for data, col, mk, lab in [
+        (fused, "#1f77b4", "o", "fused chain (add3…add6)"),
+        (sep, "#ff7f0e", "s", "separate kernels (add3_sep…add6_sep)"),
+    ]:
         xs = sorted(data)
         for k in xs:
-            ax.scatter([k] * len(data[k]), data[k], s=26, color=col, zorder=3,
-                       edgecolors="white", linewidths=0.4)
-        ax.plot(xs, [sum(data[k]) / len(data[k]) for k in xs], "-", color=col, marker=mk,
-                ms=7, lw=1.8, zorder=4, label=lab)
+            ax.scatter(
+                [k] * len(data[k]),
+                data[k],
+                s=26,
+                color=col,
+                zorder=3,
+                edgecolors="white",
+                linewidths=0.4,
+            )
+        ax.plot(
+            xs,
+            [sum(data[k]) / len(data[k]) for k in xs],
+            "-",
+            color=col,
+            marker=mk,
+            ms=7,
+            lw=1.8,
+            zorder=4,
+            label=lab,
+        )
         means[lab[:5]] = {k: sum(data[k]) / len(data[k]) for k in xs}
     # highlight the lone divergence at add4 (depth 2); note the agreement elsewhere
     if 2 in fused and 2 in sep:
         fu, se = sum(fused[2]) / len(fused[2]), sum(sep[2]) / len(sep[2])
-        ax.annotate("", xy=(2, fu), xytext=(2, se),
-                    arrowprops=dict(arrowstyle="<->", color="#a03000", lw=1.4))
-        ax.annotate("the ONLY divergence:\nadd4 (2 reads), fused ≫ separate\n"
-                    "— a lone, unexplained anomaly",
-                    xy=(2, (fu + se) / 2), xytext=(2.32, (fu + se) / 2 - 0.02), fontsize=7.6,
-                    color="#a03000", va="center")
-    ax.annotate("fused = separate at 1, 3, 4 reads\n→ the read-after-write dependency\n"
-                "   (both chains grow together)",
-                xy=(3.5, (means.get('fused', {}).get(4, 0.78))), xytext=(0.7, 0.62),
-                fontsize=7.6, color="#1f4e8c",
-                arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8))
+        ax.annotate(
+            "",
+            xy=(2, fu),
+            xytext=(2, se),
+            arrowprops=dict(arrowstyle="<->", color="#a03000", lw=1.4),
+        )
+        ax.annotate(
+            "the ONLY divergence:\nadd4 (2 reads), fused ≫ separate\n"
+            "— a lone, unexplained anomaly",
+            xy=(2, (fu + se) / 2),
+            xytext=(2.32, (fu + se) / 2 - 0.02),
+            fontsize=7.6,
+            color="#a03000",
+            va="center",
+        )
+    ax.annotate(
+        "fused = separate at 1, 3, 4 reads\n→ the read-after-write dependency\n"
+        "   (both chains grow together)",
+        xy=(3.5, (means.get("fused", {}).get(4, 0.78))),
+        xytext=(0.7, 0.62),
+        fontsize=7.6,
+        color="#1f4e8c",
+        arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8),
+    )
     ax.set_xticks([1, 2, 3, 4])
     ax.set_xticklabels(["1\n(add3)", "2\n(add4)", "3\n(add5)", "4\n(add6)"])
     ax.set_xlabel("number of dependent reads in the chain")
-    ax.set_ylabel("excess cost   t(add$_n$)/t(add) − (n−1)   [extra adds' worth of time]")
-    ax.set_title("§3  Extra cost vs chain length: fused and separate GROW TOGETHER\n"
-                 "(read-after-write dependency) and agree — except a lone anomaly at add4")
+    ax.set_ylabel(
+        "excess cost   t(add$_n$)/t(add) − (n−1)   [extra adds' worth of time]"
+    )
+    ax.set_title(
+        "§3  Extra cost vs chain length: fused and separate GROW TOGETHER\n"
+        "(read-after-write dependency) and agree — except a lone anomaly at add4"
+    )
     ax.legend(loc="upper left", fontsize=7.6, framealpha=0.9)
     _save(fig, "fig3b_pointwise_arity_reads")
 
@@ -492,7 +568,9 @@ def fig_write_spill(_recs):
     cm = _cost_model()
     recs = _load(current_only=False)
     meas = defaultdict(dict)  # meas[R][C] = mean measured effBW
-    model = defaultdict(dict)  # model[R][C] = model effBW (from predict_ops on the feats)
+    model = defaultdict(
+        dict
+    )  # model[R][C] = model effBW (from predict_ops on the feats)
     tmp = defaultdict(lambda: defaultdict(list))
     for r in recs:
         if r.get("op") != "write" or not r.get("io_hbm_bytes") or not r.get("cols"):
@@ -532,7 +610,9 @@ def fig_write_spill(_recs):
     ax.set_xticklabels(["1k", "2k", "4k", "8k", "16k"])
     ax.set_xlabel("COLS")
     ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
-    ax.set_title("§4  write: effective BW vs COLS, every ROWS (solid=measured, dashed=model)")
+    ax.set_title(
+        "§4  write: effective BW vs COLS, every ROWS (solid=measured, dashed=model)"
+    )
     ax.legend(loc="upper right", fontsize=7.5, framealpha=0.9, ncol=2)
     ax.grid(True, which="both", ls=":", alpha=0.35)
     _save(fig, "fig4b_write_spill")
@@ -554,7 +634,9 @@ def fig_broadcast_smallr(_recs):
     for r in recs:  # the dense small-ROWS sweep (bcast), cores=32
         if r.get("op") != "bcast" or r.get("cores") != 32 or r.get("failed"):
             continue
-        if "bcast_smallr" not in (r.get("log_file") or ""):  # dense same-build sweep only
+        if "bcast_smallr" not in (
+            r.get("log_file") or ""
+        ):  # dense same-build sweep only
             continue
         R, C, io = r.get("rows"), r.get("cols"), r.get("io_hbm_bytes")
         if not io or not R or not C or R > 1024:
@@ -604,75 +686,75 @@ def fig_broadcast_smallr(_recs):
 # transpose is flat-fast (116); cat0 and transpose_outer fall with size.
 # ============================================================================
 def fig_transport(_recs):
-    # transport times are version-independent -> use ALL records. Plot effBW vs COLS
-    # (the driver for cat0/transpose_outer), showing EVERY distinct shape (not averaged
-    # by total bytes, which would collapse aspect ratios into one dot). transpose and
-    # cat1 are flat across C; cat0 and transpose_outer fall with C.
-    recs = _load(current_only=False)
+    # effBW = HBM bytes / time. At a FIXED R=2048 (so the C-dependence is isolated), plot every
+    # op's effBW vs the row width C, measured (solid) with the LIVE model overlaid (dashed).
+    # transpose (block-swapped inside the stick) and cat1 (copies stored outermost) stay flat;
+    # cat0 (a strided per-row stick gather) and transpose_outer (a tiled block-transpose, shown
+    # at its middle dim M=8) fall as C grows -> more 64-element stick blocks per row to gather.
+    # cores=32 only (a memory op's effBW scales with active cores; mixing cores adds scatter).
+    from collections import defaultdict
 
-    def points(op):  # all distinct (C, R, effBW) shape points, averaging exact repeats
-        agg = {}
-        for r in recs:
-            if r["op"] == op and r.get("io_hbm_bytes") and r.get("cols"):
-                key = (r["cols"], r.get("rows"))
-                agg.setdefault(key, []).append(
-                    int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"]
-                )
-        return [(c, rw, sum(v) / len(v)) for (c, rw), v in agg.items()]
+    cm = _cost_model()
+    recs = _load(current_only=False)
+    RFIX = 2048
+    meas = defaultdict(dict)  # meas[op][C]
+    model = defaultdict(dict)  # model[op][C] = io/pred (live model)
+    tmp = defaultdict(lambda: defaultdict(list))
+    for r in recs:
+        op = r.get("op")
+        if op not in ("transpose", "transpose_outer", "cat0", "cat1"):
+            continue
+        if r.get("rows") != RFIX or r.get("cores") not in (32, None) or r.get("failed"):
+            continue
+        if not r.get("io_hbm_bytes") or not r.get("cols") or not r.get("feats"):
+            continue
+        C, io = r["cols"], int(r["io_hbm_bytes"])
+        feats = r["feats"]
+        feats = feats if isinstance(feats, list) else json.loads(feats)
+        if op == "transpose_outer":  # M=8 only (the modeled case)
+            oe = feats[0].get("out_elems", 0)
+            if round(oe / (RFIX * C)) != 8:
+                continue
+        tmp[op][C].append(io / 1e3 / r["kernel_us"])
+        if C not in model[op]:
+            try:
+                pred = cm.predict_ops(cm.ops_from_json(json.dumps(feats))) / 1e3
+                model[op][C] = io / 1e3 / pred
+            except Exception:  # noqa: BLE001
+                pass
+    for op in tmp:
+        for C, v in tmp[op].items():
+            meas[op][C] = sum(v) / len(v)
 
     styles = {
-        "transpose": ("#2ca02c", "o", "transpose (flat ~116)"),
-        "cat1": ("#1f77b4", "s", "cat1 (flat ~108)"),
-        "cat0": ("#d62728", "^", "cat0 (falls with C)"),
-        "transpose_outer": ("#9467bd", "D", "transpose_outer (falls with C)"),
+        "transpose": ("#2ca02c", "o", "transpose (block-swap, flat)"),
+        "cat1": ("#1f77b4", "s", "cat1 (copies outermost, flat)"),
+        "transpose_outer": ("#9467bd", "D", "transpose_outer M=8 (tiled)"),
+        "cat0": ("#d62728", "^", "cat0 (strided gather)"),
     }
     fig, ax = plt.subplots(figsize=(6.4, 4.3))
     for op, (c, m, lab) in styles.items():
-        pts = points(op)
-        if not pts:
+        mpts = sorted(meas.get(op, {}).items())
+        if not mpts:
             continue
-        xs = [p[0] for p in pts]
-        ys = [p[2] for p in pts]
-        ax.scatter(
-            xs,
-            ys,
-            color=c,
-            marker=m,
-            s=36,
-            label=f"{lab}  (n={len(pts)})",
-            zorder=3,
-            edgecolors="white",
-            linewidths=0.4,
-        )
-        # label each point with its ROWS config -> explains the several points per COLS
-        for cc_, rw, y in pts:
-            ax.annotate(
-                f"R{rw}",
-                (cc_, y),
-                textcoords="offset points",
-                xytext=(4, 2),
-                fontsize=5.6,
-                color=c,
-            )
-    # cat0 model curve at a representative ROWS (2048): 252 - 4*log2(R) - 12.3*log2(C)
-    cc = np.array([256, 512, 1024, 2048, 4096, 8192, 16384], dtype=float)
-    ax.plot(
-        cc,
-        np.clip(252 - 4 * np.log2(2048) - 12.3 * np.log2(cc), 45, 150),
-        "--",
-        color="#d62728",
-        lw=1.1,
-        alpha=0.8,
-        label="cat0 model (R=2048)",
-    )
+        xs, ys = zip(*mpts)
+        ax.plot(xs, ys, "-", color=c, marker=m, ms=5, label=lab, zorder=3)
+        gpts = sorted(model.get(op, {}).items())
+        if gpts:
+            gx, gy = zip(*gpts)
+            ax.plot(gx, gy, "--", color=c, lw=1.1, alpha=0.75)
+    ax.plot([], [], "k--", lw=1.1, label="model")
     ax.set_xscale("log", base=2)
-    ax.set_xticks([512, 1024, 2048, 4096, 8192])
-    ax.set_xticklabels(["512", "1k", "2k", "4k", "8k"])
-    ax.set_xlabel("COLS  (row width C)")
+    ax.set_xticks([512, 1024, 2048, 4096, 8192, 16384, 32768])
+    ax.set_xticklabels(["512", "1k", "2k", "4k", "8k", "16k", "32k"])
+    ax.set_xlabel("row width C  (stick blocks per row = C/64)")
     ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
-    ax.set_title("§6  Transport: transpose/cat1 flat; cat0/transpose_outer fall with C")
+    ax.set_title(
+        f"§6  Transport effective BW vs C at R={RFIX} (solid=measured, dashed=model)"
+    )
     ax.set_ylim(40, 130)
     ax.legend(loc="lower left", fontsize=7.0, framealpha=0.9, ncol=1)
+    ax.grid(True, which="both", ls=":", alpha=0.35)
     _save(fig, "fig6_transport")
 
 
@@ -885,7 +967,9 @@ def fig_matmul_split(_recs):
         if None in (M, N, K) or min(M, N) < 512 or K < 256:
             continue
         m, n = s.get("m", 1), s.get("n", 1)
-        if m == 1 and n == 1:  # unsplit (cores=1): a cores->BW effect, NOT a split -- exclude
+        if (
+            m == 1 and n == 1
+        ):  # unsplit (cores=1): a cores->BW effect, NOT a split -- exclude
             continue
         fan_long, mx = (m if M >= N else n), max(m, n)
         if mx <= 8:
@@ -903,54 +987,106 @@ def fig_matmul_split(_recs):
         area_bytes = mm.matmul_rows_per_core * mm.matmul_cols_per_core * 2
         base = cm.predict_ops(ops, p0) / 1e3
         groups[g].append(
-            (area_bytes, r["kernel_us"] - base, cm.predict_ops(ops) / 1e3 - base,
-             f"{m}×{n}", f"{M}×{K}×{N}")
+            (
+                area_bytes,
+                r["kernel_us"] - base,
+                cm.predict_ops(ops) / 1e3 - base,
+                f"{m}×{n}",
+                f"{M}×{K}×{N}",
+            )
         )
 
     import matplotlib.ticker as _mt
 
     fig, ax = plt.subplots(figsize=(6.4, 4.4))
     ax.axhline(0, color="0.6", lw=1.0, zorder=1)
-    ax.axvline(a0_bytes, ls="--", color="0.5", lw=1.1, zorder=1,
-               label="size gate  a₀ ≈ 256 KB")
+    ax.axvline(
+        a0_bytes, ls="--", color="0.5", lw=1.1, zorder=1, label="size gate  a₀ ≈ 256 KB"
+    )
     # balanced: flat at ~0
     bal = sorted(groups["bal"])
-    ax.scatter([d[0] for d in bal], [d[1] for d in bal], color="#7f7f7f", s=30, zorder=3,
-               edgecolors="white", linewidths=0.4, label="residual: fanout ≤ 8 (balanced) ≈ 0")
+    ax.scatter(
+        [d[0] for d in bal],
+        [d[1] for d in bal],
+        color="#7f7f7f",
+        s=30,
+        zorder=3,
+        edgecolors="white",
+        linewidths=0.4,
+        label="residual: fanout ≤ 8 (balanced) ≈ 0",
+    )
+
     def _annotate(data, col):
         # tag each fanned point with its split m×n (the config that drives the climb);
         # alternate the vertical offset so neighbours at the same tile size don't collide.
         for i, d in enumerate(data):
-            ax.annotate(d[3], (d[0], d[1]), textcoords="offset points",
-                        xytext=(0, 6 if i % 2 == 0 else -11), ha="center",
-                        fontsize=5.6, color=col, zorder=4)
+            ax.annotate(
+                d[3],
+                (d[0], d[1]),
+                textcoords="offset points",
+                xytext=(0, 6 if i % 2 == 0 else -11),
+                ha="center",
+                fontsize=5.6,
+                color=col,
+                zorder=4,
+            )
 
     # long-dim fanned: climb, tracked by the term (dashed)
-    for g, col, lab in [("long16", "#ff7f0e", "long-dim fanout = 16"),
-                        ("long32", "#d62728", "long-dim fanout = 32")]:
+    for g, col, lab in [
+        ("long16", "#ff7f0e", "long-dim fanout = 16"),
+        ("long32", "#d62728", "long-dim fanout = 32"),
+    ]:
         data = sorted(groups[g])
         if not data:
             continue
         xs = [d[0] for d in data]
-        ax.scatter(xs, [d[1] for d in data], color=col, s=36, zorder=3,
-                   edgecolors="white", linewidths=0.4, label=f"residual: {lab}")
+        ax.scatter(
+            xs,
+            [d[1] for d in data],
+            color=col,
+            s=36,
+            zorder=3,
+            edgecolors="white",
+            linewidths=0.4,
+            label=f"residual: {lab}",
+        )
         ax.plot(xs, [d[2] for d in data], "--", color=col, lw=1.2, alpha=0.8, zorder=2)
         _annotate(data, col)
     # short-dim split: the second term (lighter, higher knee) tracks these too
     sh = sorted(groups["short"])
     if sh:
-        ax.scatter([d[0] for d in sh], [d[1] for d in sh], color="#8c564b", s=36,
-                   marker="^", zorder=3, edgecolors="white", linewidths=0.4,
-                   label="residual: short-dim split")
-        ax.plot([d[0] for d in sh], [d[2] for d in sh], "--", color="#8c564b",
-                lw=1.2, alpha=0.8, zorder=2)
+        ax.scatter(
+            [d[0] for d in sh],
+            [d[1] for d in sh],
+            color="#8c564b",
+            s=36,
+            marker="^",
+            zorder=3,
+            edgecolors="white",
+            linewidths=0.4,
+            label="residual: short-dim split",
+        )
+        ax.plot(
+            [d[0] for d in sh],
+            [d[2] for d in sh],
+            "--",
+            color="#8c564b",
+            lw=1.2,
+            alpha=0.8,
+            zorder=2,
+        )
         _annotate(sh, "#8c564b")
     ax.plot([], [], "--", color="0.5", lw=1.2, label="modeled split term (both sides)")
     ax.set_xscale("log", base=2)
     ticks = [65536, 131072, 262144, 524288, 1048576]
     ax.set_xticks(ticks)
-    ax.xaxis.set_major_formatter(_mt.FuncFormatter(
-        lambda v, _: f"{v / 1048576:.0f} MB" if v >= 1048576 else f"{v / 1024:.0f} KB"))
+    ax.xaxis.set_major_formatter(
+        _mt.FuncFormatter(
+            lambda v, _: f"{v / 1048576:.0f} MB"
+            if v >= 1048576
+            else f"{v / 1024:.0f} KB"
+        )
+    )
     ax.xaxis.set_minor_formatter(_mt.NullFormatter())
     ax.set_xlabel("per-core output-tile size   2·(M/m)·(N/n)   [bytes, fp16]")
     ax.set_ylabel("residual:  measured − base model (no split term)   (µs)")
@@ -958,11 +1094,23 @@ def fig_matmul_split(_recs):
     ax.annotate(
         "balanced (fanout ≤ 8): flat at ~0 for any tile\n"
         "fanout > 8: climbs once the tile passes the gate",
-        xy=(0.03, 0.97), xycoords="axes fraction", va="top", ha="left",
-        fontsize=7.2, color="0.3",
-        bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"))
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=2,
-              fontsize=7.0, frameon=False, columnspacing=1.2, handletextpad=0.3)
+        xy=(0.03, 0.97),
+        xycoords="axes fraction",
+        va="top",
+        ha="left",
+        fontsize=7.2,
+        color="0.3",
+        bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"),
+    )
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.13),
+        ncol=2,
+        fontsize=7.0,
+        frameon=False,
+        columnspacing=1.2,
+        handletextpad=0.3,
+    )
     _save(fig, "fig12_matmul_split")
 
 
@@ -982,47 +1130,93 @@ def fig_matmul_bmm(_recs):
         sh = f"{r['M']}×{r['K']}×{r['N']}"
         if r["op"] == "mmwd":
             mm_anchor[sh] = r["kernel_us"] / r["pred_us"]
-        elif (str(r.get("log_file", "")).startswith("overnight_")
-              and r["op"] in ("bmm_wd", "bmm_wd_3d2d")
-              and s.get("b") == 1 and r.get("B", 1) >= 2):
+        elif (
+            str(r.get("log_file", "")).startswith("overnight_")
+            and r["op"] in ("bmm_wd", "bmm_wd_3d2d")
+            and s.get("b") == 1
+            and r.get("B", 1) >= 2
+        ):
             lines[(r["op"], sh)][r["B"]] = r["kernel_us"] / r["pred_us"]
     # keep only shapes with a real sweep (>=3 B points) for BOTH full and 3d2d
-    shapes = sorted({sh for (op, sh), d in lines.items()
-                     if len(d) >= 3 and ("bmm_wd", sh) in lines
-                     and len(lines.get(("bmm_wd_3d2d", sh), {})) >= 3})
+    shapes = sorted(
+        {
+            sh
+            for (op, sh), d in lines.items()
+            if len(d) >= 3
+            and ("bmm_wd", sh) in lines
+            and len(lines.get(("bmm_wd_3d2d", sh), {})) >= 3
+        }
+    )
     colors = {sh: c for sh, c in zip(shapes, ["#1f77b4", "#d62728", "#2ca02c"])}
 
     fig, ax = plt.subplots(figsize=(6.2, 4.2))
     ax.axhline(1.0, color="0.6", lw=1.0, zorder=1)
     for sh in shapes:
         col = colors[sh]
-        for op, style, lab in [("bmm_wd", "-o", "full bmm"),
-                               ("bmm_wd_3d2d", "--s", "shared-weight (3d2d)")]:
+        for op, style, lab in [
+            ("bmm_wd", "-o", "full bmm"),
+            ("bmm_wd_3d2d", "--s", "shared-weight (3d2d)"),
+        ]:
             d = lines.get((op, sh), {})
             xs = sorted(d)
-            ax.plot(xs, [d[b] for b in xs], style, color=col,
-                    lw=1.8 if op == "bmm_wd" else 1.2, ms=5,
-                    markerfacecolor=col if op == "bmm_wd" else "white",
-                    label=f"{lab}  {sh}")
+            ax.plot(
+                xs,
+                [d[b] for b in xs],
+                style,
+                color=col,
+                lw=1.8 if op == "bmm_wd" else 1.2,
+                ms=5,
+                markerfacecolor=col if op == "bmm_wd" else "white",
+                label=f"{lab}  {sh}",
+            )
             # tag each point with its multiplier; full above the marker, 3d2d below
             up = op == "bmm_wd"
             for b in xs:
-                ax.annotate(f"{d[b]:.1f}×", (b, d[b]), textcoords="offset points",
-                            xytext=(0, 6 if up else -12), ha="center", fontsize=5.8,
-                            color=col, zorder=5)
+                ax.annotate(
+                    f"{d[b]:.1f}×",
+                    (b, d[b]),
+                    textcoords="offset points",
+                    xytext=(0, 6 if up else -12),
+                    ha="center",
+                    fontsize=5.8,
+                    color=col,
+                    zorder=5,
+                )
         if sh in mm_anchor:  # the plain 2-D matmul, plotted at B=1
-            ax.plot([1], [mm_anchor[sh]], "*", color=col, ms=13, zorder=4,
-                    markeredgecolor="0.3", markeredgewidth=0.5)
-    ax.plot([], [], "*", color="0.4", ms=12, markeredgecolor="0.3",
-            label="plain 2-D matmul (1 batch) ≈ 1")
+            ax.plot(
+                [1],
+                [mm_anchor[sh]],
+                "*",
+                color=col,
+                ms=13,
+                zorder=4,
+                markeredgecolor="0.3",
+                markeredgewidth=0.5,
+            )
+    ax.plot(
+        [],
+        [],
+        "*",
+        color="0.4",
+        ms=12,
+        markeredgecolor="0.3",
+        label="plain 2-D matmul (1 batch) ≈ 1",
+    )
     ax.set_xscale("log", base=2)
     ax.set_xticks([1, 2, 4, 8, 16])
     ax.get_xaxis().set_major_formatter(plt.matplotlib.ticker.ScalarFormatter())
     ax.set_xlabel("batch  B   (batches run serially on the same cores)")
     ax.set_ylabel("measured / predicted   (base model = B × one matmul)")
     ax.set_title("§13  Batched matmul runs 2–4.6× the predicted cost, flat in B")
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=2,
-              fontsize=7.2, frameon=False, handletextpad=0.3, columnspacing=1.2)
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.14),
+        ncol=2,
+        fontsize=7.2,
+        frameon=False,
+        handletextpad=0.3,
+        columnspacing=1.2,
+    )
     _save(fig, "fig13_matmul_bmm")
 
 
@@ -1033,7 +1227,9 @@ def fig_matmul_bmm_control(_recs):
     # per-batch weight re-read (memory). Matched (shape, B), balanced 4x8, b=1.
     full, d2d = {}, {}
     for r in _load(current_only=False):
-        if not str(r.get("log_file", "")).startswith("overnight_") or not r.get("kernel_us"):
+        if not str(r.get("log_file", "")).startswith("overnight_") or not r.get(
+            "kernel_us"
+        ):
             continue
         s = r.get("split_forced") or {}
         if s.get("b") != 1 or s.get("m") != 4 or s.get("n") != 8 or r.get("B", 1) < 2:
@@ -1043,25 +1239,54 @@ def fig_matmul_bmm_control(_recs):
         exc = (r["kernel_us"] - r["pred_us"]) / r["B"]  # per-batch excess
         (full if r["op"] == "bmm_wd" else d2d)[key] = (macs, exc)
     fig, ax = plt.subplots(figsize=(6.0, 4.0))
-    for d, col, mk, lab in [(full, "#d62728", "o", "full bmm (distinct weight per batch)"),
-                            (d2d, "#1f77b4", "s", "shared-weight (weight read once)")]:
+    for d, col, mk, lab in [
+        (full, "#d62728", "o", "full bmm (distinct weight per batch)"),
+        (d2d, "#1f77b4", "s", "shared-weight (weight read once)"),
+    ]:
         pts = sorted(d.values())
-        ax.scatter([p[0] / 1e9 for p in pts], [p[1] for p in pts], color=col, marker=mk,
-                   s=42, zorder=3, edgecolors="white", linewidths=0.5, label=lab)
+        ax.scatter(
+            [p[0] / 1e9 for p in pts],
+            [p[1] for p in pts],
+            color=col,
+            marker=mk,
+            s=42,
+            zorder=3,
+            edgecolors="white",
+            linewidths=0.5,
+            label=lab,
+        )
     # connect matched pairs to show equal-MACs, unequal-excess
     for k in sorted(set(full) & set(d2d)):
-        ax.plot([full[k][0] / 1e9] * 2, [full[k][1], d2d[k][1]], color="0.7", lw=0.8, zorder=1)
+        ax.plot(
+            [full[k][0] / 1e9] * 2,
+            [full[k][1], d2d[k][1]],
+            color="0.7",
+            lw=0.8,
+            zorder=1,
+        )
     ax.axhline(0, color="0.6", lw=0.9)
     ax.set_xscale("log", base=2)
-    ax.set_xlabel("MACs per batched matmul  (G)   — identical for the two ops at each pair")
+    ax.set_xlabel(
+        "MACs per batched matmul  (G)   — identical for the two ops at each pair"
+    )
     ax.set_ylabel("per-batch excess  (measured − predicted)/B   (µs)")
-    ax.set_title("§13  Equal MACs, very different excess → not compute, it's the weight re-read")
-    ax.annotate("same MACs (vertical line), but the full bmm's\n"
-                "per-batch excess is ~10× the shared-weight one",
-                xy=(0.03, 0.97), xycoords="axes fraction", va="top", ha="left",
-                fontsize=7.4, color="0.3",
-                bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"))
-    ax.legend(loc="upper left", bbox_to_anchor=(0.02, 0.80), fontsize=7.6, framealpha=0.9)
+    ax.set_title(
+        "§13  Equal MACs, very different excess → not compute, it's the weight re-read"
+    )
+    ax.annotate(
+        "same MACs (vertical line), but the full bmm's\n"
+        "per-batch excess is ~10× the shared-weight one",
+        xy=(0.03, 0.97),
+        xycoords="axes fraction",
+        va="top",
+        ha="left",
+        fontsize=7.4,
+        color="0.3",
+        bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"),
+    )
+    ax.legend(
+        loc="upper left", bbox_to_anchor=(0.02, 0.80), fontsize=7.6, framealpha=0.9
+    )
     _save(fig, "fig13b_matmul_bmm_control")
 
 
@@ -1194,8 +1419,13 @@ def fig_matmul_overlap(_recs):
         s = sp(r.get("label", ""))
         M, N, K = r.get("M"), r.get("N"), r.get("K")
         # keep only the cases that use all 32 cores with no K-split (m·n = cores = 32, k = 1)
-        if not s or None in (M, N, K) or s[2] != 1 or s[0] * s[1] != 32 \
-                or r.get("cores") != 32:
+        if (
+            not s
+            or None in (M, N, K)
+            or s[2] != 1
+            or s[0] * s[1] != 32
+            or r.get("cores") != 32
+        ):
             continue
         # keep only power-of-2 tensor dimensions
         if any(d & (d - 1) for d in (M, N, K)):
@@ -1212,15 +1442,31 @@ def fig_matmul_overlap(_recs):
         meas = r["kernel_us"]
         compute = mm.matmul_macs / mm.cores / 1140 / 1e3  # µs
         frac = max(0.0, min(1.0, (t_add - compute) / t_add)) if t_add > 0 else 0.0
-        rows.append((frac, 100 * (t_add - meas) / meas, 100 * (t_ov - meas) / meas,
-                     regime(M, K, N, s[0], s[1]), M, K, N, s))
+        rows.append(
+            (
+                frac,
+                100 * (t_add - meas) / meas,
+                100 * (t_ov - meas) / meas,
+                regime(M, K, N, s[0], s[1]),
+                M,
+                K,
+                N,
+                s,
+            )
+        )
 
-    colors = {"realistic": "#2ca02c", "workdiv": "#ff7f0e", "tensor": "#1f77b4",
-              "tiny": "#7f7f7f"}
-    labels = {"realistic": "realistic (balanced split, normal shape)",
-              "workdiv": "work-division extreme (fanout > 8)",
-              "tensor": "tensor-size extreme (thin reduction, K ≤ 128)",
-              "tiny": "tiny (small output, min(M,N) ≤ 512)"}
+    colors = {
+        "realistic": "#2ca02c",
+        "workdiv": "#ff7f0e",
+        "tensor": "#1f77b4",
+        "tiny": "#7f7f7f",
+    }
+    labels = {
+        "realistic": "realistic (balanced split, normal shape)",
+        "workdiv": "work-division extreme (fanout > 8)",
+        "tensor": "tensor-size extreme (thin reduction, K ≤ 128)",
+        "tiny": "tiny (small output, min(M,N) ≤ 512)",
+    }
     fig, ax = plt.subplots(figsize=(11.5, 8.0))
     ax.axhspan(-10, 10, color="0.92", zorder=0, label="±10 %")
     ax.axhline(0, color="0.6", lw=1.0, zorder=1)
@@ -1228,7 +1474,9 @@ def fig_matmul_overlap(_recs):
         col = colors[reg]
         ax.plot([frac, frac], [ea, eo], "-", color="0.82", lw=0.7, zorder=1)
         ax.scatter(frac, ea, facecolors="none", edgecolors=col, s=60, lw=1.2, zorder=2)
-        ax.scatter(frac, eo, color=col, s=60, zorder=3, edgecolors="white", linewidths=0.4)
+        ax.scatter(
+            frac, eo, color=col, s=60, zorder=3, edgecolors="white", linewidths=0.4
+        )
     # label the residual outliers (|overlap err| > 15%) with BOTH the tensor size M×K×N and
     # the work-division split m×n×k
     neg = 0
@@ -1237,13 +1485,22 @@ def fig_matmul_overlap(_recs):
             continue
         up = eo > 0
         lab = f"{M}×{K}×{N}\n{s[0]}×{s[1]}×{s[2]}"
-        ax.annotate(lab, xy=(frac, eo), textcoords="offset points",
-                    xytext=(7, 4) if up else (7, -11 - 22 * (neg % 2)), fontsize=7.0,
-                    color=colors[reg], zorder=5, linespacing=0.9)
+        ax.annotate(
+            lab,
+            xy=(frac, eo),
+            textcoords="offset points",
+            xytext=(7, 4) if up else (7, -11 - 22 * (neg % 2)),
+            fontsize=7.0,
+            color=colors[reg],
+            zorder=5,
+            linespacing=0.9,
+        )
         if not up:
             neg += 1
     # legends: model (open/filled) + regime (color)
-    ax.scatter([], [], facecolors="none", edgecolors="0.35", s=60, label="additive  γ=0 (open)")
+    ax.scatter(
+        [], [], facecolors="none", edgecolors="0.35", s=60, label="additive  γ=0 (open)"
+    )
     ax.scatter([], [], color="0.35", s=60, label="overlap  γ=0.46 (filled)")
     for reg, col in colors.items():
         n = sum(1 for r in rows if r[3] == reg)
@@ -1251,11 +1508,21 @@ def fig_matmul_overlap(_recs):
     ax.set_xlabel("memory fraction   memory / (compute + memory)", fontsize=11)
     ax.set_ylabel("prediction error  (%)", fontsize=11)
     ax.tick_params(labelsize=10)
-    ax.set_title("§10  Overlap (γ=0.46, filled) lowers every prediction, closing the additive\n"
-                 "model's over-prediction — which grows with the memory fraction", fontsize=12)
+    ax.set_title(
+        "§10  Overlap (γ=0.46, filled) lowers every prediction, closing the additive\n"
+        "model's over-prediction — which grows with the memory fraction",
+        fontsize=12,
+    )
     ax.set_ylim(-35, 60)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.11), ncol=3, fontsize=9.5,
-              frameon=False, handletextpad=0.3, columnspacing=1.4)
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.11),
+        ncol=3,
+        fontsize=9.5,
+        frameon=False,
+        handletextpad=0.3,
+        columnspacing=1.4,
+    )
     _save(fig, "fig10_matmul_overlap", dpi=200)
 
 
@@ -1427,34 +1694,57 @@ def fig_coarse_designspace(_recs):
             continue
         pred = cm.predict_ops(cm.ops_from_json(json.dumps(r["feats"])), p) / 1e3
         cur = grp[(op, s)].get(t)
-        grp[(op, s)][t] = (r["kernel_us"], pred) if cur is None else \
-            ((cur[0] + r["kernel_us"]) / 2, (cur[1] + pred) / 2)
+        grp[(op, s)][t] = (
+            (r["kernel_us"], pred)
+            if cur is None
+            else ((cur[0] + r["kernel_us"]) / 2, (cur[1] + pred) / 2)
+        )
 
     # left panel: a few softmax shapes with a real optimum in the sweep
-    show = [("softmax_row_tiling", "8192×2048"), ("softmax_row_tiling", "16384×2048"),
-            ("softmax_row_tiling", "16384×4096"), ("softmax_row_tiling", "2048×2048")]
+    show = [
+        ("softmax_row_tiling", "8192×2048"),
+        ("softmax_row_tiling", "16384×2048"),
+        ("softmax_row_tiling", "16384×4096"),
+        ("softmax_row_tiling", "2048×2048"),
+    ]
     cols = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
 
-    fig, (axL, axR) = plt.subplots(1, 2, figsize=(9.4, 3.9),
-                                   gridspec_kw=dict(width_ratios=[1.5, 1]))
-    for (key, col) in zip(show, cols):
+    fig, (axL, axR) = plt.subplots(
+        1, 2, figsize=(9.4, 3.9), gridspec_kw=dict(width_ratios=[1.5, 1])
+    )
+    for key, col in zip(show, cols):
         d = grp.get(key)
         if not d:
             continue
         tiles = sorted(d)
         mn = min(d[t][0] for t in tiles)
         pmn = min(d[t][1] for t in tiles)
-        axL.plot(tiles, [d[t][0] / mn for t in tiles], "-o", color=col, ms=4,
-                 label=f"{key[1]}  measured")
-        axL.plot(tiles, [d[t][1] / pmn for t in tiles], "--s", color=col, ms=4,
-                 markerfacecolor="white", lw=1.1)
+        axL.plot(
+            tiles,
+            [d[t][0] / mn for t in tiles],
+            "-o",
+            color=col,
+            ms=4,
+            label=f"{key[1]}  measured",
+        )
+        axL.plot(
+            tiles,
+            [d[t][1] / pmn for t in tiles],
+            "--s",
+            color=col,
+            ms=4,
+            markerfacecolor="white",
+            lw=1.1,
+        )
     axL.axhline(1.0, color="0.7", lw=0.8, zorder=0)
     axL.set_xscale("log", base=2)
     axL.set_xticks([1, 2, 4, 8, 16, 32])
     axL.get_xaxis().set_major_formatter(plt.matplotlib.ticker.ScalarFormatter())
     axL.set_xlabel("tile count  (design-space knob)")
     axL.set_ylabel("cost / that problem's best  (relative)")
-    axL.set_title("Model tracks the cost-vs-tiles curve\n(solid = measured, dashed = predicted)")
+    axL.set_title(
+        "Model tracks the cost-vs-tiles curve\n(solid = measured, dashed = predicted)"
+    )
     axL.legend(fontsize=6.6, framealpha=0.9)
 
     # right panel: selection regret = measured(model's pick) / measured(true best)
@@ -1472,7 +1762,9 @@ def fig_coarse_designspace(_recs):
     axR.set_yticks(list(ys))
     axR.set_yticklabels([n for n, _ in regrets], fontsize=6.0)
     axR.set_xlabel("regret of model-picked tile  (% over optimal)")
-    axR.set_title("Picking the model's best tile size\ncosts ≤ ~9 % over the true optimum")
+    axR.set_title(
+        "Picking the model's best tile size\ncosts ≤ ~9 % over the true optimum"
+    )
     axR.axvline(0, color="0.6", lw=0.8)
     fig.tight_layout()
     _save(fig, "fig17_coarse_designspace")

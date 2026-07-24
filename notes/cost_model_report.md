@@ -54,9 +54,10 @@ T   = compute + mem − γ·min(compute, mem) + split      mem = HBM / (eff · s
 | `s_lx` (derates **memory**) | `min(1, (512KB/ws)^0.15)` for `ws > 512KB` (coarse-tiled), `ws = 2·(rows/core)·COLS·2B` — per-core working set overflows LX; spilled traffic runs slower | §15 |
 | `γ·min(compute,HBM)` | `γ = 0.46` — compute/HBM **overlap** (0 when `compute=0`) | §10 |
 
-Per-op `BW_eff`: `restickify` (transpose) `=116`; `stick_scatter` (cat0) shape-dependent
-`252 − 4·log₂R − 12.3·log₂C` clamped [45, 150]; `reduce_outer` (sumcol) `=113`; `broadcast`
-(`copy`/`bcast`/`bcastcol`/`mulbcast`) `=118`. The planner always keeps `K` whole (`WD_K=1`).
+Per-op `BW_eff`: transpose `=116` (flat); the stick-plane transports `cat0`/`transpose_outer`/
+`cat1` share `clamp(a − b·log₂(C/64) − d·log₂R, floor, peak)` (falls with the per-row block count
+`C/64`; §6); `reduce_outer` (sumcol) `=113`; `broadcast` (`copy`/`bcast`/`bcastcol`/`mulbcast`)
+`=118`. The planner always keeps `K` whole (`WD_K=1`).
 
 ---
 
@@ -620,73 +621,165 @@ full ROWS range now that the falloff is modeled. Representative shapes (repeats 
 
 ### §6. Transport ops are copies with an access-pattern effective bandwidth
 
-**Observation.** Transport ops — `transpose` and concatenation `cat0`/`cat1` — rearrange data
-without arithmetic. In the IR each lowers to a plain byte-copy (a `clone`, the same primitive a
-trivial copy emits; we confirmed the recorded op name is `clone`, versus `neg` for a real
-pointwise op). So the only thing that distinguishes a transport from a copy is *how it walks
-memory*, and that sets its effective bandwidth (the `(R+W)/time` of §4).
+**Observation.** Transport ops — the transpose `transpose`, the 3-D outer-axis swap
+`transpose_outer`, and the concatenations `cat0`/`cat1` — rearrange data without arithmetic; in
+the IR each lowers to a plain byte-copy (a `clone`). What distinguishes a transport from a plain
+copy is *how it walks memory*, which sets its effective bandwidth (the `(R+W)/time` of §4). The
+device stores a row of `C` values as `C/64` blocks of 64 (the 128-byte sticks), and the 32 cores
+divide those blocks between them.
 
-**What the data shows (figure).** `transpose` and `cat1` each run at a **stable effective
-bandwidth across every shape** — `transpose` ~116 GB/s (±1.5 %), `cat1` ~108. `cat0` and
-`transpose_outer` instead **fall with the row width `C`**: a shape sweep at *fixed total bytes*
-shows the effective BW drops sharply as `C` grows (e.g. `cat0` runs at 85 GB/s for an
-8192×512 operand but 53 for 512×8192 — same bytes, wide vs tall). The likely reason: each output
-row is reassembled from the 64-element stick blocks of the inputs — a **shuffle at block
-granularity** — so a wider row has more blocks to permute into place, and that per-block shuffle,
-not the byte count, sets the cost.
+**What the data shows (figure).** Two of the four hold a **flat effective bandwidth across every
+shape** — `transpose` ~116 GB/s (±2 %), `cat1` ~106 — while `cat0` and `transpose_outer` **fall
+as the row widens**. The falloff tracks the number of 64-element blocks per row (`C/64`), not the
+byte count: at fixed total bytes a wide operand is far slower than a tall one (`cat0` runs at
+90 GB/s for a 2048×512 operand but 44 for 2048×32768). Building one output row means collecting
+its blocks from scattered input locations, so a wider row is more scattered fetches per row — the
+per-block gather, not the bytes, sets the cost (a longer operand lengthens the gather stride and
+costs a little more).
 
-![§6 effective bandwidth vs row width C: transpose and cat1 flat, cat0 (10 shapes) and transpose_outer (8) fall with C](figures/fig6_transport.png)
+![§6 effective bandwidth vs row width C at fixed R=2048: transpose and cat1 flat, cat0 and transpose_outer fall, with the model overlaid](figures/fig6_transport.png)
 
-**Model.** Each op gets the rate its access pattern implies, read from the IR:
+**Model.** The three shape-dependent transports share one form — effective bandwidth declines
+with the per-row block count and, weakly, with the operand length — differing only in calibration:
 
-| op | access pattern | effective BW (GB/s) | model |
-|---|---|---|---|
-| `transpose` | swaps the 64-block axis with a row axis | **116**, flat | fixed 116 |
-| `cat1` | concatenate on the outer axis | ~108, flat | default copy model (§2), ~7 % optimistic |
-| `cat0` | concatenate on the 64-block axis | ~110 → ~49, falls with `C` | `252 − 4·log₂R − 12.3·log₂C` (clamped 45–150) |
-| `transpose_outer` | 3-D swap of two outer axes | ~106 → ~85, falls with `C` | default copy model; flagged |
+| op | access pattern | effective BW (GB/s) |
+|---|---|---|
+| `transpose` | block axis swapped inside the stick (a hardware fast path) | **116**, flat |
+| `cat1` | copies stored outermost → read and write stay contiguous | ~106, flat |
+| `cat0` | copies inside the stick → a strided per-row gather | ~110 → 44 |
+| `transpose_outer` (M=8) | a tiled block-transpose (softens the gather) | ~106 → 82 |
 
-`cat0`'s per-block shuffle slows as the row gets wider (more blocks); a fit on the shape sweep
-(effective BW linear in `log₂C`, weakly in `log₂R`, R² 0.93 over 10 shapes) captures it and
-brings `cat0` from tens of percent off to within ~10 %. `transpose_outer` shows the *same*
-`C`-driven falloff, but carries no access-pattern tag in the IR, so it stays on the default copy
-model and under-predicts wide-`C` shapes by up to ~22 %. Fixing it is a **future task** — tag
-`transpose_outer` in the extractor so it reuses the `cat0` shape model. **Question for review:**
-is `transpose_outer` (a 3-D outer transpose) common enough in real workloads to justify that
-compiler-side change, or is the ~22 % worst case on a rare op acceptable?
+**A middle-axis sweet spot (transpose_outer).** `transpose_outer` swaps the two outer axes of a
+3-D operand `[R, M, C] → [M, R, C]`. Sweeping the middle axis `M` at fixed shape uncovers a
+**peak in effective bandwidth near M ≈ 8**, dropping off on both sides (at 2048×2048: 70 GB/s at
+M=2, 100 at M=8, 72 at M=64) — each core reassembles `M` blocks per transpose tile, so too few
+wastes the setup and too many overflows the on-chip buffer. The model is calibrated at M=8 (the
+common and best case); other `M` is a **flagged residual** — the model applies the M=8 rate, so it
+mis-predicts by the amount the effective bandwidth differs from its M=8 peak:
 
-**§6 accuracy.** RMS **8.5 %**, mean −3.3 %, over 42 points. `transpose` is exact (±2 %); the
-residual is the shape-dependent copies — `cat0` (modeled, within ~11 % bar one +22 % point at
-8192²) and `transpose_outer` (unmodeled, up to −22 %). Representative shapes (repeats omitted):
+| R×C | M | measured µs | predicted µs | err % |
+|---|---:|---:|---:|---:|
+| 2048×2048 | 2 | 479.1 | 361.6 | -24.5 |
+| 2048×2048 | 4 | 816.7 | 723.2 | -11.5 |
+| 2048×2048 | 8 | 1337.0 | 1446.3 | +8.2 |
+| 2048×2048 | 16 | 3207.0 | 2892.6 | -9.8 |
+| 2048×2048 | 32 | 6587.7 | 5785.2 | -12.2 |
+| 2048×2048 | 64 | 14997.0 | 11570.5 | -22.8 |
+| 2048×8192 | 2 | 2306.2 | 1617.1 | -29.9 |
+| 2048×8192 | 4 | 4229.1 | 3234.2 | -23.5 |
+| 2048×8192 | 8 | 5937.1 | 6468.3 | +8.9 |
+| 2048×8192 | 16 | 13155.7 | 12936.6 | -1.7 |
+| 2048×8192 | 32 | 28474.3 | 25873.3 | -9.1 |
+
+**§6 accuracy.** RMS **5.5 %**, mean +0.7 %, over 100 shapes. `transpose` is exact (±2 %); the
+shape-dependent copies mostly land within ~8 %, the residual confined to the extreme corners —
+the smallest operands (a 512×512 `cat0` reads +18 % and a 256-row `cat1` −22 %, their bandwidth
+already near the flat peak) and the largest `transpose_outer` (where the work is divided
+differently, −12 %).
+Every measured shape (cores = 32, `transpose_outer` at M=8):
 
 | op | R×C | measured µs | predicted µs | err % |
 |---|---|---:|---:|---:|
-| `transpose` | 512×8192 | 146.0 | 144.6 | −0.9 |
-| `transpose` | 2048×2048 | 145.5 | 144.6 | −0.6 |
+| `transpose` | 512×2048 | 36.6 | 36.2 | -1.3 |
+| `transpose` | 512×4096 | 73.7 | 72.3 | -1.9 |
+| `transpose` | 512×8192 | 147.0 | 144.6 | -1.6 |
+| `transpose` | 1024×1024 | 38.1 | 36.2 | -5.0 |
+| `transpose` | 1024×2048 | 73.4 | 72.3 | -1.4 |
+| `transpose` | 1024×4096 | 144.9 | 144.6 | -0.2 |
+| `transpose` | 2048×512 | 37.3 | 36.2 | -3.0 |
+| `transpose` | 2048×1024 | 74.6 | 72.3 | -3.1 |
+| `transpose` | 2048×2048 | 146.9 | 144.6 | -1.5 |
+| `transpose` | 2048×4096 | 288.3 | 289.3 | +0.3 |
+| `transpose` | 2048×8192 | 581.4 | 578.5 | -0.5 |
+| `transpose` | 2048×16384 | 1156.5 | 1157.0 | +0.0 |
+| `transpose` | 2048×32768 | 2288.7 | 2314.1 | +1.1 |
 | `transpose` | 4096×1024 | 142.7 | 144.6 | +1.4 |
-| `transpose` | 4096×4096 | 575.6 | 578.5 | +0.5 |
-| `transpose` | 8192×512 | 143.7 | 144.6 | +0.7 |
-| `cat1` | 512×8192 | 243.2 | 215.9 | −11.2 |
-| `cat1` | 2048×2048 | 231.0 | 215.9 | −6.5 |
-| `cat1` | 4096×4096 | 935.0 | 863.7 | −7.6 |
-| `cat1` | 8192×512 | 237.1 | 215.9 | −8.9 |
-| `cat0` | 512×512 | 14.2 | 15.0 | +5.3 |
-| `cat0` | 1024×1024 | 66.9 | 71.1 | +6.3 |
-| `cat0` | 8192×512 | 294.8 | 284.2 | −3.6 |
-| `cat0` | 4096×1024 | 308.2 | 314.3 | +2.0 |
-| `cat0` | 2048×2048 | 396.6 | 351.6 | −11.3 |
-| `cat0` | 1024×4096 | 406.2 | 399.1 | −1.8 |
-| `cat0` | 512×8192 | 474.0 | 461.2 | −2.7 |
-| `cat0` | 4096×4096 | 1709.4 | 1861.2 | +8.9 |
-| `cat0` | 8192×8192 | 8219.3 | 10011.6 | +21.8 |
-| `transpose_outer` | 1024×1024 | 316.1 | 320.0 | +1.2 |
-| `transpose_outer` | 8192×512 | 1325.9 | 1280.0 | −3.5 |
-| `transpose_outer` | 2048×2048 | 1340.0 | 1280.0 | −4.5 |
-| `transpose_outer` | 4096×1024 | 1310.6 | 1280.0 | −2.3 |
-| `transpose_outer` | 1024×4096 | 1477.1 | 1280.0 | −13.3 |
-| `transpose_outer` | 512×8192 | 1635.7 | 1280.0 | −21.7 |
-| `transpose_outer` | 4096×4096 | 6010.8 | 5120.0 | −14.8 |
-| `transpose_outer` | 8192×8192 | 25324.2 | 20479.8 | −19.1 |
+| `transpose` | 4096×2048 | 286.5 | 289.3 | +1.0 |
+| `transpose` | 4096×4096 | 577.3 | 578.5 | +0.2 |
+| `transpose` | 8192×512 | 145.2 | 144.6 | -0.4 |
+| `transpose` | 8192×2048 | 581.6 | 578.5 | -0.5 |
+| `transpose` | 8192×4096 | 1147.9 | 1157.0 | +0.8 |
+| `transpose` | 8192×8192 | 2310.3 | 2314.1 | +0.2 |
+| `transpose` | 16384×2048 | 1167.8 | 1157.0 | -0.9 |
+| `transpose_outer` | 256×2048 | 178.9 | 174.0 | -2.7 |
+| `transpose_outer` | 256×8192 | 881.7 | 808.5 | -8.3 |
+| `transpose_outer` | 512×2048 | 374.3 | 352.5 | -5.8 |
+| `transpose_outer` | 512×4096 | 825.6 | 759.2 | -8.0 |
+| `transpose_outer` | 512×8192 | 1649.2 | 1617.1 | -1.9 |
+| `transpose_outer` | 1024×1024 | 316.0 | 332.9 | +5.4 |
+| `transpose_outer` | 1024×2048 | 651.5 | 713.9 | +9.6 |
+| `transpose_outer` | 1024×4096 | 1477.1 | 1539.2 | +4.2 |
+| `transpose_outer` | 1024×8192 | 2911.5 | 3234.2 | +11.1 |
+| `transpose_outer` | 1024×32768 | 13386.3 | 12936.6 | -3.4 |
+| `transpose_outer` | 2048×512 | 319.1 | 315.4 | -1.2 |
+| `transpose_outer` | 2048×1024 | 649.4 | 673.8 | +3.8 |
+| `transpose_outer` | 2048×2048 | 1337.0 | 1446.3 | +8.2 |
+| `transpose_outer` | 2048×4096 | 3027.5 | 3121.3 | +3.1 |
+| `transpose_outer` | 2048×8192 | 5937.1 | 6468.3 | +8.9 |
+| `transpose_outer` | 2048×16384 | 12576.2 | 12936.6 | +2.9 |
+| `transpose_outer` | 2048×32768 | 26106.1 | 25873.3 | -0.9 |
+| `transpose_outer` | 4096×1024 | 1310.6 | 1364.0 | +4.1 |
+| `transpose_outer` | 4096×2048 | 2769.9 | 2930.5 | +5.8 |
+| `transpose_outer` | 4096×4096 | 5978.6 | 6331.0 | +5.9 |
+| `transpose_outer` | 4096×8192 | 11948.2 | 12936.6 | +8.3 |
+| `transpose_outer` | 8192×512 | 1328.8 | 1290.6 | -2.9 |
+| `transpose_outer` | 8192×2048 | 5429.1 | 5938.8 | +9.4 |
+| `transpose_outer` | 8192×4096 | 12783.8 | 12843.8 | +0.5 |
+| `transpose_outer` | 8192×8192 | 25504.4 | 25873.3 | +1.4 |
+| `transpose_outer` | 16384×2048 | 13682.9 | 12037.5 | -12.0 |
+| `transpose_outer` | 32768×2048 | 23973.7 | 24403.2 | +1.8 |
+| `cat0` | 256×2048 | 40.5 | 41.0 | +1.0 |
+| `cat0` | 256×8192 | 217.1 | 218.5 | +0.6 |
+| `cat0` | 512×512 | 14.2 | 16.8 | +18.2 |
+| `cat0` | 512×2048 | 92.1 | 84.6 | -8.2 |
+| `cat0` | 512×4096 | 205.3 | 194.2 | -5.4 |
+| `cat0` | 512×8192 | 479.4 | 455.9 | -4.9 |
+| `cat0` | 1024×1024 | 68.3 | 77.1 | +12.9 |
+| `cat0` | 1024×2048 | 186.6 | 174.8 | -6.4 |
+| `cat0` | 1024×4096 | 406.2 | 403.3 | -0.7 |
+| `cat0` | 1024×8192 | 904.7 | 953.3 | +5.4 |
+| `cat0` | 1024×32768 | 4428.5 | 4575.6 | +3.3 |
+| `cat0` | 2048×512 | 69.4 | 70.8 | +2.1 |
+| `cat0` | 2048×1024 | 150.4 | 158.9 | +5.6 |
+| `cat0` | 2048×2048 | 396.3 | 361.6 | -8.8 |
+| `cat0` | 2048×4096 | 833.5 | 838.9 | +0.6 |
+| `cat0` | 2048×8192 | 1927.5 | 1997.3 | +3.6 |
+| `cat0` | 2048×16384 | 4626.1 | 4575.6 | -1.1 |
+| `cat0` | 2048×32768 | 9143.0 | 9151.2 | +0.1 |
+| `cat0` | 4096×1024 | 308.2 | 327.7 | +6.3 |
+| `cat0` | 4096×2048 | 818.8 | 749.0 | -8.5 |
+| `cat0` | 4096×4096 | 1705.6 | 1747.6 | +2.5 |
+| `cat0` | 4096×8192 | 4018.2 | 4194.3 | +4.4 |
+| `cat0` | 8192×512 | 294.9 | 299.6 | +1.6 |
+| `cat0` | 8192×2048 | 1696.2 | 1553.4 | -8.4 |
+| `cat0` | 8192×4096 | 3667.5 | 3647.2 | -0.6 |
+| `cat0` | 8192×8192 | 8238.0 | 8830.1 | +7.2 |
+| `cat0` | 16384×2048 | 3505.6 | 3226.4 | -8.0 |
+| `cat0` | 16384×8192 | 17466.9 | 18302.4 | +4.8 |
+| `cat0` | 32768×2048 | 6734.7 | 6710.9 | -0.4 |
+| `cat1` | 256×2048 | 37.9 | 29.7 | -21.8 |
+| `cat1` | 512×2048 | 57.8 | 59.4 | +2.7 |
+| `cat1` | 512×4096 | 122.0 | 119.6 | -2.0 |
+| `cat1` | 512×8192 | 247.4 | 241.1 | -2.6 |
+| `cat1` | 1024×1024 | 53.8 | 58.9 | +9.5 |
+| `cat1` | 1024×2048 | 111.4 | 118.7 | +6.6 |
+| `cat1` | 1024×4096 | 225.5 | 239.2 | +6.1 |
+| `cat1` | 2048×512 | 55.7 | 58.5 | +5.0 |
+| `cat1` | 2048×1024 | 113.7 | 117.8 | +3.6 |
+| `cat1` | 2048×2048 | 233.2 | 237.4 | +1.8 |
+| `cat1` | 2048×4096 | 470.3 | 478.4 | +1.7 |
+| `cat1` | 2048×8192 | 940.6 | 964.2 | +2.5 |
+| `cat1` | 2048×16384 | 1908.3 | 1943.3 | +1.8 |
+| `cat1` | 2048×32768 | 3891.2 | 3916.9 | +0.7 |
+| `cat1` | 4096×1024 | 226.8 | 235.6 | +3.9 |
+| `cat1` | 4096×2048 | 465.7 | 474.8 | +2.0 |
+| `cat1` | 4096×4096 | 931.6 | 956.9 | +2.7 |
+| `cat1` | 8192×512 | 237.2 | 233.9 | -1.4 |
+| `cat1` | 8192×2048 | 953.2 | 949.7 | -0.4 |
+| `cat1` | 8192×4096 | 1925.8 | 1913.8 | -0.6 |
+| `cat1` | 8192×8192 | 3839.0 | 3856.8 | +0.5 |
+| `cat1` | 16384×2048 | 1968.8 | 1899.3 | -3.5 |
+| `cat1` | 32768×2048 | 3881.0 | 3798.6 | -2.1 |
 
 ---
 

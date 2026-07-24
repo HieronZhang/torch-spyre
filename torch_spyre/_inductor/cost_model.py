@@ -101,20 +101,25 @@ that spilled traffic runs SLOWER than the modeled rate, so the effective bandwid
 (``_lx_spill_bw_derate``: BW *= (cap/ws)**0.15 for ws>cap). Softmax-calibrated (11.0%->5.7% RMS),
 gated to non-matmul coarse tiling. See report S14.
 
-ACCESS-PATTERN effective-BW overrides (db_sweep; ``OpFeatures.hbm_pattern``, set by the
-extractor from the LoopLevel IR index/layout -- these fold turnaround into one measured
-rate): "restickify" transpose (stick swapped -> ~116, FASTER), "stick_scatter" cat0 on a
-partition dim (fine sub-stick interleave -> SHAPE-dependent, falls with row width C:
-clamp(intercept - rows_coef*log2(R) - cols_coef*log2(C), floor, bw_peak)), "reduce_outer"
-sumcol (cross-row reduce -> ~113). (A dependent multi-op chain like add3/add4 costs more than its byte
-count -- a read-after-write ACROSS op boundaries, §3 -- but that is a program-level effect, not a
-single-op cost, so it is NOT modeled here; add_n is not a native op.) All land within ~4%.
-BROADCAST-operand ops (copy/bcast/bcastcol/mulbcast: a full input + a small broadcast
-operand) run ~118 GB/s -- ``bw_broadcast_gbps`` (mechanism open). ``write`` (b[1,C]+c[R,1],
-BOTH operands broadcast -> outer-product) is slow + super-linear; modeled by an EMPIRICAL
-extra-traffic term (``write_reread_*``: coef*ROWS^r*COLS^c, ~12% RMS, black-box).
-KNOWN residual (not yet modeled): transpose_outer at large size ~-14% (size-dependent);
-reductions ~-15% at large ROWS (stick-inflated scattered output write).
+ACCESS-PATTERN effective-BW overrides (db_sweep; fold turnaround into one measured rate).
+STICK-PLANE TRANSPORTS -- a `clone` reorganizing the stick layout, parallelized by splitting
+the stick-plane dim sp = C/64 across the 32 cores. Effective BW falls with the per-row
+strided stick gather -- more planes (sp) and a longer gather stride (more rows R) -- so cat0,
+transpose_outer and cat1 SHARE one form, clamp(a - b*log2(sp) - d*log2(R), floor, bw_peak),
+with per-op constants (``tx_*``): cat0 a steep untiled gather, transpose_outer a gentle tiled
+block-transpose (calibrated at its best middle dim M=8; M!=8 flagged), cat1 nearly flat
+(copies stored outermost -> contiguous). ``transpose`` is a hardware restickify (stick
+swapped) -> flat ``bw_restickify_gbps`` ~116; "reduce_outer" sumcol (cross-row reduce) ~113.
+cat0/transpose carry an ``OpFeatures.hbm_pattern`` from the extractor; cat1/transpose_outer
+are detected structurally from the logical reshape (``_transport_kind``). (A dependent multi-op
+chain like add3/add4 costs more than its byte count -- a read-after-write ACROSS op boundaries,
+§3 -- a program-level effect, not a single-op cost, so NOT modeled here.) Transports land
+within ~6%. BROADCAST-operand ops (copy/bcast/bcastcol/mulbcast: a full input + a small
+broadcast operand) run ~118 GB/s -- ``bw_broadcast_gbps`` (mechanism open). ``write``
+(b[1,C]+c[R,1], BOTH operands broadcast -> outer-product) is slow + super-linear; modeled by an
+EMPIRICAL extra-traffic term (``write_reread_*``: coef*ROWS^r*COLS^c, ~12% RMS, black-box).
+KNOWN residual (not yet modeled): transpose_outer away from M=8 (peaks at M~8); reductions
+~-15% at large ROWS (stick-inflated scattered output write).
 
 CALIBRATION NOTE: the golden per-op measurement is the torch.profiler "Self SPYRE"
 (sdsc_fused) KERNEL device time -- NOT our old SPYRE_PROFILE_SYNC min (which folded in a
@@ -380,8 +385,12 @@ class CostParams:
     mm_split_reread_us_per_elem: float = 2.62e-3  # cL: long-dim split coefficient
     mm_split_short_us_per_elem: float = 2.88e-3  # cS: short-dim split coefficient
     mm_split_area0: float = 131072.0  # per-core tile elems below which no split re-read
-    mm_split_long_knee: float = 8.0  # long-dim cores before the re-read (planner _COHORT_LIMIT)
-    mm_split_short_knee: float = 16.0  # short dim tolerated to a higher fanout (empirical)
+    mm_split_long_knee: float = (
+        8.0  # long-dim cores before the re-read (planner _COHORT_LIMIT)
+    )
+    mm_split_short_knee: float = (
+        16.0  # short dim tolerated to a higher fanout (empirical)
+    )
     # Matmul HBM: a SINGLE effective rate = the pointwise copy peak (150). The earlier
     # two-rate fit (143 read / 156 write) is retired: 156 > 150 is unphysical (a write
     # cannot beat the copy peak) and was a compute-free-fit artifact absorbing the overlap
@@ -397,14 +406,29 @@ class CostParams:
     bw_restickify_gbps: float = (
         116.0  # transpose: stick swapped, LESS turnaround (faster)
     )
-    # cat on the partition (64-elem block) dim: fine sub-stick interleave. Its effective
-    # BW is SHAPE-dependent -- it falls mainly with the row width C (more sticks per row to
-    # scatter), weakly with R. Fit on the transport-shape sweep (R2=0.93 over 10 shapes):
-    # effBW = intercept - rows_coef*log2(R) - cols_coef*log2(C), clamped to [floor, peak].
-    bw_stick_scatter_intercept: float = 252.0
-    bw_stick_scatter_rows_coef: float = 4.0
-    bw_stick_scatter_cols_coef: float = 12.3
-    bw_stick_scatter_floor_gbps: float = 45.0  # large-C saturation clamp
+    # Stick-plane transports (cat0, transpose_outer, cat1): a `clone` that reorganizes the
+    # stick layout. The 32 cores split the stick-plane dim (sp = C/64); each core does the
+    # per-row stick work. Effective BW falls with the per-row strided stick gather -- more
+    # planes (sp) and a longer gather stride (more rows R) -- so all three share ONE form,
+    #   effBW = clamp(a - b*log2(sp) - d*log2(R), floor, bw_peak)   (report S6),
+    # differing only in calibration. cat0 = a STEEP untiled gather (its two cat copies sit
+    # just inside the stick, so each output row re-gathers sp scattered input sticks).
+    # transpose_outer = a GENTLE tiled block-transpose, calibrated at its best middle dim
+    # M=8 (effBW peaks at M~8 and falls either side -- M!=8 is a flagged residual, not yet
+    # modeled). cat1 = nearly FLAT (its cat copies sit outermost -> contiguous read+write).
+    # transpose itself is a hardware restickify (stick swapped) -> flat bw_restickify_gbps.
+    tx_cat0_a: float = 144.0
+    tx_cat0_b: float = 9.6
+    tx_cat0_d: float = 2.4
+    tx_cat0_floor_gbps: float = 44.0
+    tx_touter_a: float = 140.0
+    tx_touter_b: float = 6.8
+    tx_touter_d: float = 1.2
+    tx_touter_floor_gbps: float = 83.0
+    tx_cat1_a: float = 110.0
+    tx_cat1_b: float = 0.8
+    tx_cat1_d: float = 0.0
+    tx_cat1_floor_gbps: float = 90.0
     bw_reduce_outer_gbps: float = 113.0  # cross-row (dim0) reduction (sumcol)
     # Row-reduction READ rate falls with ROWS (the read pipeline degrades as each core
     # streams more rows), op-independent, saturating. Fit on the reduction-rows sweep
@@ -416,7 +440,9 @@ class CostParams:
     # Ops that stream a FULL input plus a small BROADCAST operand (loaded once) -- copy
     # (x+const), bcast, bcastcol, mulbcast -- run FASTER than a plain 1R:1W op (~118 vs
     # ~105 GB/s; mechanism open). NOT `write` (both operands broadcast, no full input).
-    bw_broadcast_gbps: float = 118.0  # fallback rate (used only if the logical shape is absent)
+    bw_broadcast_gbps: float = (
+        118.0  # fallback rate (used only if the logical shape is absent)
+    )
     # ALL FOUR broadcast ops share the SAME shape of effective-BW surface (a dense R×C sweep):
     # a well-filled regime (ROWS >= min_rows) where the rate declines gently with both COLS and
     # ROWS, and a short-tensor regime (ROWS < min_rows) that is a V-valley with its minimum at
@@ -425,13 +451,21 @@ class CostParams:
     # operand (copy, a scalar broadcast, shows the same collapse). The only operand-specific
     # difference is a small rate lift: the ROW-broadcast ops (bcast/mulbcast, b[1,C]) run a few
     # GB/s faster than the scalar/column ops (copy/bcastcol), so each FAMILY gets its own fit.
-    bcast_bw_min_rows: float = 1024.0  # split between the well-filled and short-tensor regimes
-    bcast_v_cols_split: float = 4096.0  # short-tensor: COLS<=split -> quadratic, else -> V
+    bcast_bw_min_rows: float = (
+        1024.0  # split between the well-filled and short-tensor regimes
+    )
+    bcast_v_cols_split: float = (
+        4096.0  # short-tensor: COLS<=split -> quadratic, else -> V
+    )
     # -- ROW-broadcast family (bcast, mulbcast: operand b[1,C]) --
-    bcast_bw_a: float = 183.5  # well-filled: effBW = a - b*log2(COLS) - d*log2(ROWS)  (1.3% RMS)
+    bcast_bw_a: float = (
+        183.5  # well-filled: effBW = a - b*log2(COLS) - d*log2(ROWS)  (1.3% RMS)
+    )
     bcast_bw_b: float = 2.8
     bcast_bw_d: float = 2.6
-    bcast_q_a: float = -350.0  # short COLS<=4k: a + b*lr + c*lr^2 + e*log2(COLS)  (lr=log2 ROWS)
+    bcast_q_a: float = (
+        -350.0
+    )  # short COLS<=4k: a + b*lr + c*lr^2 + e*log2(COLS)  (lr=log2 ROWS)
     bcast_q_b: float = 105.0
     bcast_q_c: float = -5.5
     bcast_q_e: float = -2.0
@@ -457,7 +491,9 @@ class CostParams:
     # traffic is fit EMPIRICALLY on the write sweep -- extra_bytes = coef * ROWS^r * COLS^c,
     # charged at bw_peak. ~12% RMS over the sweep (worst ~-30% at mid sizes). Black-box,
     # to be replaced when the mechanism is understood (see report §4).
-    write_reread_coef: float = 2.0e-9  # refit on the full dense write sweep (38 pts, 8.2% RMS)
+    write_reread_coef: float = (
+        2.0e-9  # refit on the full dense write sweep (38 pts, 8.2% RMS)
+    )
     write_reread_r_exp: float = 1.75
     write_reread_c_exp: float = 2.60
     # The power-law grows super-linearly and EXPLODES at the extreme corner (16384x16384
@@ -586,13 +622,19 @@ def _is_broadcast_op(o) -> bool:
 
 
 def _is_outer_broadcast(o) -> bool:
-    """True for a `write`-like op where EVERY HBM input is a broadcast operand (no full
-    streamed input) -- an outer-product write ``b[1,C] + c[R,1]``. Its cost is slow and
-    super-linear (empirical ``write_reread_*`` term)."""
+    """True for a `write`-like op: an OUTER PRODUCT of two-or-more genuine broadcast operands,
+    each a 1-D-ish vector (a size-1 logical dim), e.g. ``b[1, C] + c[R, 1]``. Its cost is slow
+    and super-linear (empirical ``write_reread_*`` term). A SINGLE broadcast input that is a
+    FULL [R, C] tensor -- a cat copy loaded once and reused across the concat axis (cat0/cat1)
+    -- is NOT an outer product and must not be charged the write re-read term."""
     if getattr(o, "is_matmul", False) or o.is_reduction:
         return False
     ins = [a for a in o.args if a.role == "input" and a.mem == "hbm"]
-    return bool(ins) and all(a.broadcast for a in ins)
+    return (
+        len(ins) >= 2
+        and all(a.broadcast for a in ins)
+        and all(a.logical and 1 in a.logical for a in ins)
+    )
 
 
 def _outer_broadcast_extra_bytes(o, p) -> float:
@@ -609,7 +651,9 @@ def _outer_broadcast_extra_bytes(o, p) -> float:
     if out is None:
         return 0.0
     rows, cols = out.logical[-2], out.logical[-1]
-    extra = p.write_reread_coef * rows**p.write_reread_r_exp * cols**p.write_reread_c_exp
+    extra = (
+        p.write_reread_coef * rows**p.write_reread_r_exp * cols**p.write_reread_c_exp
+    )
     # cap at a bounded multiple of the output bytes -> effBW floors instead of exploding
     out_bytes = rows * cols * 2
     return min(extra, p.write_reread_max_ratio * out_bytes)
@@ -656,7 +700,12 @@ def broadcast_bw(o, p):
     if _has_row_broadcast_operand(o):  # bcast / mulbcast
         sa, sb, sd = p.bcast_bw_a, p.bcast_bw_b, p.bcast_bw_d
         qa, qb, qc, qe = p.bcast_q_a, p.bcast_q_b, p.bcast_q_c, p.bcast_q_e
-        vp, vf, vbl, vbr = p.bcast_v_plateau, p.bcast_v_floor, p.bcast_v_bl, p.bcast_v_br
+        vp, vf, vbl, vbr = (
+            p.bcast_v_plateau,
+            p.bcast_v_floor,
+            p.bcast_v_bl,
+            p.bcast_v_br,
+        )
         s_lo, s_hi, q_hi = 100.0, 135.0, 140.0
     else:  # copy (scalar) / bcastcol (b[R,1])
         sa, sb, sd = p.cbc_bw_a, p.cbc_bw_b, p.cbc_bw_d
@@ -666,24 +715,90 @@ def broadcast_bw(o, p):
     lr, lc = math.log2(rows), math.log2(cols)
     if rows >= p.bcast_bw_min_rows:  # well-filled: gentle decline with both dims
         return max(s_lo, min(s_hi, sa - sb * lc - sd * lr))
-    if cols <= p.bcast_v_cols_split:  # short + narrow: only the V's rising side (a quadratic)
+    if (
+        cols <= p.bcast_v_cols_split
+    ):  # short + narrow: only the V's rising side (a quadratic)
         return max(45.0, min(q_hi, qa + qb * lr + qc * lr * lr + qe * lc))
     dip = lc - 6.0  # short + wide: the full V-valley, minimum at ROWS = COLS/64
     return max(40.0, min(vp, vf + vbl * max(0.0, dip - lr) + vbr * max(0.0, lr - dip)))
 
 
-def stick_scatter_bw(o, p):
-    """cat-on-block-dim (cat0) effective BW: falls with row width C, weakly with R."""
-    rc = _logical_rc(o)
+# Per-op (a, b, d, floor) for the shared stick-plane-transport BW form (see CostParams).
+_TX_PARAM_ATTRS = {
+    "cat0": ("tx_cat0_a", "tx_cat0_b", "tx_cat0_d", "tx_cat0_floor_gbps"),
+    "transpose_outer": (
+        "tx_touter_a",
+        "tx_touter_b",
+        "tx_touter_d",
+        "tx_touter_floor_gbps",
+    ),
+    "cat1": ("tx_cat1_a", "tx_cat1_b", "tx_cat1_d", "tx_cat1_floor_gbps"),
+}
+
+
+def _transport_kind(o) -> str:
+    """Classify a stick-plane transport from its logical shapes. cat0 and transpose carry an
+    ``hbm_pattern`` already; cat1 and transpose_outer do NOT (they ride the default), so they
+    are detected here from the input->output logical reshape. Returns "" for anything else."""
+    if getattr(o, "is_matmul", False) or o.is_reduction:
+        return ""
+    outs = [a for a in o.args if a.role == "output" and a.mem == "hbm" and a.logical]
+    ins = [a for a in o.args if a.role == "input" and a.mem == "hbm" and a.logical]
+    if not outs or not ins:
+        return ""
+    ol, il = outs[0].logical, ins[0].logical
+    # transpose_outer: [R, M, C] -> [M, R, C] (rank-3 outer-dim swap; stick dim C kept).
+    if (
+        len(ol) == 3
+        and len(il) == 3
+        and ol[0] == il[1]
+        and ol[1] == il[0]
+        and ol[2] == il[2]
+        and ol[0] > 1
+        and ol[1] > 1
+    ):
+        return "transpose_outer"
+    # cat1: a 2-D input [R, C] reused across k copies -> [R, k, C] (concat on the stick axis).
+    if (
+        len(ol) == 3
+        and len(il) == 2
+        and ol[1] >= 2
+        and ol[0] == il[0]
+        and ol[2] == il[1]
+    ):
+        return "cat1"
+    return ""
+
+
+def _transport_rc(o, kind):
+    """(rows R, cols C) for a stick-plane transport. C is always the stick dim (logical[-1]);
+    R is the big non-stick dim -- logical[-2] EXCEPT cat1, whose output logical is [R, k, C]
+    (the copy count k sits at [-2]), so R is the outer dim there."""
+    outs = [
+        a
+        for a in o.args
+        if a.role == "output" and a.mem == "hbm" and len(a.logical) >= 2
+    ]
+    if not outs:
+        return None
+    ol = outs[0].logical
+    rows = ol[0] if kind == "cat1" else ol[-2]
+    return rows, ol[-1]
+
+
+def transport_bw(o, p, kind):
+    """Shared stick-plane-transport effective BW: clamp(a - b*log2(sp) - d*log2(R), floor,
+    peak), sp = C/64. One form for cat0 / transpose_outer / cat1; per-op constants."""
+    a, b, d, fl = (getattr(p, n) for n in _TX_PARAM_ATTRS[kind])
+    rc = _transport_rc(o, kind)
     if rc is None:
-        return p.bw_stick_scatter_floor_gbps
+        return fl
     rows, cols = rc
-    bw = (
-        p.bw_stick_scatter_intercept
-        - p.bw_stick_scatter_rows_coef * math.log2(max(2, rows))
-        - p.bw_stick_scatter_cols_coef * math.log2(max(2, cols))
-    )
-    return min(p.bw_peak_gbps, max(p.bw_stick_scatter_floor_gbps, bw))
+    if rows <= 0 or cols <= 0:
+        return fl
+    sp = max(1.0, cols / 64.0)
+    bw = a - b * math.log2(sp) - d * math.log2(max(2, rows))
+    return min(p.bw_peak_gbps, max(fl, bw))
 
 
 def _reduction_rows(o):
@@ -731,12 +846,17 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
 
     def _eff_bw(o):  # per-op effective-BW override, or None -> default turnaround
         pat = getattr(o, "hbm_pattern", "")
-        if pat == "stick_scatter":  # cat0: shape-dependent rate (falls with C)
-            return stick_scatter_bw(o, p)
+        if pat == "stick_scatter":  # cat0: strided stick-plane gather (tagged)
+            return transport_bw(o, p, "cat0")
         if pat in _pat_bw:  # restickify (transpose), reduce_outer (sumcol)
             return _pat_bw[pat]
         if _is_broadcast_op(o):
             return broadcast_bw(o, p)
+        kind = _transport_kind(
+            o
+        )  # cat1 / transpose_outer -- untagged, detected structurally
+        if kind:
+            return transport_bw(o, p, kind)
         return None
 
     if any(getattr(o, "is_matmul", False) for o in ops):
@@ -835,7 +955,9 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
                 long_fan, short_fan = o.matmul_m_split, o.matmul_n_split
             else:
                 long_fan, short_fan = o.matmul_n_split, o.matmul_m_split
-            area_exc = max(0.0, o.matmul_rows_per_core * o.matmul_cols_per_core - p.mm_split_area0)
+            area_exc = max(
+                0.0, o.matmul_rows_per_core * o.matmul_cols_per_core - p.mm_split_area0
+            )
             split_us = area_exc * (
                 p.mm_split_reread_us_per_elem
                 * max(0.0, math.log2(max(1, long_fan) / p.mm_split_long_knee))
@@ -946,12 +1068,19 @@ def explain(ops: list, params: CostParams | None = None) -> str:
         if getattr(o, "is_matmul", False) and o.cores > 0:
             m_dev = o.matmul_rows_per_core * o.matmul_m_split
             n_dev = o.matmul_cols_per_core * o.matmul_n_split
-            lf, sf = ((o.matmul_m_split, o.matmul_n_split) if m_dev >= n_dev
-                      else (o.matmul_n_split, o.matmul_m_split))
-            area_exc = max(0.0, o.matmul_rows_per_core * o.matmul_cols_per_core - p.mm_split_area0)
+            lf, sf = (
+                (o.matmul_m_split, o.matmul_n_split)
+                if m_dev >= n_dev
+                else (o.matmul_n_split, o.matmul_m_split)
+            )
+            area_exc = max(
+                0.0, o.matmul_rows_per_core * o.matmul_cols_per_core - p.mm_split_area0
+            )
             split_us += area_exc * (
-                p.mm_split_reread_us_per_elem * max(0.0, math.log2(max(1, lf) / p.mm_split_long_knee))
-                + p.mm_split_short_us_per_elem * max(0.0, math.log2(max(1, sf) / p.mm_split_short_knee))
+                p.mm_split_reread_us_per_elem
+                * max(0.0, math.log2(max(1, lf) / p.mm_split_long_knee))
+                + p.mm_split_short_us_per_elem
+                * max(0.0, math.log2(max(1, sf) / p.mm_split_short_knee))
             )
     if split_us > 0:
         lines.append(

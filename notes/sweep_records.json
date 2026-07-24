@@ -161,7 +161,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:36",
@@ -324,7 +324,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:53",
@@ -487,7 +487,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:70",
@@ -650,7 +650,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:87",
@@ -813,7 +813,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:104",
@@ -976,7 +976,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:121",
@@ -1139,7 +1139,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:138",
@@ -1302,7 +1302,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:155",
@@ -1465,7 +1465,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:172",
@@ -1628,7 +1628,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:189",
@@ -1791,7 +1791,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:206",
@@ -1954,7 +1954,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:223",
@@ -2117,7 +2117,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:240",
@@ -2280,7 +2280,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:257",
@@ -2443,7 +2443,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:274",
@@ -2606,7 +2606,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:291",
@@ -2769,7 +2769,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:308",
@@ -2932,7 +2932,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:325",
@@ -3095,7 +3095,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:342",
@@ -3258,7 +3258,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:360",
@@ -3421,7 +3421,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:377",
@@ -3584,7 +3584,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:394",
@@ -3747,7 +3747,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:411",
@@ -3910,7 +3910,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:428",
@@ -4073,7 +4073,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:445",
@@ -4236,7 +4236,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:462",
@@ -4399,7 +4399,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:479",
@@ -4562,7 +4562,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:496",
@@ -4725,7 +4725,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:513",
@@ -4888,7 +4888,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:530",
@@ -5051,7 +5051,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:547",
@@ -5214,7 +5214,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:564",
@@ -5377,7 +5377,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:581",
@@ -5540,7 +5540,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:598",
@@ -5703,7 +5703,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:615",
@@ -5866,7 +5866,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:632",
@@ -6029,7 +6029,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:649",
@@ -6192,7 +6192,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:666",
@@ -6355,7 +6355,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:683",
@@ -6518,7 +6518,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:701",
@@ -6681,7 +6681,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:718",
@@ -6844,7 +6844,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:735",
@@ -7007,7 +7007,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:752",
@@ -7170,7 +7170,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:769",
@@ -7333,7 +7333,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:786",
@@ -7496,7 +7496,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:803",
@@ -7659,7 +7659,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:820",
@@ -7822,7 +7822,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:837",
@@ -7985,7 +7985,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:854",
@@ -8148,7 +8148,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:871",
@@ -8311,7 +8311,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:888",
@@ -8474,7 +8474,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:905",
@@ -8637,7 +8637,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:922",
@@ -8800,7 +8800,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:939",
@@ -8963,7 +8963,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:956",
@@ -9126,7 +9126,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:973",
@@ -9289,7 +9289,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:990",
@@ -9452,7 +9452,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1007",
@@ -9615,7 +9615,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1024",
@@ -9778,7 +9778,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1042",
@@ -9937,7 +9937,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1059",
@@ -10096,7 +10096,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1076",
@@ -10255,7 +10255,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1093",
@@ -10414,7 +10414,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1110",
@@ -10573,7 +10573,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1127",
@@ -10732,7 +10732,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1144",
@@ -10891,7 +10891,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1161",
@@ -11050,7 +11050,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1178",
@@ -11209,7 +11209,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1195",
@@ -11368,7 +11368,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1212",
@@ -11527,7 +11527,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1229",
@@ -11686,7 +11686,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1246",
@@ -11845,7 +11845,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1263",
@@ -12004,7 +12004,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1280",
@@ -12163,7 +12163,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1297",
@@ -12322,7 +12322,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1314",
@@ -12481,7 +12481,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1331",
@@ -12640,7 +12640,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1348",
@@ -12799,7 +12799,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bcast_smallr_20260724_015428.log:1365",
@@ -12958,7 +12958,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "bmm_20260714_200003.log:20",
@@ -400598,6 +400598,5766 @@
         "lx_bytes": 0
       },
       "is_current": false
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:11",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 11,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,2048] m=1 (IR -> haoyang_logs/ir/transpose_outer_m1_2048x2048.txt)",
+      "op_it_space_splits": null,
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 0,
+      "kernel_us": 0.0,
+      "pred_us": 0.0,
+      "err_pct": 0.0,
+      "bw_gbps": 0.0,
+      "memset_us": 0.0,
+      "other_dev_us": 0.0,
+      "total_dev_us": 0.0,
+      "kernel_us_min": 0.0,
+      "kernel_us_median": 0.0,
+      "kernel_us_mean": 0.0,
+      "kernel_us_std": 0.0,
+      "kernel_us_cv": 0.0,
+      "reps": 0,
+      "failed": false,
+      "model": {},
+      "io": [],
+      "io_totals": {
+        "hbm_bytes": 0,
+        "lx_bytes": 0
+      },
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:27",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 27,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,2048] m=2 (IR -> haoyang_logs/ir/transpose_outer_m2_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 33554432,
+      "kernel_us": 479.142,
+      "pred_us": 319.997,
+      "err_pct": -33.2,
+      "bw_gbps": 70.0,
+      "memset_us": 248.606,
+      "other_dev_us": 978.841,
+      "total_dev_us": 1706.589,
+      "kernel_us_min": 477.074,
+      "kernel_us_median": 479.142,
+      "kernel_us_mean": 479.803,
+      "kernel_us_std": 2.05,
+      "kernel_us_cv": 0.43,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 16777216,
+        "W": 16777216,
+        "loop_trip": 1,
+        "base_us": 223.7,
+        "turn_us": 96.3,
+        "T_model_us": 320.0
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 2048, 2048]",
+              "device": "[2048, 32, 2, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 2, 2048]",
+              "device": "[2, 32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 33554432,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 8388608,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 8388608,
+              "broadcast": false,
+              "dims": [
+                2048,
+                32,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 8388608,
+              "broadcast": false,
+              "dims": [
+                2,
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                2,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:43",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 43,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,2048] m=4 (IR -> haoyang_logs/ir/transpose_outer_m4_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 816.695,
+      "pred_us": 639.995,
+      "err_pct": -21.6,
+      "bw_gbps": 82.2,
+      "memset_us": 420.011,
+      "other_dev_us": 2290.999,
+      "total_dev_us": 3527.705,
+      "kernel_us_min": 803.951,
+      "kernel_us_median": 816.695,
+      "kernel_us_mean": 815.58,
+      "kernel_us_std": 6.504,
+      "kernel_us_cv": 0.8,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 33554432,
+        "W": 33554432,
+        "loop_trip": 1,
+        "base_us": 447.39,
+        "turn_us": 192.6,
+        "T_model_us": 639.99
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4, 2048, 2048]",
+              "device": "[2048, 32, 4, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 4, 2048]",
+              "device": "[4, 32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 67108864,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 16777216,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 16777216,
+              "broadcast": false,
+              "dims": [
+                2048,
+                32,
+                4,
+                64
+              ],
+              "logical": [
+                4,
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 16777216,
+              "broadcast": false,
+              "dims": [
+                4,
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                4,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:59",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 59,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,2048] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 134217728,
+      "kernel_us": 1339.17,
+      "pred_us": 1279.99,
+      "err_pct": -4.4,
+      "bw_gbps": 100.2,
+      "memset_us": 1058.487,
+      "other_dev_us": 6050.41,
+      "total_dev_us": 8448.067,
+      "kernel_us_min": 1331.402,
+      "kernel_us_median": 1339.17,
+      "kernel_us_mean": 1338.851,
+      "kernel_us_std": 6.588,
+      "kernel_us_cv": 0.49,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 67108864,
+        "W": 67108864,
+        "loop_trip": 1,
+        "base_us": 894.78,
+        "turn_us": 385.2,
+        "T_model_us": 1279.99
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8, 2048, 2048]",
+              "device": "[2048, 32, 8, 64]",
+              "mem": "HBM",
+              "elems": 33554432,
+              "bytes": 67108864,
+              "hbm_counted": 67108864,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 8, 2048]",
+              "device": "[8, 32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 33554432,
+              "bytes": 67108864,
+              "hbm_counted": 67108864,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 134217728,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 33554432,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 33554432,
+              "broadcast": false,
+              "dims": [
+                2048,
+                32,
+                8,
+                64
+              ],
+              "logical": [
+                8,
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 33554432,
+              "broadcast": false,
+              "dims": [
+                8,
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                8,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:75",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 75,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,2048] m=16 (IR -> haoyang_logs/ir/transpose_outer_m16_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 268435456,
+      "kernel_us": 3207.032,
+      "pred_us": 2559.979,
+      "err_pct": -20.2,
+      "bw_gbps": 83.7,
+      "memset_us": 2274.697,
+      "other_dev_us": 17533.912,
+      "total_dev_us": 23015.641,
+      "kernel_us_min": 3185.904,
+      "kernel_us_median": 3207.032,
+      "kernel_us_mean": 3203.802,
+      "kernel_us_std": 15.174,
+      "kernel_us_cv": 0.47,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 134217728,
+        "W": 134217728,
+        "loop_trip": 1,
+        "base_us": 1789.57,
+        "turn_us": 770.41,
+        "T_model_us": 2559.98
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[16, 2048, 2048]",
+              "device": "[2048, 32, 16, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 16, 2048]",
+              "device": "[16, 32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 268435456,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 67108864,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                2048,
+                32,
+                16,
+                64
+              ],
+              "logical": [
+                16,
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                16,
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                16,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:91",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 91,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,2048] m=32 (IR -> haoyang_logs/ir/transpose_outer_m32_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 536870912,
+      "kernel_us": 6587.663,
+      "pred_us": 5119.959,
+      "err_pct": -22.3,
+      "bw_gbps": 81.5,
+      "memset_us": 4861.864,
+      "other_dev_us": 40396.222,
+      "total_dev_us": 51845.749,
+      "kernel_us_min": 6515.134,
+      "kernel_us_median": 6587.663,
+      "kernel_us_mean": 6576.551,
+      "kernel_us_std": 29.973,
+      "kernel_us_cv": 0.46,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 268435456,
+        "W": 268435456,
+        "loop_trip": 1,
+        "base_us": 3579.14,
+        "turn_us": 1540.82,
+        "T_model_us": 5119.96
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[32, 2048, 2048]",
+              "device": "[2048, 32, 32, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 32, 2048]",
+              "device": "[32, 32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 536870912,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 134217728,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": false,
+              "dims": [
+                2048,
+                32,
+                32,
+                64
+              ],
+              "logical": [
+                32,
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": false,
+              "dims": [
+                32,
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                32,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:107",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 107,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,2048] m=64 (IR -> haoyang_logs/ir/transpose_outer_m64_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 2,
+        "d1": 2,
+        "d2": 8
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 1073741824,
+      "kernel_us": 14997.008,
+      "pred_us": 10239.918,
+      "err_pct": -31.7,
+      "bw_gbps": 71.6,
+      "memset_us": 9952.285,
+      "other_dev_us": 87636.078,
+      "total_dev_us": 112585.371,
+      "kernel_us_min": 14875.209,
+      "kernel_us_median": 14997.008,
+      "kernel_us_mean": 15083.261,
+      "kernel_us_std": 203.389,
+      "kernel_us_cv": 1.35,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 536870912,
+        "W": 536870912,
+        "loop_trip": 1,
+        "base_us": 7158.28,
+        "turn_us": 3081.64,
+        "T_model_us": 10239.92
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[64, 2048, 2048]",
+              "device": "[2048, 32, 64, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 64, 2048]",
+              "device": "[64, 32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 1073741824,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 268435456,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                2048,
+                32,
+                64,
+                64
+              ],
+              "logical": [
+                64,
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                64,
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                64,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:114",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 114,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,8192] m=1 (IR -> haoyang_logs/ir/transpose_outer_m1_2048x8192.txt)",
+      "op_it_space_splits": null,
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 0,
+      "kernel_us": 0.0,
+      "pred_us": 0.0,
+      "err_pct": 0.0,
+      "bw_gbps": 0.0,
+      "memset_us": 0.0,
+      "other_dev_us": 0.0,
+      "total_dev_us": 0.0,
+      "kernel_us_min": 0.0,
+      "kernel_us_median": 0.0,
+      "kernel_us_mean": 0.0,
+      "kernel_us_std": 0.0,
+      "kernel_us_cv": 0.0,
+      "reps": 0,
+      "failed": false,
+      "model": {},
+      "io": [],
+      "io_totals": {
+        "hbm_bytes": 0,
+        "lx_bytes": 0
+      },
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:130",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 130,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,8192] m=2 (IR -> haoyang_logs/ir/transpose_outer_m2_2048x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 134217728,
+      "kernel_us": 2306.192,
+      "pred_us": 1279.99,
+      "err_pct": -44.5,
+      "bw_gbps": 58.2,
+      "memset_us": 1031.159,
+      "other_dev_us": 6518.782,
+      "total_dev_us": 9856.133,
+      "kernel_us_min": 2289.122,
+      "kernel_us_median": 2306.192,
+      "kernel_us_mean": 2307.249,
+      "kernel_us_std": 14.641,
+      "kernel_us_cv": 0.63,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 67108864,
+        "W": 67108864,
+        "loop_trip": 1,
+        "base_us": 894.78,
+        "turn_us": 385.2,
+        "T_model_us": 1279.99
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 2048, 8192]",
+              "device": "[2048, 128, 2, 64]",
+              "mem": "HBM",
+              "elems": 33554432,
+              "bytes": 67108864,
+              "hbm_counted": 67108864,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 2, 8192]",
+              "device": "[2, 128, 2048, 64]",
+              "mem": "HBM",
+              "elems": 33554432,
+              "bytes": 67108864,
+              "hbm_counted": 67108864,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 134217728,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 33554432,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 33554432,
+              "broadcast": false,
+              "dims": [
+                2048,
+                128,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                2048,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 33554432,
+              "broadcast": false,
+              "dims": [
+                2,
+                128,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                2,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:146",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 146,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,8192] m=4 (IR -> haoyang_logs/ir/transpose_outer_m4_2048x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 268435456,
+      "kernel_us": 4229.119,
+      "pred_us": 2559.979,
+      "err_pct": -39.5,
+      "bw_gbps": 63.5,
+      "memset_us": 2286.136,
+      "other_dev_us": 17361.341,
+      "total_dev_us": 23876.596,
+      "kernel_us_min": 4208.021,
+      "kernel_us_median": 4229.119,
+      "kernel_us_mean": 4227.865,
+      "kernel_us_std": 13.452,
+      "kernel_us_cv": 0.32,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 134217728,
+        "W": 134217728,
+        "loop_trip": 1,
+        "base_us": 1789.57,
+        "turn_us": 770.41,
+        "T_model_us": 2559.98
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4, 2048, 8192]",
+              "device": "[2048, 128, 4, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 4, 8192]",
+              "device": "[4, 128, 2048, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 268435456,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 67108864,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                2048,
+                128,
+                4,
+                64
+              ],
+              "logical": [
+                4,
+                2048,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                4,
+                128,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                4,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:162",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 162,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,8192] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_2048x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 536870912,
+      "kernel_us": 5995.433,
+      "pred_us": 5119.959,
+      "err_pct": -14.6,
+      "bw_gbps": 89.5,
+      "memset_us": 4832.241,
+      "other_dev_us": 40503.785,
+      "total_dev_us": 51331.459,
+      "kernel_us_min": 5949.125,
+      "kernel_us_median": 5995.433,
+      "kernel_us_mean": 6011.368,
+      "kernel_us_std": 51.411,
+      "kernel_us_cv": 0.86,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 268435456,
+        "W": 268435456,
+        "loop_trip": 1,
+        "base_us": 3579.14,
+        "turn_us": 1540.82,
+        "T_model_us": 5119.96
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8, 2048, 8192]",
+              "device": "[2048, 128, 8, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 8, 8192]",
+              "device": "[8, 128, 2048, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 536870912,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 134217728,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": false,
+              "dims": [
+                2048,
+                128,
+                8,
+                64
+              ],
+              "logical": [
+                8,
+                2048,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": false,
+              "dims": [
+                8,
+                128,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                8,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:178",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 178,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,8192] m=16 (IR -> haoyang_logs/ir/transpose_outer_m16_2048x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 2,
+        "d1": 2,
+        "d2": 8
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 1073741824,
+      "kernel_us": 13155.69,
+      "pred_us": 10239.918,
+      "err_pct": -22.2,
+      "bw_gbps": 81.6,
+      "memset_us": 9809.493,
+      "other_dev_us": 88984.216,
+      "total_dev_us": 111949.399,
+      "kernel_us_min": 13036.254,
+      "kernel_us_median": 13155.69,
+      "kernel_us_mean": 13195.185,
+      "kernel_us_std": 138.549,
+      "kernel_us_cv": 1.05,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 536870912,
+        "W": 536870912,
+        "loop_trip": 1,
+        "base_us": 7158.28,
+        "turn_us": 3081.64,
+        "T_model_us": 10239.92
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[16, 2048, 8192]",
+              "device": "[2048, 128, 16, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 16, 8192]",
+              "device": "[16, 128, 2048, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 1073741824,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 268435456,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                2048,
+                128,
+                16,
+                64
+              ],
+              "logical": [
+                16,
+                2048,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                16,
+                128,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                16,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:194",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 194,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [2048,8192] m=32 (IR -> haoyang_logs/ir/transpose_outer_m32_2048x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 4,
+        "d1": 4,
+        "d2": 2
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 2147483648,
+      "kernel_us": 28474.291,
+      "pred_us": 20479.836,
+      "err_pct": -28.1,
+      "bw_gbps": 75.4,
+      "memset_us": 19744.724,
+      "other_dev_us": 185429.984,
+      "total_dev_us": 233648.999,
+      "kernel_us_min": 28340.47,
+      "kernel_us_median": 28474.291,
+      "kernel_us_mean": 28560.618,
+      "kernel_us_std": 178.992,
+      "kernel_us_cv": 0.63,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 1073741824,
+        "W": 1073741824,
+        "loop_trip": 1,
+        "base_us": 14316.56,
+        "turn_us": 6163.28,
+        "T_model_us": 20479.84
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[32, 2048, 8192]",
+              "device": "[2048, 128, 32, 64]",
+              "mem": "HBM",
+              "elems": 536870912,
+              "bytes": 1073741824,
+              "hbm_counted": 1073741824,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 32, 8192]",
+              "device": "[32, 128, 2048, 64]",
+              "mem": "HBM",
+              "elems": 536870912,
+              "bytes": 1073741824,
+              "hbm_counted": 1073741824,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 2147483648,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 536870912,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 536870912,
+              "broadcast": false,
+              "dims": [
+                2048,
+                128,
+                32,
+                64
+              ],
+              "logical": [
+                32,
+                2048,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 536870912,
+              "broadcast": false,
+              "dims": [
+                32,
+                128,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                32,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:201",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 201,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [512,2048] m=1 (IR -> haoyang_logs/ir/transpose_outer_m1_512x2048.txt)",
+      "op_it_space_splits": null,
+      "op": "transpose_outer",
+      "rows": 512,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 0,
+      "kernel_us": 0.0,
+      "pred_us": 0.0,
+      "err_pct": 0.0,
+      "bw_gbps": 0.0,
+      "memset_us": 0.0,
+      "other_dev_us": 0.0,
+      "total_dev_us": 0.0,
+      "kernel_us_min": 0.0,
+      "kernel_us_median": 0.0,
+      "kernel_us_mean": 0.0,
+      "kernel_us_std": 0.0,
+      "kernel_us_cv": 0.0,
+      "reps": 0,
+      "failed": false,
+      "model": {},
+      "io": [],
+      "io_totals": {
+        "hbm_bytes": 0,
+        "lx_bytes": 0
+      },
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:217",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 217,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [512,2048] m=4 (IR -> haoyang_logs/ir/transpose_outer_m4_512x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 512,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 16777216,
+      "kernel_us": 211.955,
+      "pred_us": 159.999,
+      "err_pct": -24.5,
+      "bw_gbps": 79.2,
+      "memset_us": 154.028,
+      "other_dev_us": 561.538,
+      "total_dev_us": 927.521,
+      "kernel_us_min": 208.435,
+      "kernel_us_median": 211.955,
+      "kernel_us_mean": 211.378,
+      "kernel_us_std": 1.819,
+      "kernel_us_cv": 0.86,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 8388608,
+        "W": 8388608,
+        "loop_trip": 1,
+        "base_us": 111.85,
+        "turn_us": 48.15,
+        "T_model_us": 160.0
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4, 512, 2048]",
+              "device": "[512, 32, 4, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[512, 4, 2048]",
+              "device": "[4, 32, 512, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 16777216,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 4194304,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 4194304,
+              "broadcast": false,
+              "dims": [
+                512,
+                32,
+                4,
+                64
+              ],
+              "logical": [
+                4,
+                512,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 4194304,
+              "broadcast": false,
+              "dims": [
+                4,
+                32,
+                512,
+                64
+              ],
+              "logical": [
+                512,
+                4,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:233",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 233,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [512,2048] m=16 (IR -> haoyang_logs/ir/transpose_outer_m16_512x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 512,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 709.376,
+      "pred_us": 639.995,
+      "err_pct": -9.8,
+      "bw_gbps": 94.6,
+      "memset_us": 430.521,
+      "other_dev_us": 2228.923,
+      "total_dev_us": 3368.82,
+      "kernel_us_min": 706.59,
+      "kernel_us_median": 709.376,
+      "kernel_us_mean": 709.615,
+      "kernel_us_std": 1.768,
+      "kernel_us_cv": 0.25,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 33554432,
+        "W": 33554432,
+        "loop_trip": 1,
+        "base_us": 447.39,
+        "turn_us": 192.6,
+        "T_model_us": 639.99
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[16, 512, 2048]",
+              "device": "[512, 32, 16, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[512, 16, 2048]",
+              "device": "[16, 32, 512, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 67108864,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 16777216,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 16777216,
+              "broadcast": false,
+              "dims": [
+                512,
+                32,
+                16,
+                64
+              ],
+              "logical": [
+                16,
+                512,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 16777216,
+              "broadcast": false,
+              "dims": [
+                16,
+                32,
+                512,
+                64
+              ],
+              "logical": [
+                512,
+                16,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:249",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 249,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [512,2048] m=64 (IR -> haoyang_logs/ir/transpose_outer_m64_512x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 512,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 268435456,
+      "kernel_us": 2939.507,
+      "pred_us": 2559.979,
+      "err_pct": -12.9,
+      "bw_gbps": 91.3,
+      "memset_us": 2327.269,
+      "other_dev_us": 16424.63,
+      "total_dev_us": 21691.406,
+      "kernel_us_min": 2927.306,
+      "kernel_us_median": 2939.507,
+      "kernel_us_mean": 2940.386,
+      "kernel_us_std": 8.308,
+      "kernel_us_cv": 0.28,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 134217728,
+        "W": 134217728,
+        "loop_trip": 1,
+        "base_us": 1789.57,
+        "turn_us": 770.41,
+        "T_model_us": 2559.98
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[64, 512, 2048]",
+              "device": "[512, 32, 64, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[512, 64, 2048]",
+              "device": "[64, 32, 512, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 268435456,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 67108864,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                512,
+                32,
+                64,
+                64
+              ],
+              "logical": [
+                64,
+                512,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                64,
+                32,
+                512,
+                64
+              ],
+              "logical": [
+                512,
+                64,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:256",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 256,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [8192,2048] m=1 (IR -> haoyang_logs/ir/transpose_outer_m1_8192x2048.txt)",
+      "op_it_space_splits": null,
+      "op": "transpose_outer",
+      "rows": 8192,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 0,
+      "kernel_us": 0.0,
+      "pred_us": 0.0,
+      "err_pct": 0.0,
+      "bw_gbps": 0.0,
+      "memset_us": 0.0,
+      "other_dev_us": 0.0,
+      "total_dev_us": 0.0,
+      "kernel_us_min": 0.0,
+      "kernel_us_median": 0.0,
+      "kernel_us_mean": 0.0,
+      "kernel_us_std": 0.0,
+      "kernel_us_cv": 0.0,
+      "reps": 0,
+      "failed": false,
+      "model": {},
+      "io": [],
+      "io_totals": {
+        "hbm_bytes": 0,
+        "lx_bytes": 0
+      },
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:272",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 272,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [8192,2048] m=4 (IR -> haoyang_logs/ir/transpose_outer_m4_8192x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 8192,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 268435456,
+      "kernel_us": 3520.034,
+      "pred_us": 2559.979,
+      "err_pct": -27.3,
+      "bw_gbps": 76.3,
+      "memset_us": 2300.914,
+      "other_dev_us": 16817.343,
+      "total_dev_us": 22638.291,
+      "kernel_us_min": 3501.418,
+      "kernel_us_median": 3520.034,
+      "kernel_us_mean": 3529.867,
+      "kernel_us_std": 32.689,
+      "kernel_us_cv": 0.93,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 134217728,
+        "W": 134217728,
+        "loop_trip": 1,
+        "base_us": 1789.57,
+        "turn_us": 770.41,
+        "T_model_us": 2559.98
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[4, 8192, 2048]",
+              "device": "[8192, 32, 4, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[8192, 4, 2048]",
+              "device": "[4, 32, 8192, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 268435456,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 67108864,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                8192,
+                32,
+                4,
+                64
+              ],
+              "logical": [
+                4,
+                8192,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                4,
+                32,
+                8192,
+                64
+              ],
+              "logical": [
+                8192,
+                4,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:288",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 288,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [8192,2048] m=16 (IR -> haoyang_logs/ir/transpose_outer_m16_8192x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 2,
+        "d1": 2,
+        "d2": 8
+      },
+      "op": "transpose_outer",
+      "rows": 8192,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 1073741824,
+      "kernel_us": 12976.965,
+      "pred_us": 10239.918,
+      "err_pct": -21.1,
+      "bw_gbps": 82.7,
+      "memset_us": 9832.64,
+      "other_dev_us": 88821.815,
+      "total_dev_us": 111631.42,
+      "kernel_us_min": 12894.42,
+      "kernel_us_median": 12976.965,
+      "kernel_us_mean": 12983.601,
+      "kernel_us_std": 58.514,
+      "kernel_us_cv": 0.45,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 536870912,
+        "W": 536870912,
+        "loop_trip": 1,
+        "base_us": 7158.28,
+        "turn_us": 3081.64,
+        "T_model_us": 10239.92
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[16, 8192, 2048]",
+              "device": "[8192, 32, 16, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[8192, 16, 2048]",
+              "device": "[16, 32, 8192, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 1073741824,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 268435456,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                8192,
+                32,
+                16,
+                64
+              ],
+              "logical": [
+                16,
+                8192,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                16,
+                32,
+                8192,
+                64
+              ],
+              "logical": [
+                8192,
+                16,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:292",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 292,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "TOMID -- transpose_outer middle-dim M sweep at fixed (R,C)",
+      "label": "transpose_outer [8192,2048] m=64 (IR -> haoyang_logs/ir/transpose_outer_m64_8192x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 8,
+        "d1": 4,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 8192,
+      "cols": 2048,
+      "tiles": 0,
+      "lx": 0,
+      "reason": "InductorError:",
+      "failed": true,
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:310",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 310,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "SPSAT -- C up to 32768 (sp up to 512): is the effBW droop bottoming out?",
+      "label": "cat0 [2048,32768] (IR -> haoyang_logs/ir/cat0_2048x32768.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "cat0",
+      "rows": 2048,
+      "cols": 32768,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 402653184,
+      "kernel_us": 9143.019,
+      "pred_us": 11095.332,
+      "err_pct": 21.4,
+      "bw_gbps": 44.0,
+      "memset_us": 4817.853,
+      "other_dev_us": 41967.769,
+      "total_dev_us": 55928.641,
+      "kernel_us_min": 9059.0,
+      "kernel_us_median": 9143.019,
+      "kernel_us_mean": 9124.879,
+      "kernel_us_std": 44.73,
+      "kernel_us_cv": 0.49,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 134217728,
+        "W": 268435456,
+        "loop_trip": 1,
+        "base_us": 2684.35,
+        "turn_us": 770.41,
+        "T_model_us": 11095.33
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 2048, 32768]",
+              "device": "[2048, 512, 2, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 32768]",
+              "device": "[512, 2048, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 402653184,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 134217728,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": false,
+              "dims": [
+                2048,
+                512,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                2048,
+                32768
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": true,
+              "dims": [
+                512,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                32768
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "stick_scatter"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:326",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 326,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "SPSAT -- C up to 32768 (sp up to 512): is the effBW droop bottoming out?",
+      "label": "transpose_outer [2048,32768] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_2048x32768.txt)",
+      "op_it_space_splits": {
+        "d0": 4,
+        "d1": 4,
+        "d2": 2
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 32768,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 2147483648,
+      "kernel_us": 26106.058,
+      "pred_us": 20479.836,
+      "err_pct": -21.6,
+      "bw_gbps": 82.3,
+      "memset_us": 19866.015,
+      "other_dev_us": 184164.903,
+      "total_dev_us": 230136.976,
+      "kernel_us_min": 26009.047,
+      "kernel_us_median": 26106.058,
+      "kernel_us_mean": 26111.671,
+      "kernel_us_std": 74.553,
+      "kernel_us_cv": 0.29,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 1073741824,
+        "W": 1073741824,
+        "loop_trip": 1,
+        "base_us": 14316.56,
+        "turn_us": 6163.28,
+        "T_model_us": 20479.84
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8, 2048, 32768]",
+              "device": "[2048, 512, 8, 64]",
+              "mem": "HBM",
+              "elems": 536870912,
+              "bytes": 1073741824,
+              "hbm_counted": 1073741824,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 8, 32768]",
+              "device": "[8, 512, 2048, 64]",
+              "mem": "HBM",
+              "elems": 536870912,
+              "bytes": 1073741824,
+              "hbm_counted": 1073741824,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 2147483648,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 536870912,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 536870912,
+              "broadcast": false,
+              "dims": [
+                2048,
+                512,
+                8,
+                64
+              ],
+              "logical": [
+                8,
+                2048,
+                32768
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 536870912,
+              "broadcast": false,
+              "dims": [
+                8,
+                512,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                8,
+                32768
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:342",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 342,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "SPSAT -- C up to 32768 (sp up to 512): is the effBW droop bottoming out?",
+      "label": "cat1 [2048,32768] (IR -> haoyang_logs/ir/cat1_2048x32768.txt)",
+      "op_it_space_splits": {
+        "d0": 32,
+        "d1": 1,
+        "d2": 1
+      },
+      "op": "cat1",
+      "rows": 2048,
+      "cols": 32768,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 402653184,
+      "kernel_us": 3891.157,
+      "pred_us": 3454.789,
+      "err_pct": -11.2,
+      "bw_gbps": 103.5,
+      "memset_us": 4806.624,
+      "other_dev_us": 40968.504,
+      "total_dev_us": 49666.285,
+      "kernel_us_min": 3849.859,
+      "kernel_us_median": 3891.157,
+      "kernel_us_mean": 3881.937,
+      "kernel_us_std": 18.38,
+      "kernel_us_cv": 0.47,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 134217728,
+        "W": 268435456,
+        "loop_trip": 1,
+        "base_us": 2684.35,
+        "turn_us": 770.41,
+        "T_model_us": 3454.79
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2048, 2, 32768]",
+              "device": "[2, 512, 2048, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 32768]",
+              "device": "[512, 2048, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 402653184,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 134217728,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": false,
+              "dims": [
+                2,
+                512,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                2,
+                32768
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": true,
+              "dims": [
+                512,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                32768
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:358",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 358,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "SPSAT -- C up to 32768 (sp up to 512): is the effBW droop bottoming out?",
+      "label": "transpose [2048,32768] (IR -> haoyang_logs/ir/transpose_2048x32768.txt)",
+      "op_it_space_splits": {
+        "d0": 32,
+        "d1": 1
+      },
+      "op": "transpose",
+      "rows": 2048,
+      "cols": 32768,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 268435456,
+      "kernel_us": 2288.69,
+      "pred_us": 2314.099,
+      "err_pct": 1.1,
+      "bw_gbps": 117.3,
+      "memset_us": 2284.83,
+      "other_dev_us": 17182.388,
+      "total_dev_us": 21755.908,
+      "kernel_us_min": 2282.436,
+      "kernel_us_median": 2288.69,
+      "kernel_us_mean": 2288.122,
+      "kernel_us_std": 2.845,
+      "kernel_us_cv": 0.12,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 134217728,
+        "W": 134217728,
+        "loop_trip": 1,
+        "base_us": 1789.57,
+        "turn_us": 770.41,
+        "T_model_us": 2314.1
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[32768, 2048]",
+              "device": "[32, 32768, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 32768]",
+              "device": "[512, 2048, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 268435456,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 67108864,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                32,
+                32768,
+                64
+              ],
+              "logical": [
+                32768,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                512,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                32768
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "restickify"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:374",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 374,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "SPSAT -- C up to 32768 (sp up to 512): is the effBW droop bottoming out?",
+      "label": "cat0 [1024,32768] (IR -> haoyang_logs/ir/cat0_1024x32768.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "cat0",
+      "rows": 1024,
+      "cols": 32768,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 201326592,
+      "kernel_us": 4428.465,
+      "pred_us": 5547.666,
+      "err_pct": 25.3,
+      "bw_gbps": 45.5,
+      "memset_us": 2304.455,
+      "other_dev_us": 17295.877,
+      "total_dev_us": 24028.797,
+      "kernel_us_min": 4397.559,
+      "kernel_us_median": 4428.465,
+      "kernel_us_mean": 4427.786,
+      "kernel_us_std": 25.23,
+      "kernel_us_cv": 0.57,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 67108864,
+        "W": 134217728,
+        "loop_trip": 1,
+        "base_us": 1342.18,
+        "turn_us": 385.2,
+        "T_model_us": 5547.67
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 1024, 32768]",
+              "device": "[1024, 512, 2, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[1024, 32768]",
+              "device": "[512, 1024, 64]",
+              "mem": "HBM",
+              "elems": 33554432,
+              "bytes": 67108864,
+              "hbm_counted": 67108864,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 201326592,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 67108864,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                1024,
+                512,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                1024,
+                32768
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 33554432,
+              "broadcast": true,
+              "dims": [
+                512,
+                1024,
+                64
+              ],
+              "logical": [
+                1024,
+                32768
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "stick_scatter"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:390",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 390,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "SPSAT -- C up to 32768 (sp up to 512): is the effBW droop bottoming out?",
+      "label": "transpose_outer [1024,32768] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_1024x32768.txt)",
+      "op_it_space_splits": {
+        "d0": 2,
+        "d1": 2,
+        "d2": 8
+      },
+      "op": "transpose_outer",
+      "rows": 1024,
+      "cols": 32768,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 1073741824,
+      "kernel_us": 13386.325,
+      "pred_us": 10239.918,
+      "err_pct": -23.5,
+      "bw_gbps": 80.2,
+      "memset_us": 9952.444,
+      "other_dev_us": 88195.518,
+      "total_dev_us": 111534.287,
+      "kernel_us_min": 13309.186,
+      "kernel_us_median": 13386.325,
+      "kernel_us_mean": 13373.97,
+      "kernel_us_std": 40.062,
+      "kernel_us_cv": 0.3,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 536870912,
+        "W": 536870912,
+        "loop_trip": 1,
+        "base_us": 7158.28,
+        "turn_us": 3081.64,
+        "T_model_us": 10239.92
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8, 1024, 32768]",
+              "device": "[1024, 512, 8, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[1024, 8, 32768]",
+              "device": "[8, 512, 1024, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 1073741824,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 268435456,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                1024,
+                512,
+                8,
+                64
+              ],
+              "logical": [
+                8,
+                1024,
+                32768
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                8,
+                512,
+                1024,
+                64
+              ],
+              "logical": [
+                1024,
+                8,
+                32768
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:408",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 408,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "cat0 [256,2048] (IR -> haoyang_logs/ir/cat0_256x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "cat0",
+      "rows": 256,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 3145728,
+      "kernel_us": 40.54,
+      "pred_us": 37.229,
+      "err_pct": -8.2,
+      "bw_gbps": 77.6,
+      "memset_us": 86.766,
+      "other_dev_us": 322.058,
+      "total_dev_us": 449.364,
+      "kernel_us_min": 39.245,
+      "kernel_us_median": 40.54,
+      "kernel_us_mean": 40.382,
+      "kernel_us_std": 0.645,
+      "kernel_us_cv": 1.6,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 1048576,
+        "W": 2097152,
+        "loop_trip": 1,
+        "base_us": 20.97,
+        "turn_us": 6.02,
+        "T_model_us": 37.23
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 256, 2048]",
+              "device": "[256, 32, 2, 64]",
+              "mem": "HBM",
+              "elems": 1048576,
+              "bytes": 2097152,
+              "hbm_counted": 2097152,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[256, 2048]",
+              "device": "[32, 256, 64]",
+              "mem": "HBM",
+              "elems": 524288,
+              "bytes": 1048576,
+              "hbm_counted": 1048576,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 3145728,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 1048576,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 1048576,
+              "broadcast": false,
+              "dims": [
+                256,
+                32,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                256,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 524288,
+              "broadcast": true,
+              "dims": [
+                32,
+                256,
+                64
+              ],
+              "logical": [
+                256,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "stick_scatter"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:424",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 424,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "cat0 [32768,2048] (IR -> haoyang_logs/ir/cat0_32768x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "cat0",
+      "rows": 32768,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 402653184,
+      "kernel_us": 6734.691,
+      "pred_us": 7534.413,
+      "err_pct": 11.9,
+      "bw_gbps": 59.8,
+      "memset_us": 4844.945,
+      "other_dev_us": 40282.125,
+      "total_dev_us": 51861.761,
+      "kernel_us_min": 6661.13,
+      "kernel_us_median": 6734.691,
+      "kernel_us_mean": 6727.461,
+      "kernel_us_std": 53.313,
+      "kernel_us_cv": 0.79,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 134217728,
+        "W": 268435456,
+        "loop_trip": 1,
+        "base_us": 2684.35,
+        "turn_us": 770.41,
+        "T_model_us": 7534.41
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 32768, 2048]",
+              "device": "[32768, 32, 2, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[32768, 2048]",
+              "device": "[32, 32768, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 402653184,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 134217728,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": false,
+              "dims": [
+                32768,
+                32,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                32768,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": true,
+              "dims": [
+                32,
+                32768,
+                64
+              ],
+              "logical": [
+                32768,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "stick_scatter"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:440",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 440,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "transpose_outer [256,2048] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_256x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 256,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 16777216,
+      "kernel_us": 178.918,
+      "pred_us": 159.999,
+      "err_pct": -10.6,
+      "bw_gbps": 93.8,
+      "memset_us": 166.719,
+      "other_dev_us": 567.197,
+      "total_dev_us": 912.834,
+      "kernel_us_min": 177.585,
+      "kernel_us_median": 178.918,
+      "kernel_us_mean": 179.219,
+      "kernel_us_std": 1.833,
+      "kernel_us_cv": 1.02,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 8388608,
+        "W": 8388608,
+        "loop_trip": 1,
+        "base_us": 111.85,
+        "turn_us": 48.15,
+        "T_model_us": 160.0
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8, 256, 2048]",
+              "device": "[256, 32, 8, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[256, 8, 2048]",
+              "device": "[8, 32, 256, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 16777216,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 4194304,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 4194304,
+              "broadcast": false,
+              "dims": [
+                256,
+                32,
+                8,
+                64
+              ],
+              "logical": [
+                8,
+                256,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 4194304,
+              "broadcast": false,
+              "dims": [
+                8,
+                32,
+                256,
+                64
+              ],
+              "logical": [
+                256,
+                8,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:456",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 456,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "transpose_outer [32768,2048] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_32768x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 4,
+        "d1": 4,
+        "d2": 2
+      },
+      "op": "transpose_outer",
+      "rows": 32768,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 2147483648,
+      "kernel_us": 23973.698,
+      "pred_us": 20479.836,
+      "err_pct": -14.6,
+      "bw_gbps": 89.6,
+      "memset_us": 20146.824,
+      "other_dev_us": 182723.968,
+      "total_dev_us": 226844.49,
+      "kernel_us_min": 23874.5,
+      "kernel_us_median": 23973.698,
+      "kernel_us_mean": 23977.259,
+      "kernel_us_std": 81.579,
+      "kernel_us_cv": 0.34,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 1073741824,
+        "W": 1073741824,
+        "loop_trip": 1,
+        "base_us": 14316.56,
+        "turn_us": 6163.28,
+        "T_model_us": 20479.84
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8, 32768, 2048]",
+              "device": "[32768, 32, 8, 64]",
+              "mem": "HBM",
+              "elems": 536870912,
+              "bytes": 1073741824,
+              "hbm_counted": 1073741824,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[32768, 8, 2048]",
+              "device": "[8, 32, 32768, 64]",
+              "mem": "HBM",
+              "elems": 536870912,
+              "bytes": 1073741824,
+              "hbm_counted": 1073741824,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 2147483648,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 536870912,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 536870912,
+              "broadcast": false,
+              "dims": [
+                32768,
+                32,
+                8,
+                64
+              ],
+              "logical": [
+                8,
+                32768,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 536870912,
+              "broadcast": false,
+              "dims": [
+                8,
+                32,
+                32768,
+                64
+              ],
+              "logical": [
+                32768,
+                8,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:472",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 472,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "cat1 [256,2048] (IR -> haoyang_logs/ir/cat1_256x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 32,
+        "d1": 1,
+        "d2": 1
+      },
+      "op": "cat1",
+      "rows": 256,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 3145728,
+      "kernel_us": 37.932,
+      "pred_us": 26.99,
+      "err_pct": -28.8,
+      "bw_gbps": 82.9,
+      "memset_us": 93.87,
+      "other_dev_us": 382.128,
+      "total_dev_us": 513.93,
+      "kernel_us_min": 37.01,
+      "kernel_us_median": 37.932,
+      "kernel_us_mean": 37.927,
+      "kernel_us_std": 0.662,
+      "kernel_us_cv": 1.75,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 1048576,
+        "W": 2097152,
+        "loop_trip": 1,
+        "base_us": 20.97,
+        "turn_us": 6.02,
+        "T_model_us": 26.99
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[256, 2, 2048]",
+              "device": "[2, 32, 256, 64]",
+              "mem": "HBM",
+              "elems": 1048576,
+              "bytes": 2097152,
+              "hbm_counted": 2097152,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[256, 2048]",
+              "device": "[32, 256, 64]",
+              "mem": "HBM",
+              "elems": 524288,
+              "bytes": 1048576,
+              "hbm_counted": 1048576,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 3145728,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 1048576,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 1048576,
+              "broadcast": false,
+              "dims": [
+                2,
+                32,
+                256,
+                64
+              ],
+              "logical": [
+                256,
+                2,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 524288,
+              "broadcast": true,
+              "dims": [
+                32,
+                256,
+                64
+              ],
+              "logical": [
+                256,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:488",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 488,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "cat1 [32768,2048] (IR -> haoyang_logs/ir/cat1_32768x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 32,
+        "d1": 1,
+        "d2": 1
+      },
+      "op": "cat1",
+      "rows": 32768,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 402653184,
+      "kernel_us": 3881.017,
+      "pred_us": 3454.764,
+      "err_pct": -11.0,
+      "bw_gbps": 103.7,
+      "memset_us": 4879.115,
+      "other_dev_us": 40254.39,
+      "total_dev_us": 49014.522,
+      "kernel_us_min": 3857.268,
+      "kernel_us_median": 3881.017,
+      "kernel_us_mean": 3877.355,
+      "kernel_us_std": 13.721,
+      "kernel_us_cv": 0.35,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 134217728,
+        "W": 268435456,
+        "loop_trip": 1,
+        "base_us": 2684.35,
+        "turn_us": 770.41,
+        "T_model_us": 3454.76
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[32768, 2, 2048]",
+              "device": "[2, 32, 32768, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[32768, 2048]",
+              "device": "[32, 32768, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 402653184,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 134217728,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": false,
+              "dims": [
+                2,
+                32,
+                32768,
+                64
+              ],
+              "logical": [
+                32768,
+                2,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": true,
+              "dims": [
+                32,
+                32768,
+                64
+              ],
+              "logical": [
+                32768,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:504",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 504,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "cat0 [256,8192] (IR -> haoyang_logs/ir/cat0_256x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "cat0",
+      "rows": 256,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 12582912,
+      "kernel_us": 217.067,
+      "pred_us": 212.633,
+      "err_pct": -2.0,
+      "bw_gbps": 58.0,
+      "memset_us": 165.387,
+      "other_dev_us": 587.032,
+      "total_dev_us": 969.486,
+      "kernel_us_min": 214.267,
+      "kernel_us_median": 217.067,
+      "kernel_us_mean": 216.64,
+      "kernel_us_std": 1.471,
+      "kernel_us_cv": 0.68,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 4194304,
+        "W": 8388608,
+        "loop_trip": 1,
+        "base_us": 83.89,
+        "turn_us": 24.08,
+        "T_model_us": 212.63
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 256, 8192]",
+              "device": "[256, 128, 2, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[256, 8192]",
+              "device": "[128, 256, 64]",
+              "mem": "HBM",
+              "elems": 2097152,
+              "bytes": 4194304,
+              "hbm_counted": 4194304,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 12582912,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 4194304,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 4194304,
+              "broadcast": false,
+              "dims": [
+                256,
+                128,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                256,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 2097152,
+              "broadcast": true,
+              "dims": [
+                128,
+                256,
+                64
+              ],
+              "logical": [
+                256,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "stick_scatter"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:520",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 520,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "cat0 [1024,8192] (IR -> haoyang_logs/ir/cat0_1024x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "cat0",
+      "rows": 1024,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 50331648,
+      "kernel_us": 904.694,
+      "pred_us": 1003.022,
+      "err_pct": 10.9,
+      "bw_gbps": 55.6,
+      "memset_us": 432.15,
+      "other_dev_us": 2263.939,
+      "total_dev_us": 3600.783,
+      "kernel_us_min": 900.128,
+      "kernel_us_median": 904.694,
+      "kernel_us_mean": 905.403,
+      "kernel_us_std": 3.6,
+      "kernel_us_cv": 0.4,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 16777216,
+        "W": 33554432,
+        "loop_trip": 1,
+        "base_us": 335.54,
+        "turn_us": 96.3,
+        "T_model_us": 1003.02
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 1024, 8192]",
+              "device": "[1024, 128, 2, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[1024, 8192]",
+              "device": "[128, 1024, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 50331648,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 16777216,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 16777216,
+              "broadcast": false,
+              "dims": [
+                1024,
+                128,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                1024,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 8388608,
+              "broadcast": true,
+              "dims": [
+                128,
+                1024,
+                64
+              ],
+              "logical": [
+                1024,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "stick_scatter"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:536",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 536,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "cat0 [4096,8192] (IR -> haoyang_logs/ir/cat0_4096x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "cat0",
+      "rows": 4096,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 201326592,
+      "kernel_us": 4018.194,
+      "pred_us": 4892.123,
+      "err_pct": 21.7,
+      "bw_gbps": 50.1,
+      "memset_us": 2288.093,
+      "other_dev_us": 17616.117,
+      "total_dev_us": 23922.404,
+      "kernel_us_min": 4005.53,
+      "kernel_us_median": 4018.194,
+      "kernel_us_mean": 4031.658,
+      "kernel_us_std": 27.974,
+      "kernel_us_cv": 0.69,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 67108864,
+        "W": 134217728,
+        "loop_trip": 1,
+        "base_us": 1342.18,
+        "turn_us": 385.2,
+        "T_model_us": 4892.12
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 4096, 8192]",
+              "device": "[4096, 128, 2, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[4096, 8192]",
+              "device": "[128, 4096, 64]",
+              "mem": "HBM",
+              "elems": 33554432,
+              "bytes": 67108864,
+              "hbm_counted": 67108864,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 201326592,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 67108864,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                4096,
+                128,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                4096,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 33554432,
+              "broadcast": true,
+              "dims": [
+                128,
+                4096,
+                64
+              ],
+              "logical": [
+                4096,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "stick_scatter"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:552",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 552,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "cat0 [16384,8192] (IR -> haoyang_logs/ir/cat0_16384x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 2,
+        "d2": 16
+      },
+      "op": "cat0",
+      "rows": 16384,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 805306368,
+      "kernel_us": 17466.944,
+      "pred_us": 22190.664,
+      "err_pct": 27.0,
+      "bw_gbps": 46.1,
+      "memset_us": 9969.685,
+      "other_dev_us": 89206.014,
+      "total_dev_us": 116642.643,
+      "kernel_us_min": 17397.241,
+      "kernel_us_median": 17466.944,
+      "kernel_us_mean": 17480.213,
+      "kernel_us_std": 61.142,
+      "kernel_us_cv": 0.35,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 268435456,
+        "W": 536870912,
+        "loop_trip": 1,
+        "base_us": 5368.71,
+        "turn_us": 1540.82,
+        "T_model_us": 22190.66
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 16384, 8192]",
+              "device": "[16384, 128, 2, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[16384, 8192]",
+              "device": "[128, 16384, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 805306368,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 268435456,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                16384,
+                128,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                16384,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": true,
+              "dims": [
+                128,
+                16384,
+                64
+              ],
+              "logical": [
+                16384,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "stick_scatter"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:568",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 568,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "transpose_outer [256,8192] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_256x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 256,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 881.719,
+      "pred_us": 639.995,
+      "err_pct": -27.4,
+      "bw_gbps": 76.1,
+      "memset_us": 433.656,
+      "other_dev_us": 2227.378,
+      "total_dev_us": 3542.753,
+      "kernel_us_min": 877.993,
+      "kernel_us_median": 881.719,
+      "kernel_us_mean": 883.643,
+      "kernel_us_std": 4.122,
+      "kernel_us_cv": 0.47,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 33554432,
+        "W": 33554432,
+        "loop_trip": 1,
+        "base_us": 447.39,
+        "turn_us": 192.6,
+        "T_model_us": 639.99
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8, 256, 8192]",
+              "device": "[256, 128, 8, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[256, 8, 8192]",
+              "device": "[8, 128, 256, 64]",
+              "mem": "HBM",
+              "elems": 16777216,
+              "bytes": 33554432,
+              "hbm_counted": 33554432,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 67108864,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 16777216,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 16777216,
+              "broadcast": false,
+              "dims": [
+                256,
+                128,
+                8,
+                64
+              ],
+              "logical": [
+                8,
+                256,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 16777216,
+              "broadcast": false,
+              "dims": [
+                8,
+                128,
+                256,
+                64
+              ],
+              "logical": [
+                256,
+                8,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:584",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 584,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "transpose_outer [1024,8192] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_1024x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 1024,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 268435456,
+      "kernel_us": 2911.522,
+      "pred_us": 2559.979,
+      "err_pct": -12.1,
+      "bw_gbps": 92.2,
+      "memset_us": 2294.973,
+      "other_dev_us": 16977.566,
+      "total_dev_us": 22184.061,
+      "kernel_us_min": 2890.78,
+      "kernel_us_median": 2911.522,
+      "kernel_us_mean": 2911.153,
+      "kernel_us_std": 12.306,
+      "kernel_us_cv": 0.42,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 134217728,
+        "W": 134217728,
+        "loop_trip": 1,
+        "base_us": 1789.57,
+        "turn_us": 770.41,
+        "T_model_us": 2559.98
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8, 1024, 8192]",
+              "device": "[1024, 128, 8, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[1024, 8, 8192]",
+              "device": "[8, 128, 1024, 64]",
+              "mem": "HBM",
+              "elems": 67108864,
+              "bytes": 134217728,
+              "hbm_counted": 134217728,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 268435456,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 67108864,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                1024,
+                128,
+                8,
+                64
+              ],
+              "logical": [
+                8,
+                1024,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 67108864,
+              "broadcast": false,
+              "dims": [
+                8,
+                128,
+                1024,
+                64
+              ],
+              "logical": [
+                1024,
+                8,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:600",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 600,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "transpose_outer [4096,8192] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_4096x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 2,
+        "d1": 2,
+        "d2": 8
+      },
+      "op": "transpose_outer",
+      "rows": 4096,
+      "cols": 8192,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 1073741824,
+      "kernel_us": 11948.203,
+      "pred_us": 10239.918,
+      "err_pct": -14.3,
+      "bw_gbps": 89.9,
+      "memset_us": 9912.782,
+      "other_dev_us": 88771.712,
+      "total_dev_us": 110632.697,
+      "kernel_us_min": 11872.565,
+      "kernel_us_median": 11948.203,
+      "kernel_us_mean": 11947.26,
+      "kernel_us_std": 34.694,
+      "kernel_us_cv": 0.29,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 536870912,
+        "W": 536870912,
+        "loop_trip": 1,
+        "base_us": 7158.28,
+        "turn_us": 3081.64,
+        "T_model_us": 10239.92
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8, 4096, 8192]",
+              "device": "[4096, 128, 8, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[4096, 8, 8192]",
+              "device": "[8, 128, 4096, 64]",
+              "mem": "HBM",
+              "elems": 268435456,
+              "bytes": 536870912,
+              "hbm_counted": 536870912,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 1073741824,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 268435456,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                4096,
+                128,
+                8,
+                64
+              ],
+              "logical": [
+                8,
+                4096,
+                8192
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 268435456,
+              "broadcast": false,
+              "dims": [
+                8,
+                128,
+                4096,
+                64
+              ],
+              "logical": [
+                4096,
+                8,
+                8192
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:604",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 604,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "RSHAPE -- R to 256 and 32768 at fixed sp -> why are both ends slow?",
+      "label": "transpose_outer [16384,8192] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_16384x8192.txt)",
+      "op_it_space_splits": {
+        "d0": 8,
+        "d1": 4,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 16384,
+      "cols": 8192,
+      "tiles": 0,
+      "lx": 0,
+      "reason": "InductorError:",
+      "failed": true,
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:622",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 622,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "XIR -- IR capture: access pattern of each transport op (see haoyang_logs/ir/)",
+      "label": "transpose [2048,2048] (IR -> haoyang_logs/ir/transpose_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 32,
+        "d1": 1
+      },
+      "op": "transpose",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 16777216,
+      "kernel_us": 146.155,
+      "pred_us": 144.631,
+      "err_pct": -1.0,
+      "bw_gbps": 114.8,
+      "memset_us": 162.245,
+      "other_dev_us": 569.587,
+      "total_dev_us": 877.987,
+      "kernel_us_min": 144.913,
+      "kernel_us_median": 146.155,
+      "kernel_us_mean": 146.228,
+      "kernel_us_std": 0.823,
+      "kernel_us_cv": 0.56,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 8388608,
+        "W": 8388608,
+        "loop_trip": 1,
+        "base_us": 111.85,
+        "turn_us": 48.15,
+        "T_model_us": 144.63
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 16777216,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 4194304,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 4194304,
+              "broadcast": false,
+              "dims": [
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 4194304,
+              "broadcast": false,
+              "dims": [
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "restickify"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:638",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 638,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "XIR -- IR capture: access pattern of each transport op (see haoyang_logs/ir/)",
+      "label": "cat0 [2048,2048] (IR -> haoyang_logs/ir/cat0_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "cat0",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 25165824,
+      "kernel_us": 396.281,
+      "pred_us": 349.542,
+      "err_pct": -11.8,
+      "bw_gbps": 63.5,
+      "memset_us": 247.464,
+      "other_dev_us": 967.916,
+      "total_dev_us": 1611.661,
+      "kernel_us_min": 392.551,
+      "kernel_us_median": 396.281,
+      "kernel_us_mean": 395.629,
+      "kernel_us_std": 1.912,
+      "kernel_us_cv": 0.48,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 8388608,
+        "W": 16777216,
+        "loop_trip": 1,
+        "base_us": 167.77,
+        "turn_us": 48.15,
+        "T_model_us": 349.54
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2, 2048, 2048]",
+              "device": "[2048, 32, 2, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 25165824,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 8388608,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 8388608,
+              "broadcast": false,
+              "dims": [
+                2048,
+                32,
+                2,
+                64
+              ],
+              "logical": [
+                2,
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 4194304,
+              "broadcast": true,
+              "dims": [
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": "stick_scatter"
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:654",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 654,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "XIR -- IR capture: access pattern of each transport op (see haoyang_logs/ir/)",
+      "label": "cat1 [2048,2048] (IR -> haoyang_logs/ir/cat1_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 32,
+        "d1": 1,
+        "d2": 1
+      },
+      "op": "cat1",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 25165824,
+      "kernel_us": 233.16,
+      "pred_us": 215.923,
+      "err_pct": -7.4,
+      "bw_gbps": 107.9,
+      "memset_us": 256.695,
+      "other_dev_us": 981.509,
+      "total_dev_us": 1471.364,
+      "kernel_us_min": 230.93,
+      "kernel_us_median": 233.16,
+      "kernel_us_mean": 232.88,
+      "kernel_us_std": 1.507,
+      "kernel_us_cv": 0.65,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 8388608,
+        "W": 16777216,
+        "loop_trip": 1,
+        "base_us": 167.77,
+        "turn_us": 48.15,
+        "T_model_us": 215.92
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[2048, 2, 2048]",
+              "device": "[2, 32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 8388608,
+              "bytes": 16777216,
+              "hbm_counted": 16777216,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 2048]",
+              "device": "[32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 4194304,
+              "bytes": 8388608,
+              "hbm_counted": 8388608,
+              "flags": "broadcast (loaded once)"
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 25165824,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 8388608,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 8388608,
+              "broadcast": false,
+              "dims": [
+                2,
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                2,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 4194304,
+              "broadcast": true,
+              "dims": [
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:670",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 670,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "XIR -- IR capture: access pattern of each transport op (see haoyang_logs/ir/)",
+      "label": "transpose_outer [2048,2048] m=8 (IR -> haoyang_logs/ir/transpose_outer_m8_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 134217728,
+      "kernel_us": 1338.021,
+      "pred_us": 1279.99,
+      "err_pct": -4.3,
+      "bw_gbps": 100.3,
+      "memset_us": 1044.29,
+      "other_dev_us": 6190.099,
+      "total_dev_us": 8572.41,
+      "kernel_us_min": 1324.963,
+      "kernel_us_median": 1338.021,
+      "kernel_us_mean": 1335.556,
+      "kernel_us_std": 7.814,
+      "kernel_us_cv": 0.59,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 67108864,
+        "W": 67108864,
+        "loop_trip": 1,
+        "base_us": 894.78,
+        "turn_us": 385.2,
+        "T_model_us": 1279.99
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[8, 2048, 2048]",
+              "device": "[2048, 32, 8, 64]",
+              "mem": "HBM",
+              "elems": 33554432,
+              "bytes": 67108864,
+              "hbm_counted": 67108864,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 8, 2048]",
+              "device": "[8, 32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 33554432,
+              "bytes": 67108864,
+              "hbm_counted": 67108864,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 134217728,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 33554432,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 33554432,
+              "broadcast": false,
+              "dims": [
+                2048,
+                32,
+                8,
+                64
+              ],
+              "logical": [
+                8,
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 33554432,
+              "broadcast": false,
+              "dims": [
+                8,
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                8,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
+    },
+    {
+      "id": "transport_iso_20260724_041855.log:686",
+      "log_file": "transport_iso_20260724_041855.log",
+      "lineno": 686,
+      "model_sha": "127851f",
+      "log_date": "20260724_041855",
+      "section": "XIR -- IR capture: access pattern of each transport op (see haoyang_logs/ir/)",
+      "label": "transpose_outer [2048,2048] m=32 (IR -> haoyang_logs/ir/transpose_outer_m32_2048x2048.txt)",
+      "op_it_space_splits": {
+        "d0": 1,
+        "d1": 32,
+        "d2": 1
+      },
+      "op": "transpose_outer",
+      "rows": 2048,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 0,
+      "lx": 0,
+      "io_hbm_bytes": 536870912,
+      "kernel_us": 6590.041,
+      "pred_us": 5119.959,
+      "err_pct": -22.3,
+      "bw_gbps": 81.5,
+      "memset_us": 4793.201,
+      "other_dev_us": 40875.671,
+      "total_dev_us": 52258.913,
+      "kernel_us_min": 6499.485,
+      "kernel_us_median": 6590.041,
+      "kernel_us_mean": 6582.052,
+      "kernel_us_std": 48.02,
+      "kernel_us_cv": 0.73,
+      "reps": 7,
+      "failed": false,
+      "model": {
+        "R": 268435456,
+        "W": 268435456,
+        "loop_trip": 1,
+        "base_us": 3579.14,
+        "turn_us": 1540.82,
+        "T_model_us": 5119.96
+      },
+      "io": [
+        {
+          "op": "clone",
+          "kind": null,
+          "tensors": [
+            {
+              "role": "output",
+              "name": "op0",
+              "logical": "[32, 2048, 2048]",
+              "device": "[2048, 32, 32, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": ""
+            },
+            {
+              "role": "input",
+              "name": "arg0_1",
+              "logical": "[2048, 32, 2048]",
+              "device": "[32, 32, 2048, 64]",
+              "mem": "HBM",
+              "elems": 134217728,
+              "bytes": 268435456,
+              "hbm_counted": 268435456,
+              "flags": ""
+            }
+          ]
+        }
+      ],
+      "io_totals": {
+        "hbm_bytes": 536870912,
+        "lx_bytes": 0
+      },
+      "feats": [
+        {
+          "name": "clone",
+          "is_reduction": false,
+          "out_elems": 134217728,
+          "cores": 32,
+          "dtype_bytes": 2,
+          "args": [
+            {
+              "name": "op0",
+              "role": "output",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": false,
+              "dims": [
+                2048,
+                32,
+                32,
+                64
+              ],
+              "logical": [
+                32,
+                2048,
+                2048
+              ],
+              "loop_factor": 1
+            },
+            {
+              "name": "arg0_1",
+              "role": "input",
+              "mem": "hbm",
+              "elems": 134217728,
+              "broadcast": false,
+              "dims": [
+                32,
+                32,
+                2048,
+                64
+              ],
+              "logical": [
+                2048,
+                32,
+                2048
+              ],
+              "loop_factor": 1
+            }
+          ],
+          "reduction_cores": 1,
+          "loop_trip": 1,
+          "tiles_output_dim": false,
+          "tile_rows_per_core": 0.0,
+          "is_matmul": false,
+          "matmul_macs": 0,
+          "matmul_rows_per_core": 0.0,
+          "matmul_cols_per_core": 0.0,
+          "matmul_a_bytes": 0,
+          "matmul_b_bytes": 0,
+          "matmul_m_split": 1,
+          "matmul_n_split": 1,
+          "hbm_pattern": ""
+        }
+      ],
+      "is_current": true
     },
     {
       "id": "transport_shape_20260710_154703.log:17",

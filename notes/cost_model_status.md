@@ -19,6 +19,179 @@ mechanistically and noise-controlled** (standing directive, see memory `outlier-
 detailed plan `~/.claude/plans/shimmering-percolating-rivest.md`). Ignore tiny matmuls and
 1×32/32×1 extremes.
 
+### 🤖 AUTONOMOUS RUN IN PROGRESS (2026-07-24, session 2) — cats 3→6 then flash-attn
+
+Running unattended (~4h). A 5-min heartbeat cron re-invokes and reads THIS section to continue.
+Discipline (MUST): mechanism-based modeling; **adversarially review EVERY claim with a Workflow of
+challenger agents before acting** (user mandate, repeated); design isolation sweeps + hand off if
+data is thin (don't wait); dump lower-level IR locally if mechanism unclear; goal <10%/point; never
+commit/git; regenerate figure + full end-of-section table after any model change; keep report+status
+consistent. Analysis scripts: `notes/analyze_matmul_overlap.py` (cat3), `notes/analyze_bmm_layout.py`
+(cat4). **Findings below are UNDER REVIEW / not yet verified until their challenge workflow passes.**
+
+- **Cat 3 (matmul compute/HBM OVERLAP) — RE-SCOPED BY USER (2026-07-24):** the real ask is NOT the
+  cores drift and NOT finding another γ-form. **A scalar γ is naive and wrong; the §10 figure shows
+  many outliers.** The overlap of HBM-I/O and compute depends on the actual WORKFLOW / ACCESS PATTERN
+  (tile structure, how M/N/K and the split m/n/k map to systolic-array passes + operand loads), which
+  is currently not understood. **DO NOT brute-force a γ(cores)/γ(shape) form.** Instead: (1) dump the
+  LOWER-LEVEL IR (Opexec / fused-kernel / scheduled-kernel) for matmuls of varied shape+split LOCALLY
+  (no HW — see the user's directive + `notes/compiler_pipeline_deep_dive.md`) and read HOW compute and
+  loads are scheduled/interleaved (double-buffering? pipeline depth? per-tile fill/drain?); (2) read
+  the COMPILER's own work-division cost model (`work_division.py`, `_COHORT_LIMIT`) — does it already
+  estimate overlap? what drives it?; (3) only then model the overlap mechanistically, WITH evidence;
+  if a γ-like form is used, it must have supporting evidence, not just a fit. If data/IR is
+  insufficient, design isolation experiments + write the sweep. This SUPERSEDES the "no clean win"
+  conclusion below (which only tested γ-forms, the wrong approach).
+
+  **★ MECHANISM FOUND (2026-07-24, measured-data-validated) — the cat-3 answer:**
+  The overlap IS **compute-bounded double-buffering**: DeepTools streams the next operand tile from
+  LPDDR5→LX while the PT array runs the current tile, so HBM hides UNDER compute but only up to a
+  fixed fraction γ of the compute duration. The correct FORM is **`T = compute + mem − min(mem,
+  γ·compute)`** (NOT `γ·min(compute,mem)`). Two measured facts make it work:
+  (1) **The true sustained peak is ~1046 MAC/ns/core, not 1140** (tight: median 1041, stdev 16, n=37
+  across 3 sweep sections; datasheet 1536). The shipped 1140 over-states compute ~9%, and the constant
+  γ=0.46 was silently correcting that error AND modeling overlap — **"double duty"**, which is exactly
+  why a constant γ looked wrong / access-pattern-dependent (the user's intuition was RIGHT about the
+  symptom; the cause is the peak error + the wrong form, not a γ that varies).
+  (2) With peak=1046 and the `min(mem, γ·compute)` form, the EFFECTIVE overlap correctly varies with
+  the compute/mem balance (access-pattern-dependent) while the UNDERLYING γ is a clean constant ≈0.55
+  (the double-buffer window fraction, fit on clean balanced data). Validated on measured balanced
+  matmul: **RMS 9.2→8.3%, and the low cores are FIXED (c1 err 7→1, c2 3→1, c4 5→2%)** — the corrected
+  peak removes the confound. Spill stays IN the overlappable mem (data REFUTES the "spill is serial"
+  guess). Remaining errors are high-core = the §11 SPILL over-charge (separate).
+  **IMPLEMENTATION = a coordinated Part III rework (NOT a one-line change):** peak→1046, γ→~0.55, form→
+  double-buffering ENTANGLES with §11 (spill) and §12 (split), which were globally fit at γ=0.46+peak
+  1140 — at γ=0.55 they must be re-fit (else matmul_split 14.6→15.3, matmul_row 24→28 regress), and the
+  bmm/coarse categories lose the accidental γ-masking so they show their TRUE errors (which is HONEST —
+  they need the cat-4 layout rate + cat-6 coarse terms). So the overlap fix is the FOUNDATION for cats
+  4+6, done together as a Part III re-derivation. Report §10 stays γ=0.46 until the package ships (keep
+  code↔report in sync).
+
+  **★★ NOISE-AWARE VERDICT (2026-07-24, adversarial challenge DONE + self-verified):** the overlap
+  is **~CONSTANT (γ≈0.55–0.61)** on clean data — the "γ varies with access pattern" appearance is
+  MEASUREMENT NOISE, not signal. Verified: within-config γ_eff swing = **0.43 mean** across genuine
+  repeats (some configs ±2.6 when a measurement is contended) vs the claimed aspect effect of only
+  0.15; and corr(tile_aspect, γ_eff) **collapses +0.91→+0.05** when restricted to repeat-backed
+  (n≥2, MIN-meas) configs — the trend lived entirely in noisy single un-repeated points (several with
+  CV up to 41%). So NO access-pattern driver beats a constant γ by >~0.7pt held-out (bar was 2pt).
+  **The §10 misses are the SPILL term** — it is symmetric `min(1.5, 0.45·log₂(area/area0))·(|A|+|B|)`,
+  which OVER-charges tall-operand thin-N shapes and UNDER-charges wide-N thin-K shapes (the
+  bidirectional residual) — plus the low-core rate. **Shippable cat-3 model (clean non-batched
+  matmul): peak 1046 + double-buffering `min(mem,γ·compute)` + constant γ≈0.61 + an OPERAND-AWARE
+  (asymmetric) spill re-fit → RMS 10.3→7.68%.** Still entangled with §12 (split) + bmm (cat 4) for the
+  full category. The forced-core sweep (with the 7-rep noise protocol) gives clean γ_eff to CONFIRM
+  constancy definitively — that is why it is the decisive experiment. (This process is a model case of
+  the review working: sub-challengers "found" a variable-γ trend; the noise-weighting lead reviewer +
+  my own check showed it was noise. Do not over-trust a trend built on un-repeated points.)
+
+  **★★★ VALIDATED cat-3 MODEL FORM (2026-07-24) — the implementation spec:**
+  `T = compute + read + write + turn − min(read, γ·compute)`, where `compute = MACs/cores/(mac_peak·
+  pt_eff)` with **mac_peak = 1046** (was 1140); `read = (operand_bytes + spill)/mm_bw_read` (reads
+  double-buffer under compute); `write = output_bytes/mm_bw_write` (output stores are post-compute →
+  SERIAL, NOT hidden); `turn = rw_turnaround·min(r,w)`; **γ ≈ 0.61** (double-buffer window fraction —
+  overlap hides READS only, up to γ·compute); **spill = 2·min(|A|,|B|)·f(area)** (OPERAND-AWARE: re-read
+  bounded by the SMALLER operand; the old symmetric `(|A|+|B|)·f` over-charged tall-operand/thin-N and
+  under-charged wide-N — the bidirectional §10 residual). Measured on clean non-batched matmul with
+  all pieces together: **RMS 9.2 → 6.2%** (c32 outliers 12→9%). Each piece only works WITH the others
+  (2·min spill HURTS under the old γ·min form but HELPS under read-overlap) — hence a JOINT re-fit.
+  Non-matmul unaffected (compute=0 → min(read,0)=0). **Blast radius:** shipping this regresses bmm
+  (needs cat-4 layout rate) and coarse (needs cat-6) because old γ=0.46+peak1140 masked their true
+  errors — so it ships as ONE coordinated Part III change WITH cats 4+6, coefficients FINALIZED on the
+  clean forced-core sweep. Code: separate read/write at predict_ops line 972 + peak + γ + spill formula.
+
+  **DEEP INVESTIGATION RESULT (2026-07-24, measured-data-first):**
+  (i) The compute/HBM overlap is realized by the PROPRIETARY DeepTools backend (`dxp_standalone`)
+  from a static SuperDSC JSON — it is NOT in any dumpable torch-spyre IR (`docs/source/compiler/
+  backend.md`). So the overlap CANNOT be read from IR; it must be modeled from MEASURED DATA using
+  the front-end-controlled access-pattern drivers (per-core tile M/m×N/n, K, arithmetic intensity).
+  (ii) MEASURED `γ_eff=(compute+mem−meas)/min(compute,mem)`, clean cores≥4: **0.58±0.17 overall, but
+  0.61±0.086 for NON-SPILLING tiles (area≤65536) vs 0.58±0.18 for spilling.** i.e. the overlap looks
+  ~CONSTANT (~0.6) once the §11 spill-term error is removed — the apparent "γ varies with access
+  pattern" is largely the spill term leaking into γ_eff. No per-core-tile access-pattern variable
+  correlates strongly with γ_eff (best: aspect +0.30; AI −0.22). **Working hypothesis (UNDER
+  ADVERSARIAL REVIEW, cuts against the initial prior): the overlap is ~constant (~0.6); the §10
+  outliers are the §11 SPILL term + the low-core mac_peak, NOT a non-constant overlap.** If the review
+  confirms, the fix is a JOINT re-fit of γ(~0.6)+spill (entangled; §11). The DECISIVE experiment is
+  the forced-core sweep `docs/source/user_guide/examples/run_matmul_overlap_iso_sweep.sh` (WRITTEN,
+  dry-run OK, 54 runs: cores {1,2,4,8,16,32} balanced across K/M·N + split-shape + batched) — 1 core =
+  NO split isolates the overlap from spill/split. Prior γ-form analysis (kept for reference, NEGATIVE):
+
+- **Cat 3 (matmul γ) — PRIOR γ-FORM ANALYSIS (superseded, kept for reference):** ✅ **ANALYZED — no safe model change (reviewed + blast-tested).** The
+  challenge workflow + my own blast-radius test settled it. Findings (VERIFIED): (a) no γ(cores) law
+  helps (free b≈0); (b) the fill/drain `fd=c·min` is algebraically identical to a constant γ — my
+  "fd fails" claim was refuted, but (c) my "clean win = raise γ to 0.58" was ALSO wrong: γ=0.58 helps
+  ONLY the balanced-pure-mm slice (clean RMS 9.2→7.7% after dropping the contaminated shape
+  4096×2048×4096, whose c4=8045→c8=8255µs is physically impossible) and **REGRESSES** matmul_split/
+  _row/_k/bmm (blast test: matmul_split mean −0.3→−5.0). So γ=0.46 is an entangled compromise — DO NOT
+  change it. (d) The low-core drift is <10% (not an outlier): cores=1 implied mac_peak≈1046 vs model
+  1140 (~8% high, n=11, tight) — a real but sub-threshold isolated derate, deferred. (e) The genuine
+  ≥10% outliers are cores=32 SPILL over-charge on tall-operand shapes (8192×2048×1024 +35%→+3% w/o
+  spill; 4 of 6 c32 outliers). **Real cat-3 issue = the §11 spill term over-charges when |A| or |B|
+  is large** (re-reads the full operand). I ATTEMPTED the fix — 5 candidate spill forms (2·min(|A|,|B|)·f,
+  0.5·(|A|+|B|)·f, per-core-tile, 2·√(|A||B|)·f geometric, current). **None cleanly beats current**:
+  2·min lowers RMS but raises the >10% count 10→15/43; geometric is ~1pt better RMS at the same 10/43.
+  The residual is BIDIRECTIONAL — over-charge on imbalanced M≫N, UNDER-charge on thin-K (a flagged
+  regime) — so no single reweighting fixes both; not worth a §11 rework + regression risk for ~1pt on a
+  lower-priority term. **Cat-3 = genuine hard residual, no clean win (tried, not skipped).** The big
+  matmul errors are elsewhere: **cat 4 (bmm) and cat 6 (coarse: matmul_row −15%, _nested −33%).**
+  Report §10 unchanged (γ=0.46 justified). Analysis in `notes/analyze_matmul_overlap.py`.
+- **Cat 4 (bmm layout) — HIGH VALUE, findings VERIFIED, model in progress (paused for cat-3 redo):**
+  challenge workflow DONE. CONFIRMED (adversarially + re-derived): default `[0,1,2]` tile order is
+  ~2-3× SLOWER than `[1,0,2]` at matched shape/MACs/split (bytes/MACs identical, no inserted copy —
+  pure dataflow); the **compiler does NOT auto-pick the fast layout (verified in source)** → real bmm
+  genuinely uses the slow default → the −68% bmm residual IS the layout penalty (correct to model).
+  REFINED by review: it is NOT a `×B` multiplier — the SLOW layout runs at a nearly **constant ~215
+  µs/GMAC** on the matched set (B=2 is an anomaly at 109; compute-bound at a fixed slow rate). DETECTOR
+  IS CLEAN (verified): `is_matmul` + 2 rank-3 batched inputs + B≥2 + input-A batch at device pos −2
+  fires ONLY on full bmm (bmm_wd/k_tiling/nested/layout-default), NOT on plain `mmwd` (326 ops), NOT
+  bmm_3d2d, NOT B=1. Model direction: a layout-keyed slow COMPUTE RATE (mac_peak·~0.15) for full-bmm-
+  default. On the matched split-4x8 set a compute-derate d≈0.17 → RMS ~25% (B=2 anomaly + still >10%);
+  on the varied-split `bmm_wd` set a constant derate scatters (RMS 47%) → there is a SPLIT-shape effect
+  on top (like §12). NEXT for cat 4: separate the layout rate from the split effect; likely needs the
+  deeper overlap understanding from cat-3 first. `notes/analyze_bmm_layout.py`.
+- **Cat 5 (softmax_unrolled):** −93%. Root cause (⚠️ tentative): runs at `sencores=1` BY DESIGN
+  (unrolled single-core, `config.unroll_loops=True`); the model uses full HBM BW (150) regardless of
+  cores → predicts ~20µs vs ~288µs. This is the **BW(cores)** effect, IN SCOPE here (genuinely 1 core),
+  possibly + unaccounted `exp` compute. Needs the BW(cores) calibration + likely a re-run capturing
+  `softmax_unrolled` IR (none captured yet). Review pending.
+- **Cat 6 (coarse mm/bmm) — CHARACTERIZED (2026-07-24):** splits cleanly. `matmul_k_tiling` −4%
+  (working control). `bmm_k_tiling` −66% and `bmm_3d2d_k_tiling` −19% are DOMINATED by the cat-4 bmm
+  LAYOUT effect (they're bmm) — cat 4 fixes them, not a coarse term. The genuinely coarse-specific
+  misses are **`matmul_row_tiling` −15%** and **`mm_nested_m_k` −33%**. SHARPENED MECHANISM (verified):
+  matmul_row_tiling's `io_hbm_bytes` is **CONSTANT across tiles** (25 MB at tiles=1..16) but measured
+  time RISES (335→999µs) — so it is NOT a byte re-read and pt_eff is the wrong lever (tested:
+  underfill_eff(rpc=32)≈1, barely moved it 24.2→21.6). It is a **PER-TILE PIPELINE FILL/DRAIN loop
+  overhead** (~47µs/tile at 2048², larger at 4096²) that scales with `loop_trip` — the model has NO
+  per-tile loop cost so it under-predicts as tiles grow. **This is the SAME physics as cat-3's overlap
+  fill/drain, just per-coarse-tile** (each tile restarts the PT pipeline → an un-hidden fill/drain ×
+  loop_trip) — the report once had a `c_loop·L` term, dropped as "no op exercises it", but coarse
+  matmul DOES. mm_nested additionally has `loop_trip` STUCK at 2 regardless of tiles (an extractor
+  under-count → dump_cost_model fix). So cat-6 = a per-tile fill/drain term `+ loop_trip·c_fill(tile)`,
+  UNIFIED with the cat-3 double-buffering; needs the coarse-tile-count sweep to calibrate `c_fill`.
+  Part of the coordinated Part III rework.
+- **Cat 7 (flash re-sweep):** ✅ **DIAGNOSED + FIXED.** The overnight flash configs were invalid two
+  ways: work_div product 4·8·8=**256 ≫ 32 cores**, and splits that don't divide the tiled buffer dims
+  (H/ht=4, buf5 intermediate as small as 2). Fixed re-run `run_flash_resweep.sh` (guarded product≤32,
+  small valid splits, IR capture). Data-only (flash not modeled yet).
+
+### 🔑 KEY CROSS-CUTTING FINDING + READY-TO-RUN SWEEPS
+
+**The matmul-family coefficients (cats 3, 4, 6) CANNOT be fit on the overnight data — it lacks the
+noise protocol.** Verified twice: cat-3 γ_eff swings ±0.43 across genuine repeats (the whole
+constant-vs-variable-γ debate was noise), and cat-6 c_fill residuals swing 641/645/**1260** at one
+config. Contended single measurements dominate. So the mechanisms are all FOUND + reviewed, but the
+final fit needs clean, repeated data. **Four calibration sweeps are WRITTEN + dry-run-verified**
+(all use the BENCH_REPS=7 noise protocol), ready for the user to run:
+1. `run_transport_iso_sweep.sh` — cat 2 (ALREADY RAN, folded; transport done at 5.5%).
+2. **`run_matmul_family_sweep.sh`** — cats 3+4+5+6 in ONE run (~133 runs): MMISO_CORE (forced
+   1/2/4/8/16/32-core matmul = clean γ / low-core rate), MMISO_SPLIT, MMISO_BATCH (bmm), CTFILL
+   (coarse per-tile fill/drain), BWCORES (BW-vs-cores for reductions/softmax). This is the ONE sweep
+   to run for the whole matmul-family Part III rework. (Supersedes the earlier separate
+   run_matmul_overlap_iso_sweep.sh + run_coarse_bwcores_sweep.sh, now merged.)
+3. `run_flash_resweep.sh` — cat 7 (fixed flash configs + IR).
+Run #2 → then the coordinated Part III rework (cats 3+4+6) + cat-5 BW(cores) can be fit + shipped on
+clean data. Report-ready prose for the Part III rewrite is pre-drafted in `notes/part_iii_rewrite_draft.md`.
+
 ### Data + how to score (do this on resume)
 
 - **Overnight sweep** `haoyang_logs/outlier_20260723_072217.log` (450 usable points) + targeted
@@ -34,7 +207,19 @@ detailed plan `~/.claude/plans/shimmering-percolating-rivest.md`). Ignore tiny m
 ### The six categories — status + key finding
 
 1. **broadcast / write** — ✅ **DONE** (report §4, models below). RMS 12.0→6.3%.
-2. **transport** — **IN PROGRESS (2026-07-24).** Ops understood from device `dims`:
+2. **transport** — ✅ **DONE (2026-07-24).** report §6 now 5.5% RMS over 100 shapes (was 8.5%/42;
+   all reported outliers fixed). Model: cat0/transpose_outer/cat1 share ONE form
+   `clamp(a − b·log₂(sp) − d·log₂R, floor, peak)`, sp=C/64 (the per-row stick-block count); the 32
+   cores split sp, effBW falls with the strided per-row gather (more planes) + stride (rows).
+   Params `tx_cat0_*`/`tx_touter_*`/`tx_cat1_*`; cat1/transpose_outer routed by `_transport_kind`
+   (structural, no re-dump). transpose stays flat 116. **Fixed a PRE-EXISTING bug**: cat0/cat1
+   were mis-classified as `write`-like (`_is_outer_broadcast` fired on a single broadcast input) →
+   spurious outer-product term; now requires ≥2 size-1 broadcast operands. **Discovery**:
+   transpose_outer effBW PEAKS at middle-dim M≈8 (the R×C grid accidentally only sampled M=8, its
+   best case); modeled at M=8, M≠8 is a flagged residual (user chose "M=8 only for now"). Details
+   in the archived reasoning below (was "IN PROGRESS"):
+
+   Ops understood from device `dims`:
    `transpose` [R,C]→[C,R] = within-stick reshuffle → **flat ~116 GB/s, already ±2% at 32 cores
    (DONE, the −15% is only cores=1, out of scope)**; `transpose_outer` [R,**M**,C]→[M,R,C]
    (M=middle dim, hardcoded 8 → moves 8× the R×C bytes) = whole-stick outer scatter, unmodeled
@@ -225,12 +410,13 @@ user manages ALL git — never commit/push/stage).
 
 ### Immediate next step
 
-Start **(2) transport** — read the verbatim directive for it above. Model the **stick-block shuffle
-mechanism** (each output row reassembled from 64-element input stick blocks; the per-block shuffle,
-not byte count, sets the cost) that both `transpose_outer` and `cat0` are subject to — *not* a bare
-math fit. Get more coverage first if needed. Then update report §6. (Per-category loop: get/confirm
-clean data → hypothesize the mechanism → fit its form → verify per-config no-regression → implement
-→ re-score → regenerate figures/tables → write the section.)
+Cats 1 (broadcast/write) and 2 (transport) are DONE. Start **(3) matmul γ(cores)** — read the
+verbatim directive for it above. The single scalar γ=0.46 for compute/HBM overlap can't hold
+across shapes/splits/batched-ness; error drifts −6.3% (1 core) → +7.6% (32 cores). New forced
+1/2/4-core data exists (`mmwd`, MMCORE sweep section). Model γ(cores) mechanistically (how the
+overlap changes with the split), not a bare fit. (Per-category loop: get/confirm clean data →
+hypothesize the mechanism → fit its form → verify per-config no-regression → implement → re-score
+→ regenerate figures/tables → write the section.)
 
 ---
 
