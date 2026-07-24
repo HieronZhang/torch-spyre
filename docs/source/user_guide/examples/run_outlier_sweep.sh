@@ -57,6 +57,11 @@
 # ============================================================================
 
 set -u
+# A single Ctrl+C should stop the WHOLE sweep, not just the current run: without this trap
+# bash continues its loop after a per-run SIGINT. (A run wedged in the driver -- D state --
+# still can't be signalled; that needs a device reset, but the trap stops the loop cleanly.)
+trap 'echo "## INTERRUPTED -- aborting sweep (SIGINT)"; exit 130' INT
+trap 'echo "## TERMINATED -- aborting sweep (SIGTERM)"; exit 143' TERM
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR")"
 PROFILE_OPS="$SCRIPT_DIR/profile_ops.py"
@@ -199,6 +204,28 @@ runfa() {  # runfa <H> <Lq> <Lk> <D> <htiles> <qtiles> <ktiles> <wd_env>  flash 
     | _emit "flash_attn H=$H Lq=$Lq Lk=$Lk D=$D htiles=$ht qtiles=$qt ktiles=$kt wd=$wdtag"
   echo "TIMING_RUN flash_attn H=$H Lq=$Lq h=$ht q=$qt k=$kt $((SECONDS - _t0))s" | tee -a "$LOG"
 }
+
+# ---- preflight: confirm the accelerator is reachable before launching the sweep ----
+# A device-down launch would otherwise log hundreds of identical VFIO failures. One tiny
+# op; if it does not produce a real SUMMARY, abort with guidance. SKIP_PREFLIGHT=1 bypasses.
+if [[ -z "${SKIP_PREFLIGHT:-}" ]]; then
+  echo "-- preflight: trivial neg to check the Spyre device is up ..." | tee -a "$LOG"
+  PF=$(SENCORES=32 BENCH_OP=neg BENCH_ROWS=64 BENCH_COLS=64 BENCH_REPS=1 BENCH_WARMUP=1 \
+    timeout -k 10 150 python "$PROFILE_OPS" 2>&1)
+  if printf '%s\n' "$PF" | grep -q '^SUMMARY .*kernel_us='; then
+    echo "-- preflight OK (device reachable)" | tee -a "$LOG"
+  else
+    { echo "## PREFLIGHT FAILED -- a trivial op did not run; ABORTING before the sweep."
+      printf '%s\n' "$PF" | grep -vE '^\s*$' | tail -8 | sed 's/^/PREFLIGHT /'
+      echo "## Likely the Spyre accelerator is busy/wedged (VFIO). Recover (no root needed):"
+      echo "##   ps -u \$(whoami) -o pid,stat,cmd | grep -Ei 'python|profile_ops'  # find it"
+      echo "##   kill -9 <pid>            # works on YOUR own process unless it is in D state"
+      echo "##   SPYRE_DEVICES=1 BENCH_OP=neg python <this dir>/profile_ops.py  # try another device"
+      echo "## A D-state (unkillable) process or a truly wedged device needs an admin reset/reboot."
+      echo "## (Set SKIP_PREFLIGHT=1 to bypass this check.)"; } | tee -a "$LOG"
+    exit 1
+  fi
+fi
 
 # ============ NOISE0: true run-to-run cv on control + flagged points =========
 do_sect NOISE0 && { sect NOISE0 "control + flagged noisy points, x3 invocations, 10 reps each"

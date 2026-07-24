@@ -416,7 +416,18 @@ class CostParams:
     # Ops that stream a FULL input plus a small BROADCAST operand (loaded once) -- copy
     # (x+const), bcast, bcastcol, mulbcast -- run FASTER than a plain 1R:1W op (~118 vs
     # ~105 GB/s; mechanism open). NOT `write` (both operands broadcast, no full input).
-    bw_broadcast_gbps: float = 118.0
+    bw_broadcast_gbps: float = 118.0  # copy (scalar) / bcastcol (b[R,1]): flat, no COLS effect
+    # The ROW-broadcast ops (bcast, mulbcast: operand b[1,C]) run FASTER at small COLS (~130 at
+    # C=1024) easing to a plateau (~112 at C=16384) -- b[1,C] grows with COLS, so a wider operand
+    # costs relatively more. In the well-filled regime (ROWS>=1024 at 32 cores) this is a clean,
+    # monotonic COLS curve fit on the dense sweep (TIME-RMS 3.2%); it removes the mulbcast 2048x1024
+    # (+12%) small-COLS outlier and the mild large-COLS over-prediction, with no regression.
+    bcast_bw_a: float = 183.5  # effBW = a - b*log2(COLS) - d*log2(ROWS), bcast/mulbcast, R>=min
+    bcast_bw_b: float = 2.8  # COLS slope (wider b[1,C] operand -> slower)
+    bcast_bw_d: float = 2.6  # ROWS slope (row-dependent -- the surface is NOT COLS-only)
+    bcast_bw_min_rows: float = 1024.0  # below this ROWS the surface is NON-MONOTONIC (64x16384
+    # ~129 FAST vs 256x16384 ~92 SLOW, confirmed real, not a build artifact) -> no smooth fit;
+    # left on flat 118 and FLAGGED. run_broadcast_smallr_sweep.sh maps R in {64..768} to resolve it.
     # `write` (b[1,C] + c[R,1]: BOTH operands broadcast -> an outer-product write) is slow
     # and SUPER-LINEAR: the operands are re-read in the outer-product and the cost grows
     # steeply with COLS (and, more weakly, ROWS). No clean mechanism yet; the extra HBM
@@ -426,6 +437,12 @@ class CostParams:
     write_reread_coef: float = 2.148e-7
     write_reread_r_exp: float = 1.60
     write_reread_c_exp: float = 2.20
+    # The power-law grows super-linearly and EXPLODES at the extreme corner (16384x16384
+    # predicts ~4.3x the output bytes of extra traffic -> +59% over-prediction; the measured
+    # effBW there is ~46 GB/s, implying ~2.2x). Cap the extra at a bounded multiple of the
+    # output bytes so the corner floors the effBW at ~bw_peak/(1+ratio) instead of running
+    # away. Only binds at the corner; the (under-predicted) mid-range is unchanged.
+    write_reread_max_ratio: float = 2.4
 
 
 def underfill_eff(
@@ -569,7 +586,10 @@ def _outer_broadcast_extra_bytes(o, p) -> float:
     if out is None:
         return 0.0
     rows, cols = out.logical[-2], out.logical[-1]
-    return p.write_reread_coef * rows**p.write_reread_r_exp * cols**p.write_reread_c_exp
+    extra = p.write_reread_coef * rows**p.write_reread_r_exp * cols**p.write_reread_c_exp
+    # cap at a bounded multiple of the output bytes -> effBW floors instead of exploding
+    out_bytes = rows * cols * 2
+    return min(extra, p.write_reread_max_ratio * out_bytes)
 
 
 def _logical_rc(o):
@@ -583,6 +603,35 @@ def _logical_rc(o):
         None,
     )
     return (out.logical[-2], out.logical[-1]) if out else None
+
+
+def _has_row_broadcast_operand(o) -> bool:
+    """True if a HBM input is a ROW-broadcast operand ``b[1, C]`` (bcast/mulbcast). copy
+    (scalar const) and bcastcol (``b[R, 1]``) do NOT qualify -- no wide COLS-growing operand."""
+    return any(
+        a.role == "input"
+        and a.mem == "hbm"
+        and a.broadcast
+        and len(a.logical) >= 2
+        and a.logical[-2] == 1
+        and a.logical[-1] > 1
+        for a in o.args
+    )
+
+
+def broadcast_bw(o, p):
+    """Effective HBM BW for a broadcast-operand op. copy/bcastcol keep the flat base rate.
+    The ROW-broadcast ops (bcast/mulbcast, operand b[1,C]) follow a COLS curve in the
+    well-filled regime (ROWS >= min_rows): faster at small COLS, easing to a plateau. Below
+    min_rows the surface is non-monotonic and unmodelled -> flat base (flagged). See §4."""
+    rc = _logical_rc(o)
+    if rc is None or not _has_row_broadcast_operand(o):
+        return p.bw_broadcast_gbps
+    rows, cols = rc
+    if rows < p.bcast_bw_min_rows or cols <= 0:
+        return p.bw_broadcast_gbps
+    bw = p.bcast_bw_a - p.bcast_bw_b * math.log2(cols) - p.bcast_bw_d * math.log2(rows)
+    return max(100.0, min(135.0, bw))
 
 
 def stick_scatter_bw(o, p):
@@ -649,7 +698,7 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         if pat in _pat_bw:  # restickify (transpose), reduce_outer (sumcol)
             return _pat_bw[pat]
         if _is_broadcast_op(o):
-            return p.bw_broadcast_gbps
+            return broadcast_bw(o, p)
         return None
 
     if any(getattr(o, "is_matmul", False) for o in ops):
