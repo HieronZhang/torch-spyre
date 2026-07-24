@@ -23,7 +23,8 @@
 # whether 256 is a real dip or a sampling artifact, so we can model it properly.
 #
 # Same build/conditions as the main sweep. cores=32 (SENCORES=32). BENCH_REPS reps
-# per point (noise protocol -> kernel_us_min/median/std/cv). ~160 configs x 7 reps.
+# per point (noise protocol). R in {64,128,256,512,1024} (powers of 2) x 4 COLS x 4 ops
+# = 80 configs x 7 reps -- 64/128 were FAST, 256 SLOW, so this pins the dip and recovery.
 #
 #   bash docs/source/user_guide/examples/run_broadcast_smallr_sweep.sh
 #   BENCH_REPS=9 bash .../run_broadcast_smallr_sweep.sh          # tighter noise
@@ -72,7 +73,7 @@ fi
 # bcast/mulbcast = row-broadcast b[1,C] (the effect); copy/bcastcol = controls.
 for op in bcast mulbcast bcastcol copy; do
   echo "## $op" | tee -a "$LOG"
-  for R in 64 96 128 192 256 320 384 512 640 768 1024; do
+  for R in 64 128 256 512 1024; do
     for C in 2048 4096 8192 16384; do runpw "$op" "$R" "$C"; done
   done
 done
