@@ -43,7 +43,7 @@ T   = compute + mem − γ·min(compute, mem) + split      mem = HBM / (eff · s
 
 | term | form | derived in |
 |---|---|---|
-| `(R+W)/BW` | `BW` = 150 (pointwise / matmul); `BW_red(ROWS)=min(150, 114+61·e^(−ROWS/3700))` (row-reductions); per-op `BW_eff` for access-pattern ops | §1, §5, §6, §8 |
+| `(R+W)/BW` | `BW` = 150 (pointwise / matmul); `BW_red(ROWS)=min(150, 114+61·e^(−ROWS/3700))·g(cores)` (row-reductions; `g` derates below 32 cores, `g(32)=1`); per-op `BW_eff` for access-pattern ops | §1, §5, §6, §8 |
 | `α·min(R,W)` | `α = 0.00574 ns/B` — read↔write bus **turnaround** (0 for one-directional traffic) | §2 |
 | `spill` | `(A_bytes+B_bytes)·f(area)`, `area=(M/m)·(N/n)`, `f=min(1.5, max(0, 0.45·log₂(area/65536)))` — matmul operand **re-read** when the per-core output tile overflows on-chip capacity | §11 |
 | `split` | `max(0,area−a₀)·[c_L·max(0,log₂(fan_long/8)) + c_S·max(0,log₂(fan_short/16))]`, `area=(M/m)·(N/n)`, `a₀=131072`, `c_L=2.6e−3`, `c_S=2.9e−3 µs/elem` — extra matmul operand re-read when a **large** per-core tile is **also** split many ways; two-sided (splitting the longer output dim bites sooner than the shorter); 0 for balanced or small tiles | §12 |
@@ -195,8 +195,9 @@ a read-after-write term; we flag it here as the term to add when modelling op *s
 
 **Does the dependency accumulate, and does fusion stay free?** For one dependent read the margin is
 +7 % and fusion-free. To see whether it grows with chain length — and whether fusion stays free — we
-measure the whole ladder `add3`…`add6` (fused) *and* `add3_sep`…`add6_sep` (separate), ×3 replicates
-over seven shapes, and plot the **excess cost** — extra single-`add`s of time beyond the byte count:
+measure the whole ladder `add3`…`add6` (fused) *and* `add3_sep`…`add6_sep` (separate) over seven
+shapes — the three ROWS=2048 shapes replicated 5–7× (the figure plots these), the other four
+single-shot — and plot the **excess cost** — extra single-`add`s of time beyond the byte count:
 
 ```text
 excess(add_n)  =  t(add_n) / t(add)  −  (n−1)
@@ -205,16 +206,32 @@ excess(add_n)  =  t(add_n) / t(add)  −  (n−1)
 The dependency is then the *height* of a curve; any fusion cost is the *gap* between the fused and
 separate curves.
 
-![§3 fig B: excess cost vs number of dependent reads (1-4 = add3...add6), fused vs separate, dots = replicates × shapes. Both curves rise together and coincide at 1, 3, 4 reads; they diverge only at add4.](figures/fig3b_pointwise_arity_reads.png)
+![§3 fig B: excess cost vs number of dependent reads (1-4 = add3...add6), fused vs separate, dots = replicates × shapes. Both curves rise together and coincide at 1, 3, 4 reads; they diverge only at add4, where the SEPARATE control dips below the shared linear trend.](figures/fig3b_pointwise_arity_reads.png)
 
 **The dependency accumulates; fusion stays free.** Both curves rise together — excess climbs from
-≈ 0.13 (one read) to ≈ 0.78 (four reads) — and **fused and separate coincide at 1, 3, and 4 reads**
+≈ 0.13 (one read) to ≈ 0.79 (four reads) — and **fused and separate coincide at 1, 3, and 4 reads**
 (within the ±0.02–0.03 replicate noise floor). So the read-after-write dependency accumulates with
-chain length, and fusing it is free. (The one exception is `add4`, where the fused excess is ~3× the
-separate one; it reproduces across all seven shapes but is gone by `add5` — a lone, chain-length-specific
-wrinkle. We re-examined the collection code and confirmed it is correct: ops are constructed and byte-
-counted correctly, work-division is identical, and the gap is in the pure compute time — so it is real
-but unexplained, and we **do not model it.**)
+chain length, and fusing it is free. (The one wrinkle is at `add4`, where fused sits ≈ +0.31 above
+separate — but **not** because the fused kernel misbehaves; the earlier reading of it as a fused
+pathology had the direction backwards. *Both* chains bend at the `add4`/`add5` boundary: the
+**separate** chain stays flat through three launches (`add3_sep` ≈ `add4_sep`) and only engages its
+dependency cost at the fourth launch (`add5_sep`), while the **fused** chain takes a one-time ≈ +0.1
+(+3 %) step at `add4` and then accumulates ≈ +0.16 excess/read. So the gap is *mostly* — roughly
+two-thirds, though the exact split is fit-dependent — the separate control being flat where the fused
+chain has already stepped, not the fused op running slow. (The model happens to predict fused `add4`
+within +2 % *at COLS=4096*; its error runs ≈ +0.7 / +2 / −4 / −10 % across `add3`…`add6`, so `add4`
+merely sits near the zero-crossing.) The fuser packs `add4` as one ordinary left-associative bundle —
+four inputs + one output = 5 tensors, within the 5–6-tensor per-bundle limit; the *first* bundle split
+is at `add5`/`add6`, never `add4` — so there is no `add4`-specific fusion structure, which **rules out
+the reassociation / extra-barrier guess**. *Why* the separate chain steps only at the fourth launch is
+open: the step is flat-then-sharp and scales with operand size, and because `kernel_us` is a min-based
+*device* latency (host dispatch jitter is stripped, and for `_sep` it is the sum of the sub-kernels'
+device times) a host launch-scheduling explanation is *disfavoured* — it points to a device/memory
+regime change (e.g. buffer reuse past a chain length). The sign reproduces across all seven measured
+shapes, so it is real, but it is a property of the separate baseline, not the modelled fused op — so we
+**do not model it**. The queued `run_add_chain_ir.sh` confirms the *structure* (bundle count,
+left-associativity) that rules out the fusion guess; settling the separate-path timing regime would
+need a controlled device-vs-host timing split, which the IR dump does not provide.)
 
 **Model status — not a single-op term.** `add_n` is **not a native op** — it is a multi-op dependent
 chain — so the read-after-write cost is **not** part of the single-op model, which stays pure
@@ -223,8 +240,9 @@ a `×(1 + 0.075·(m−1))` arity derate for the chained adds; that has been **re
 dependency is instead a **program-level / cross-op** effect, to be modeled by the byte-keyed term
 proposed in `new_experiments_plan.md` ("Next model") and unified with the coarse-tiling LX-spill (§15),
 which is the same phenomenon (a fused-op intermediate that round-trips HBM). It is not fit yet — the
-add-chain data alone is too irregular (the `add4` wrinkle), and it needs multi-op-chain data beyond
-softmax — so it is scoped there, not patched in here.
+*separate*-baseline control is irregular (the `add4_sep` wrinkle above), the fused chain's own slope
+is only approximate (it over-predicts `add5`/`add6` by −4 %/−10 %), and it needs multi-op-chain data
+beyond softmax — so it is scoped there, not patched in here.
 
 ### Part I accuracy — every pointwise data point
 
@@ -568,8 +586,40 @@ memory differently and does not show the ROWS falloff; it keeps its own flat acc
 rate (~113 GB/s, the `reduce_outer` rate of §6). A cross-core ring combine (when the reduced
 axis is split across cores) is provably tiny and carried but inert.
 
-**§5 accuracy.** RMS **2.6 %**, mean +1.3 %, over 58 points — within ~6 % everywhere, across the
-full ROWS range now that the falloff is modeled. Representative shapes (repeats omitted):
+**Below 32 cores, the rate derates further.** The ROWS-falloff above is the rate at the full
+32-core budget. A reduction is a streaming full-tensor read over the *shared* HBM bus, so with
+fewer active cores fewer parallel request streams are in flight and a smaller fraction of peak
+bandwidth is realized. The derate `g(cores) = BW(cores)/BW(32)` is **sub-linear and saturating** —
+a single core drives ~11 % of the bus, not `1/32` = 3 % (the naive proportional law is off by
+3.6×) — and it is `1.0` at 32 cores, so the gold rate above is untouched:
+
+| cores | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---:|---:|---:|---:|---:|---:|
+| `g(cores)` | 0.11 | 0.22 | 0.43 | 0.54 | 0.54 | 1.00 |
+
+Without this, a reduction forced onto few cores is mispredicted by up to **−89 %** (the model
+charged the full-bus rate; over the 20 low-core points mean |err| was **289 %**). With it, they
+land within a few percent (**mean |err| 5.7 %**) — `sumrow` across cores 1→16, and `read` (the
+worst, a transposed shape) within ~16 %:
+
+| op | R×C | cores | measured µs | predicted µs | err % |
+|---|---|---:|---:|---:|---:|
+| `sumrow` | 2048×8192 | 1 | 2039.0 | 2062.3 | −1 |
+| `sumrow` | 2048×8192 | 4 | 549.1 | 527.6 | +4 |
+| `sumrow` | 2048×8192 | 16 | 444.4 | 420.1 | +6 |
+| `read` | 8192×2048 | 1 | 2390.2 | 2607.0 | −8 |
+| `read` | 8192×2048 | 8 | 446.7 | 531.1 | −16 |
+
+This matters because the coarse `softmax_unrolled` op is forced onto **one core** by construction —
+though *its* own −90 % miss is a **separate, larger** effect (an on-chip/LX-resident intermediate
+that the byte count over-credits, so a bandwidth derate cannot fix it), tracked with the
+coarse-tiling work, not here. **Caveat:** the low-core anchors are single-shot (no replicates); the
+`c8`/`c16` plateau and the shape-generality of `g(cores)` need a repeated low-core reduction sweep
+to confirm (`run_reduction_cores_sweep.sh`, written).
+
+**§5 accuracy.** RMS **2.6 %**, mean +1.3 %, over 58 points at the full 32-core budget — within
+~6 % everywhere, across the full ROWS range now that the falloff is modeled (the low-core `g(cores)`
+derate above is a separate 20-point set). Representative shapes (repeats omitted):
 
 | op | R×C | measured µs | predicted µs | err % |
 |---|---|---:|---:|---:|
@@ -829,12 +879,21 @@ memory = (R + W) / 150 + α·min(R,W)    (α = 0.00574 ns/B)
 
 ![§8 baseline memory model vs measured on compute-free matmuls: within ~4% write-heavy, under-predicting the read-heavy large-N corner](figures/fig8_matmul_hbm.png)
 
-**Accuracy.** On the compute-free sweep (write-heavy `K ∈ {16,32,64}`, read-heavy `M ∈ {32,64}`,
+**Accuracy.** On the compute-free sweep (write-heavy `K ∈ {16,32}`, read-heavy `M ∈ {32,64}`,
 `N` up to 4096) this baseline predicts the **write-heavy** corner to within ~4 %, but
-**under-predicts the read-heavy corner — the large-`N`, thin-`M` shapes — by ~7–15 %** (figure):
+**under-predicts the read-heavy corner — the large-`N`, thin-`M` shapes — by ~8–18 %** (figure):
 there the read runs a little below the copy peak, plus a small fixed floor at tiny `M`. That
 residual is minor next to the compute term that dominates real matmuls (§9), so it is carried
-in the memory term rather than fit away.
+in the memory term rather than fit away. (The degenerate `K = 64` write-heavy point is dropped: a
+single-stick contraction dim runs off-trend — `2048×64×2048` measures 56.6 µs, *below* both `K = 16`
+and `K = 32`. It is a padding-free kernel — `K = 16` and `K = 32` pad the thin operand up to a full
+64-element stick, adding preamble traffic — and it runs at ~158 GB/s, *above* the 150 GB/s copy peak
+this term is built on, so it is not a clean memory-term point. And at fixed cores the §8 prediction is
+independent of the `m·n` split: the byte count (`_fused_hbm_bytes`) carries no split dependence, and
+the per-core tile area `M·N/(m·n)` is identical for every 32-core split, so the spill term is identical
+too — `4×8`, `8×4`, `16×2` give the *identical* §8 prediction. Work-division dependence appears only
+where the split changes the per-core geometry, in the compute and spill terms, §9 and §11, where the
+split sweeps live.)
 
 ### §9. The compute term — its form and rate
 
@@ -854,20 +913,32 @@ fill efficiency `pt_eff = min(1, (rows/64)^0.35) ≤ 1` captures the shortfall, 
 every large matmul here — which is why this section can quote `compute = MACs/cores/peak`
 unqualified.)
 
-**Time tracks cores, not the split.** The `cores` in the denominator is the *product* `m·n`
-(the planner keeps `K` whole), not the particular factoring. The figure confirms this directly:
-at 32 cores the balanced splits `4×8`, `8×4`, `2×16` land on the same ~385 µs.
+**Time tracks cores, not the split — when neither factor is too thin.** The `cores` in the
+denominator is the *product* `m·n` (the planner keeps `K` whole), not the particular factoring —
+*provided* neither factor of the split is too thin. The figure confirms this: at 32 cores the
+most-balanced splits `4×8` and `8×4` land on the same time (~386 µs at `K=2048`, ~670 µs at
+`K=4096`). A thin factor then costs a few percent, growing as the split gets thinner and with a mild
+orientation dependence: `2×16` runs ~5 % slower (404 / 704 µs), `16×2` less so (+2.4 % at `K=2048`,
+near-collapse at `K=4096`), and a fully lopsided split runs ~2× slower (`1×32`, `32×1`, present in
+this sweep only at `K=4096`). So the collapse holds only when neither factor is too thin; that
+residual is exactly the work-division effect quantified in §11–§12.
 
 **Fitting `peak`, cleanly.** `peak` is the **slope** of kernel time against `1/cores` at a fixed
 matmul — and a slope is immune to any constant offset, including the overlap term of §10. So
 unlike the memory rate, `peak` is pinned without circularity. Two problem sizes (`K = 2048` and
-`4096` at `M=N=2048`) swept over cores 4→32 give straight lines through near-zero intercepts —
-and the `K=4096` slope is twice the `K=2048` slope, matching the 2× MAC count. The fitted
+`4096` at `M=N=2048`) swept over cores 4→32, fit on the balanced splits, give straight lines whose
+**slope** pins `peak`; the `K=4096` slope is twice the `K=2048` slope, matching the 2× MAC count.
+The fits carry a **~100 µs positive intercept** (the memory + non-hidden-overlap floor of a 32-core
+matmul, not a per-kernel constant) — which is exactly why `peak` is read off the *slope*, not the
+intercept. (The fit is balanced-only because the lopsided `1×32`/`32×1` points — present at 32 cores
+only for `K=4096` — inflate that intercept to ~350 µs *and* drop the slope ~4 %.) One subtlety: the
+bare slope implies `peak ≈ 1070`; the `~1140` below is what the **full** additive+overlap model gives
+once that ~100 µs floor is reassigned to the memory and overlap terms. The fitted
 `peak ≈ 1140–1160 MAC/ns/core` predicts these to **2–3 %**; its absolute level is *mildly*
 correlated with the overlap factor (`peak = 1200` with the same overlap fits nearly as well), so
 we quote a small range, not a spuriously exact number.
 
-![§9 kernel time halves when cores double (time ∝ 1/cores); at equal cores the balanced m×n splits collapse to the same point](figures/fig9_matmul_peak.png)
+![§9 kernel time halves when cores double (time ∝ 1/cores); at equal cores the split collapses only when neither factor is too thin — 2×16 sits ~5% above and the lopsided 1×32/32×1 ~2× above the balanced 4×8/8×4 line](figures/fig9_matmul_peak.png)
 
 ### §10. Compute and memory overlap — they do not simply add
 
@@ -1156,6 +1227,38 @@ projection — which is the two-rate model's point. The remaining ~36 % is hones
 and `BW_reread` are constants, yet the implied rates still drift ~2× with shape, so a **shape-dependent
 rate is the open item**, and the term is not yet in the model (it needs the extractor to expose the
 per-batch re-read bytes).
+
+**The mechanism, disentangled: it is the device tile-order, not extra bytes.** A controlled layout
+experiment settles what the two-rate model above could only infer through a bytes proxy. For a fixed
+`[B,M,K] @ [B,K,N]` bmm we place each operand with a device `dim_order` of either the default
+`[0,1,2]` (batch outermost) or `[1,0,2]` (batch second) and measure all four combinations **at
+identical bytes** — the loop-level IR confirms **no inserted copy / restickify** and the counted
+`io_hbm` is byte-identical (41.9 MB) across all four. At `B = 4`, `1024×2048×1024` (the `[0,1,2]²`
+default and `[1,0,2]²` best are repeat-backed, reps = 7, cv 0.2–0.6 %; the two mixes from the matched
+IR run):
+
+| operand A order | operand B order | kernel µs | eff BW (GB/s) | vs best |
+|---|---|---:|---:|---:|
+| `[0,1,2]` | `[0,1,2]`  (compiler default) | 1847 | 22.7 | **3.32×** |
+| `[0,1,2]` | `[1,0,2]` | 1293 | 32.4 | 2.33× |
+| `[1,0,2]` | `[0,1,2]` | 1062 | 39.5 | 1.91× |
+| `[1,0,2]` | `[1,0,2]`  (best) | 556 | 75.4 | 1.00× |
+
+![§13c bmm layout: the same [4,1024,2048]@[4,2048,1024] bmm under all four operand dim_order combos at identical bytes (41.9 MB, IR-confirmed no inserted copy); the compiler default [0,1,2]² runs 3.3× slower (23 GB/s) than [1,0,2]² (75 GB/s), with the two single-operand swaps in between](figures/fig13c_matmul_bmm_layout.png)
+
+The *same bytes* run **3.3× slower** on the default `[0,1,2]²` order (22.7 GB/s) than on `[1,0,2]²`
+(75.4 GB/s) — a pure **dataflow / locality** effect, not a byte or MAC difference. So the §13 penalty
+is the **device tile-order**: the default `[0,1,2]` walks the batch outermost with no cross-batch
+operand locality — which is exactly what the two-rate model's "weight re-read" was a bytes-proxy for —
+and the compiler emits this slow default for *every* real bmm, which is why real bmm rides the low
+rate. Recovering the full 3.3× needs *both* operands on `[1,0,2]`; swapping only one recovers
+~1.9× (A) or ~2.3× (B). The slow-default rate is **~215 µs/GMAC** (1847 µs / 8.59 GMAC), now
+repeat-backed (the reps = 7 sweep gives 1840 / 546 µs for default / best, matching the IR run). The
+full split-keyed rate across `B` and shape awaits the complete layout sweep — this run stalled before
+the other quads finished — but this matched quad plus the IR confirm the mechanism and the default
+rate. **Implication for the model:** the bmm penalty should be a layout-keyed *effective bandwidth*
+(the compiler's default `[0,1,2]` → ~23 GB/s), not an invented re-read-bytes term; and a planner that
+placed bmm operands `[1,0,2]` would remove ~⅔ of the penalty outright.
 
 Two interactions are recorded so they are not later double-counted. A **lopsided** bmm split still
 pays §12 on top of the floor, so a short-dim-fanned bmm is worse again (up to ~15×). And **forcing the
