@@ -1435,26 +1435,6 @@ is thin, non-current, and partly non-monotonic, so it is **flagged, not modeled*
 take `pt_eff = 1`; a clean tile-count sweep is queued). It is the −15 % `matmul_row` row in the
 table below.
 
-### §17. Coarse tiling as a design space: predicting the best tile size
-
-A coarse-tiled program exposes the **tile count** as a free knob: the same computation can be
-tiled many ways, and the fastest choice is not obvious — too few tiles overflow on-chip memory
-(§15), too many underfill the pipeline (§16), and the best sits in between. This is a small
-**design space**, and the reason to have a cost model is to search it without running hardware.
-
-The model does not need to predict absolute time perfectly to be useful here — it needs to predict
-the **relative** ordering of tile choices. On the paths it models (looped softmax, K-tiled matmul)
-it does: the predicted cost-vs-tile-count curve tracks the measured one, including the location of
-the optimum.
-
-![§17 left: predicted (dashed) vs measured (solid) cost normalized to each problem's best, vs tile count — the model tracks the U-shaped curve and its minimum; right: choosing the model's best tile size costs at most ~9 % over the true optimum](figures/fig17_coarse_designspace.png)
-
-Choosing the tile size the model predicts to be fastest lands on the true-optimal tile in **7 of 9**
-swept problems, and within **≤ 9 %** of optimal in the other two (mean regret ~3 %). So for these
-categories the model is already good enough to **drive tile-size selection** — the point of building
-it. The categories it does *not* yet model (the nested and unrolled paths in the table below, some
-of them known extractor/code defects) are exactly the ones where this guarantee does not yet hold,
-and are what we take up next.
 
 ### Part IV data — every coarse-tiling run
 
