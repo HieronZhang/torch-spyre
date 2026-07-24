@@ -21,7 +21,7 @@ Model (per fused bundle / single-op kernel):
 
     T   = compute + mem - gamma*min(compute, mem)          mem = HBM / (eff * s_lx)
 
-    HBM = [ (R+W)/BW + alpha*min(R,W) ] * (1 + arity_derate*(n-1)) + spill + write_extra
+    HBM = [ (R+W)/BW + alpha*min(R,W) ] + spill + write_extra
     s_lx = min(1, (512KB/ws)**0.15)   for a coarse-tiled kernel with ws > 512KB   (else 1)
 
   where R = HBM bytes READ (inputs), W = HBM bytes WRITTEN (outputs). LX-resident
@@ -101,19 +101,25 @@ that spilled traffic runs SLOWER than the modeled rate, so the effective bandwid
 (``_lx_spill_bw_derate``: BW *= (cap/ws)**0.15 for ws>cap). Softmax-calibrated (11.0%->5.7% RMS),
 gated to non-matmul coarse tiling. See report S14.
 
-ACCESS-PATTERN effective-BW overrides (db_sweep; ``OpFeatures.hbm_pattern``, set by the
-extractor from the LoopLevel IR index/layout -- these fold turnaround into one measured
-rate): "restickify" transpose (stick swapped -> ~116, FASTER), "stick_scatter" cat0 on a
-partition dim (fine sub-stick interleave -> SHAPE-dependent, falls with row width C:
-clamp(intercept - rows_coef*log2(R) - cols_coef*log2(C), floor, bw_peak)), "reduce_outer"
-sumcol (cross-row reduce -> ~113). Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) get a
-``pointwise_arity_derate`` (~7.5%/extra op). All land within ~4% after these.
-BROADCAST-operand ops (copy/bcast/bcastcol/mulbcast: a full input + a small broadcast
-operand) run ~118 GB/s -- ``bw_broadcast_gbps`` (mechanism open). ``write`` (b[1,C]+c[R,1],
-BOTH operands broadcast -> outer-product) is slow + super-linear; modeled by an EMPIRICAL
-extra-traffic term (``write_reread_*``: coef*ROWS^r*COLS^c, ~12% RMS, black-box).
-KNOWN residual (not yet modeled): transpose_outer at large size ~-14% (size-dependent);
-reductions ~-15% at large ROWS (stick-inflated scattered output write).
+ACCESS-PATTERN effective-BW overrides (db_sweep; fold turnaround into one measured rate).
+STICK-PLANE TRANSPORTS -- a `clone` reorganizing the stick layout, parallelized by splitting
+the stick-plane dim sp = C/64 across the 32 cores. Effective BW falls with the per-row
+strided stick gather -- more planes (sp) and a longer gather stride (more rows R) -- so cat0,
+transpose_outer and cat1 SHARE one form, clamp(a - b*log2(sp) - d*log2(R), floor, bw_peak),
+with per-op constants (``tx_*``): cat0 a steep untiled gather, transpose_outer a gentle tiled
+block-transpose (calibrated at its best middle dim M=8; M!=8 flagged), cat1 nearly flat
+(copies stored outermost -> contiguous). ``transpose`` is a hardware restickify (stick
+swapped) -> flat ``bw_restickify_gbps`` ~116; "reduce_outer" sumcol (cross-row reduce) ~113.
+cat0/transpose carry an ``OpFeatures.hbm_pattern`` from the extractor; cat1/transpose_outer
+are detected structurally from the logical reshape (``_transport_kind``). (A dependent multi-op
+chain like add3/add4 costs more than its byte count -- a read-after-write ACROSS op boundaries,
+§3 -- a program-level effect, not a single-op cost, so NOT modeled here.) Transports land
+within ~6%. BROADCAST-operand ops (copy/bcast/bcastcol/mulbcast: a full input + a small
+broadcast operand) run ~118 GB/s -- ``bw_broadcast_gbps`` (mechanism open). ``write``
+(b[1,C]+c[R,1], BOTH operands broadcast -> outer-product) is slow + super-linear; modeled by an
+EMPIRICAL extra-traffic term (``write_reread_*``: coef*ROWS^r*COLS^c, ~12% RMS, black-box).
+KNOWN residual (not yet modeled): transpose_outer away from M=8 (peaks at M~8); reductions
+~-15% at large ROWS (stick-inflated scattered output write).
 
 CALIBRATION NOTE: the golden per-op measurement is the torch.profiler "Self SPYRE"
 (sdsc_fused) KERNEL device time -- NOT our old SPYRE_PROFILE_SYNC min (which folded in a
@@ -179,6 +185,10 @@ class OpFeatures:
     matmul_cols_per_core: float = 0.0  # N/n (per-core B tile width  -> B re-read)
     matmul_a_bytes: int = 0  # |A| = M*K device bytes (re-read scales with M/m)
     matmul_b_bytes: int = 0  # |B| = K*N device bytes (re-read scales with N/n)
+    # Per-dim core-split counts (m along M, n along N). Recorded so a split-shape term can
+    # key on the raw fanout / arrangement, not just the area (M/m)*(N/n). 1 = unsplit.
+    matmul_m_split: int = 1
+    matmul_n_split: int = 1
     # Access-pattern HBM effective-BW override (from the LoopLevel IR index/layout):
     # "restickify" (transpose: write-stick var read with coeff!=1), "stick_scatter"
     # (cat on a partition dim -> a device dim <64 just inside the stick), "reduce_outer"
@@ -353,13 +363,34 @@ class CostParams:
     # stays resident, so the operands are re-streamed from HBM. The re-read magnitude is the
     # operand bytes; the fraction grows with how far the tile overflows:
     #   reread = (|A| + |B|) * f(area),  f(area) = min(cap, slope*log2(area/area0)).
-    # Fit on the decouple + re-read sweeps (fanout proven NOT a term; K-split never used, so
-    # the old psum ring term = 0).
+    # Fit on the decouple + re-read sweeps (area spill, K-split never used so psum ring = 0).
     mm_spill_area0: float = (
         65536.0  # per-core output-tile area (elems) below which no spill
     )
     mm_spill_slope: float = 0.45
     mm_spill_cap: float = 1.50
+    # SPLIT-SHAPE re-read (§12): the area spill above is symmetric in m<->n and so is blind to
+    # how the output is split. A forced-split sweep shows a large per-core tile that is ALSO
+    # split many ways costs extra the area term misses -- an INTERACTION of tile size and how
+    # far each output dimension is split. It is SIZE-GATED (bites only once the tile is ~2x the
+    # §11 knee, so a small lopsided tile stays accurate) and TWO-SIDED: splitting the LONGER
+    # output dim into many cores is penalized sooner (knee 8, the planner's own _COHORT_LIMIT)
+    # and harder than splitting the SHORTER dim (knee 16, empirical). This asymmetry -- e.g. at
+    # M>>N, a 32x1 split (fan the long M) costs ~2x a 1x32 (fan the short N) at equal area --
+    # is real (leave-one-shape-out RMS 337->249 vs the one-sided form) and a symmetric term
+    # cannot express it.
+    #   split = cL*max(0,area-area0)*max(0,log2(fan_long/8)) + cS*max(0,area-area0)*max(0,log2(fan_short/16))
+    #   area = (M/m)*(N/n);  fan_long = m if M>=N else n;  fan_short = the other split count
+    # Zero for balanced splits (both fanouts small) and for small tiles. See §12, notes/fit_split_shape.py.
+    mm_split_reread_us_per_elem: float = 2.62e-3  # cL: long-dim split coefficient
+    mm_split_short_us_per_elem: float = 2.88e-3  # cS: short-dim split coefficient
+    mm_split_area0: float = 131072.0  # per-core tile elems below which no split re-read
+    mm_split_long_knee: float = (
+        8.0  # long-dim cores before the re-read (planner _COHORT_LIMIT)
+    )
+    mm_split_short_knee: float = (
+        16.0  # short dim tolerated to a higher fanout (empirical)
+    )
     # Matmul HBM: a SINGLE effective rate = the pointwise copy peak (150). The earlier
     # two-rate fit (143 read / 156 write) is retired: 156 > 150 is unphysical (a write
     # cannot beat the copy peak) and was a compute-free-fit artifact absorbing the overlap
@@ -368,6 +399,26 @@ class CostParams:
     # AND physical. Read/write are not separately identifiable from these data. (See §8.)
     mm_bw_read_gbps: float = 150.0
     mm_bw_write_gbps: float = 150.0
+    # DEFAULT-LAYOUT BMM slow compute rate (cat 4). A batched matmul whose BOTH rank-3
+    # operands carry the COMPILER-DEFAULT [0,1,2] device tile order -- the batch dim B sits
+    # just inside the stick (device pos -2) -- runs the systolic array at a much SLOWER
+    # sustained rate than a plain 2D matmul: on clean reps=7 data (bmm_wd + bmm_layout
+    # both-default, cores=32, B>=4) the effective rate is a stable ~160 MAC/ns/core (us/GMAC
+    # ~214, mac_peak 145-147 raw; 160 the overlap-corrected fit), vs 1140 for a 2D matmul.
+    # The [1,0,2] "fast" layout (B outermost) sustains ~460-490; the compiler emits the slow
+    # [0,1,2] for every real bmm, so the model must charge the slow rate. It is COMPUTE-bound
+    # (us/GMAC is shape-flat; the effective HBM BW only appears to vary because io_hbm/MACs
+    # varies), so the fix is a per-op mac_peak override, NOT a bandwidth change. Detector:
+    # ``_default_layout_bmm_batch`` (both batched operands default at dev pos -2). GATED to
+    # B >= ``bmm_default_min_batch``: at B=2 (batch << the 32-way M*N split) the slow penalty
+    # halves (us/GMAC ~108, rate ~290) -- a distinct small-batch corner left on the plain
+    # rate. Also GATED to cores >= ``bmm_default_min_cores``: the slow rate is a many-core
+    # contention effect (implied per-core peak 407@c1, 241@c2, 168@c4 -> ~160 only at c>=8;
+    # the clean fit is all cores=32), so low-core bmm keeps the plain peak. Gold-safe: never
+    # fires on plain 2D ``mmwd`` (0/343) or the 3d-2d projection bmm.
+    bmm_default_mac_peak_per_core_ns: float = 160.0
+    bmm_default_min_batch: int = 4
+    bmm_default_min_cores: int = 8
 
     # Access-pattern effective HBM BW (GB/s) for non-matmul ops whose stick layout is
     # reorganized -- these fold turnaround into the single rate (measured io/kernel on
@@ -375,14 +426,29 @@ class CostParams:
     bw_restickify_gbps: float = (
         116.0  # transpose: stick swapped, LESS turnaround (faster)
     )
-    # cat on the partition (64-elem block) dim: fine sub-stick interleave. Its effective
-    # BW is SHAPE-dependent -- it falls mainly with the row width C (more sticks per row to
-    # scatter), weakly with R. Fit on the transport-shape sweep (R2=0.93 over 10 shapes):
-    # effBW = intercept - rows_coef*log2(R) - cols_coef*log2(C), clamped to [floor, peak].
-    bw_stick_scatter_intercept: float = 252.0
-    bw_stick_scatter_rows_coef: float = 4.0
-    bw_stick_scatter_cols_coef: float = 12.3
-    bw_stick_scatter_floor_gbps: float = 45.0  # large-C saturation clamp
+    # Stick-plane transports (cat0, transpose_outer, cat1): a `clone` that reorganizes the
+    # stick layout. The 32 cores split the stick-plane dim (sp = C/64); each core does the
+    # per-row stick work. Effective BW falls with the per-row strided stick gather -- more
+    # planes (sp) and a longer gather stride (more rows R) -- so all three share ONE form,
+    #   effBW = clamp(a - b*log2(sp) - d*log2(R), floor, bw_peak)   (report S6),
+    # differing only in calibration. cat0 = a STEEP untiled gather (its two cat copies sit
+    # just inside the stick, so each output row re-gathers sp scattered input sticks).
+    # transpose_outer = a GENTLE tiled block-transpose, calibrated at its best middle dim
+    # M=8 (effBW peaks at M~8 and falls either side -- M!=8 is a flagged residual, not yet
+    # modeled). cat1 = nearly FLAT (its cat copies sit outermost -> contiguous read+write).
+    # transpose itself is a hardware restickify (stick swapped) -> flat bw_restickify_gbps.
+    tx_cat0_a: float = 144.0
+    tx_cat0_b: float = 9.6
+    tx_cat0_d: float = 2.4
+    tx_cat0_floor_gbps: float = 44.0
+    tx_touter_a: float = 140.0
+    tx_touter_b: float = 6.8
+    tx_touter_d: float = 1.2
+    tx_touter_floor_gbps: float = 83.0
+    tx_cat1_a: float = 110.0
+    tx_cat1_b: float = 0.8
+    tx_cat1_d: float = 0.0
+    tx_cat1_floor_gbps: float = 90.0
     bw_reduce_outer_gbps: float = 113.0  # cross-row (dim0) reduction (sumcol)
     # Row-reduction READ rate falls with ROWS (the read pipeline degrades as each core
     # streams more rows), op-independent, saturating. Fit on the reduction-rows sweep
@@ -391,22 +457,84 @@ class CostParams:
     red_read_bw_floor_gbps: float = 114.0
     red_read_bw_amp_gbps: float = 61.0
     red_read_bw_scale_rows: float = 3700.0
+    # A reduction streams a full-tensor READ over the shared HBM bus; with FEWER active
+    # cores fewer parallel LX request streams are in flight, so a smaller fraction of peak
+    # HBM bandwidth is realized. reduction_read_bw() above is the cores=32 (full-bus)
+    # calibration; this table derates it below 32 cores. g(cores)=BW(cores)/BW(32), the mean
+    # over the clean plain reductions (read/amax/sumrow/mean) at their non-underfilled
+    # anchor shapes. It is SUB-linear/saturating (a single core drives ~11% of the bus, not
+    # 1/32=3%); g=cores/32 is falsified 3.6x. g(32)=1.0 EXACTLY -> the cores=32 gold path is
+    # untouched. c8/c16 are single-shot (no reps); the measured plateau ~0.54 is shipped
+    # as-is (a repeated low-core reduction sweep is the deciding experiment). Applies ONLY on
+    # the standalone-reduction branch below; fused softmax (len>1) is a separate io_hbm effect.
+    red_bw_cores_g: dict = dataclasses.field(
+        default_factory=lambda: {1: 0.11, 2: 0.22, 4: 0.43, 8: 0.54, 16: 0.54, 32: 1.0}
+    )
     # Ops that stream a FULL input plus a small BROADCAST operand (loaded once) -- copy
     # (x+const), bcast, bcastcol, mulbcast -- run FASTER than a plain 1R:1W op (~118 vs
     # ~105 GB/s; mechanism open). NOT `write` (both operands broadcast, no full input).
-    bw_broadcast_gbps: float = 118.0
+    bw_broadcast_gbps: float = (
+        118.0  # fallback rate (used only if the logical shape is absent)
+    )
+    # ALL FOUR broadcast ops share the SAME shape of effective-BW surface (a dense R×C sweep):
+    # a well-filled regime (ROWS >= min_rows) where the rate declines gently with both COLS and
+    # ROWS, and a short-tensor regime (ROWS < min_rows) that is a V-valley with its minimum at
+    # ROWS = COLS/64 (the output stick-plane count). The small-ROWS collapse and the COLS/ROWS
+    # dependence are GENERAL broadcast-kernel effects -- they are NOT specific to the b[1,C]
+    # operand (copy, a scalar broadcast, shows the same collapse). The only operand-specific
+    # difference is a small rate lift: the ROW-broadcast ops (bcast/mulbcast, b[1,C]) run a few
+    # GB/s faster than the scalar/column ops (copy/bcastcol), so each FAMILY gets its own fit.
+    bcast_bw_min_rows: float = (
+        1024.0  # split between the well-filled and short-tensor regimes
+    )
+    bcast_v_cols_split: float = (
+        4096.0  # short-tensor: COLS<=split -> quadratic, else -> V
+    )
+    # -- ROW-broadcast family (bcast, mulbcast: operand b[1,C]) --
+    bcast_bw_a: float = (
+        183.5  # well-filled: effBW = a - b*log2(COLS) - d*log2(ROWS)  (1.3% RMS)
+    )
+    bcast_bw_b: float = 2.8
+    bcast_bw_d: float = 2.6
+    bcast_q_a: float = (
+        -350.0
+    )  # short COLS<=4k: a + b*lr + c*lr^2 + e*log2(COLS)  (lr=log2 ROWS)
+    bcast_q_b: float = 105.0
+    bcast_q_c: float = -5.5
+    bcast_q_e: float = -2.0
+    bcast_v_plateau: float = 128.0  # short COLS>=8k V: min at ROWS=COLS/64
+    bcast_v_floor: float = 92.0
+    bcast_v_bl: float = 32.0
+    bcast_v_br: float = 10.0
+    # -- SCALAR/COLUMN family (copy: scalar; bcastcol: b[R,1]) -- same shape, slightly slower --
+    cbc_bw_a: float = 162.0  # well-filled surface (5.1% RMS)
+    cbc_bw_b: float = 1.8
+    cbc_bw_d: float = 2.2
+    cbc_q_a: float = -270.0  # short COLS<=4k quadratic (6.0% RMS)
+    cbc_q_b: float = 70.0
+    cbc_q_c: float = -3.5
+    cbc_q_e: float = 3.0
+    cbc_v_plateau: float = 120.0  # short COLS>=8k V (10.2% RMS)
+    cbc_v_floor: float = 98.0
+    cbc_v_bl: float = 15.0
+    cbc_v_br: float = 8.0
     # `write` (b[1,C] + c[R,1]: BOTH operands broadcast -> an outer-product write) is slow
     # and SUPER-LINEAR: the operands are re-read in the outer-product and the cost grows
     # steeply with COLS (and, more weakly, ROWS). No clean mechanism yet; the extra HBM
     # traffic is fit EMPIRICALLY on the write sweep -- extra_bytes = coef * ROWS^r * COLS^c,
     # charged at bw_peak. ~12% RMS over the sweep (worst ~-30% at mid sizes). Black-box,
     # to be replaced when the mechanism is understood (see report §4).
-    write_reread_coef: float = 2.148e-7
-    write_reread_r_exp: float = 1.60
-    write_reread_c_exp: float = 2.20
-    # Multi-pass pointwise chains (add3/add4: intermediates round-trip HBM) run slower per
-    # byte -- ~7.5% per extra op beyond the first. Fit on the arity sweep (add/add3/add4).
-    pointwise_arity_derate: float = 0.075
+    write_reread_coef: float = (
+        2.0e-9  # refit on the full dense write sweep (38 pts, 8.2% RMS)
+    )
+    write_reread_r_exp: float = 1.75
+    write_reread_c_exp: float = 2.60
+    # The power-law grows super-linearly and EXPLODES at the extreme corner (16384x16384
+    # predicts ~4.3x the output bytes of extra traffic -> +59% over-prediction; the measured
+    # effBW there is ~46 GB/s, implying ~2.2x). Cap the extra at a bounded multiple of the
+    # output bytes so the corner floors the effBW at ~bw_peak/(1+ratio) instead of running
+    # away. Only binds at the corner; the (under-predicted) mid-range is unchanged.
+    write_reread_max_ratio: float = 2.4
 
 
 def underfill_eff(
@@ -476,6 +604,47 @@ def _lx_spill_bw_derate(ops: list, params: CostParams | None = None) -> float:
     return (p.lx_spill_cap_bytes / ws) ** p.lx_spill_exp
 
 
+def _default_layout_bmm_batch(o) -> int:
+    """Return the batch size B if ``o`` is a DEFAULT-LAYOUT batched matmul, else 0.
+
+    A batched matmul (rank-3 operands, B>=2) whose operands carry the compiler-default
+    ``[0, 1, 2]`` device tile order places the batch dim just INSIDE the stick -- at device
+    position -2 (e.g. logical ``[B, X, Y]`` -> device ``[X, Y/64, B, 64]``). The alternate
+    ``[1, 0, 2]`` layout puts B outermost (device pos 0) and runs ~3x faster (cat 4). We
+    require BOTH rank-3 batched inputs to be default (the full ~3x penalty needs both
+    operands slow; a single-operand swap is only ~1.5x). Returns B for the slow case so the
+    caller can gate on batch size, 0 otherwise. NEVER matches a plain 2D matmul (no rank-3
+    input) or a 3d-2d projection bmm (only one rank-3 operand)."""
+    if not getattr(o, "is_matmul", False):
+        return 0
+    batched = [
+        a
+        for a in o.args
+        if a.role == "input" and len(a.logical) == 3 and a.logical[0] >= 2
+    ]
+    if len(batched) < 2:
+        return 0
+    b = batched[0].logical[0]
+    for a in batched:
+        # default [0,1,2] <=> batch dim B lands at device pos -2 (just before the stick)
+        if not (len(a.dims) >= 2 and a.dims[-2] == a.logical[0]):
+            return 0
+    return b
+
+
+def _matmul_mac_peak(o, params: "CostParams") -> float:
+    """Per-core sustained MAC/ns for a matmul op. A DEFAULT-LAYOUT bmm (both operands on the
+    slow ``[0,1,2]`` tile order) with batch B >= ``bmm_default_min_batch`` AND cores >=
+    ``bmm_default_min_cores`` runs the array at the slow
+    ``bmm_default_mac_peak_per_core_ns`` (~160) instead of the plain-matmul
+    ``mac_peak_per_core_ns`` (1140). All other matmuls (plain 2D, fast-layout bmm, small-batch
+    bmm, low-core bmm) keep the plain peak -- so the gold 2D-matmul path is untouched."""
+    b = _default_layout_bmm_batch(o)
+    if b >= params.bmm_default_min_batch and o.cores >= params.bmm_default_min_cores:
+        return params.bmm_default_mac_peak_per_core_ns
+    return params.mac_peak_per_core_ns
+
+
 def mm_spill_frac(tile_area: float, params: CostParams | None = None) -> float:
     """Operand RE-READ fraction for a matmul: once the per-core output-accumulator tile
     of area ``(M/m)*(N/n)`` exceeds ``mm_spill_area0`` (the on-chip capacity) the operands
@@ -527,13 +696,19 @@ def _is_broadcast_op(o) -> bool:
 
 
 def _is_outer_broadcast(o) -> bool:
-    """True for a `write`-like op where EVERY HBM input is a broadcast operand (no full
-    streamed input) -- an outer-product write ``b[1,C] + c[R,1]``. Its cost is slow and
-    super-linear (empirical ``write_reread_*`` term)."""
+    """True for a `write`-like op: an OUTER PRODUCT of two-or-more genuine broadcast operands,
+    each a 1-D-ish vector (a size-1 logical dim), e.g. ``b[1, C] + c[R, 1]``. Its cost is slow
+    and super-linear (empirical ``write_reread_*`` term). A SINGLE broadcast input that is a
+    FULL [R, C] tensor -- a cat copy loaded once and reused across the concat axis (cat0/cat1)
+    -- is NOT an outer product and must not be charged the write re-read term."""
     if getattr(o, "is_matmul", False) or o.is_reduction:
         return False
     ins = [a for a in o.args if a.role == "input" and a.mem == "hbm"]
-    return bool(ins) and all(a.broadcast for a in ins)
+    return (
+        len(ins) >= 2
+        and all(a.broadcast for a in ins)
+        and all(a.logical and 1 in a.logical for a in ins)
+    )
 
 
 def _outer_broadcast_extra_bytes(o, p) -> float:
@@ -550,7 +725,12 @@ def _outer_broadcast_extra_bytes(o, p) -> float:
     if out is None:
         return 0.0
     rows, cols = out.logical[-2], out.logical[-1]
-    return p.write_reread_coef * rows**p.write_reread_r_exp * cols**p.write_reread_c_exp
+    extra = (
+        p.write_reread_coef * rows**p.write_reread_r_exp * cols**p.write_reread_c_exp
+    )
+    # cap at a bounded multiple of the output bytes -> effBW floors instead of exploding
+    out_bytes = rows * cols * 2
+    return min(extra, p.write_reread_max_ratio * out_bytes)
 
 
 def _logical_rc(o):
@@ -566,18 +746,133 @@ def _logical_rc(o):
     return (out.logical[-2], out.logical[-1]) if out else None
 
 
-def stick_scatter_bw(o, p):
-    """cat-on-block-dim (cat0) effective BW: falls with row width C, weakly with R."""
+def _has_row_broadcast_operand(o) -> bool:
+    """True if a HBM input is a ROW-broadcast operand ``b[1, C]`` (bcast/mulbcast). copy
+    (scalar const) and bcastcol (``b[R, 1]``) do NOT qualify -- no wide COLS-growing operand."""
+    return any(
+        a.role == "input"
+        and a.mem == "hbm"
+        and a.broadcast
+        and len(a.logical) >= 2
+        and a.logical[-2] == 1
+        and a.logical[-1] > 1
+        for a in o.args
+    )
+
+
+def broadcast_bw(o, p):
+    """Effective HBM BW for a broadcast-operand op. All four ops share one surface SHAPE
+    (well-filled COLS/ROWS decline + a short-tensor V-valley whose min is at ROWS=COLS/64);
+    the ROW-broadcast ops (bcast/mulbcast, b[1,C]) run a few GB/s faster than the scalar/
+    column ops (copy/bcastcol), so each family has its own constants. See report §4."""
     rc = _logical_rc(o)
     if rc is None:
-        return p.bw_stick_scatter_floor_gbps
+        return p.bw_broadcast_gbps
     rows, cols = rc
-    bw = (
-        p.bw_stick_scatter_intercept
-        - p.bw_stick_scatter_rows_coef * math.log2(max(2, rows))
-        - p.bw_stick_scatter_cols_coef * math.log2(max(2, cols))
-    )
-    return min(p.bw_peak_gbps, max(p.bw_stick_scatter_floor_gbps, bw))
+    if cols <= 0 or rows <= 0:
+        return p.bw_broadcast_gbps
+    if _has_row_broadcast_operand(o):  # bcast / mulbcast
+        sa, sb, sd = p.bcast_bw_a, p.bcast_bw_b, p.bcast_bw_d
+        qa, qb, qc, qe = p.bcast_q_a, p.bcast_q_b, p.bcast_q_c, p.bcast_q_e
+        vp, vf, vbl, vbr = (
+            p.bcast_v_plateau,
+            p.bcast_v_floor,
+            p.bcast_v_bl,
+            p.bcast_v_br,
+        )
+        s_lo, s_hi, q_hi = 100.0, 135.0, 140.0
+    else:  # copy (scalar) / bcastcol (b[R,1])
+        sa, sb, sd = p.cbc_bw_a, p.cbc_bw_b, p.cbc_bw_d
+        qa, qb, qc, qe = p.cbc_q_a, p.cbc_q_b, p.cbc_q_c, p.cbc_q_e
+        vp, vf, vbl, vbr = p.cbc_v_plateau, p.cbc_v_floor, p.cbc_v_bl, p.cbc_v_br
+        s_lo, s_hi, q_hi = 95.0, 130.0, 120.0
+    lr, lc = math.log2(rows), math.log2(cols)
+    if rows >= p.bcast_bw_min_rows:  # well-filled: gentle decline with both dims
+        return max(s_lo, min(s_hi, sa - sb * lc - sd * lr))
+    if (
+        cols <= p.bcast_v_cols_split
+    ):  # short + narrow: only the V's rising side (a quadratic)
+        return max(45.0, min(q_hi, qa + qb * lr + qc * lr * lr + qe * lc))
+    dip = lc - 6.0  # short + wide: the full V-valley, minimum at ROWS = COLS/64
+    return max(40.0, min(vp, vf + vbl * max(0.0, dip - lr) + vbr * max(0.0, lr - dip)))
+
+
+# Per-op (a, b, d, floor) for the shared stick-plane-transport BW form (see CostParams).
+_TX_PARAM_ATTRS = {
+    "cat0": ("tx_cat0_a", "tx_cat0_b", "tx_cat0_d", "tx_cat0_floor_gbps"),
+    "transpose_outer": (
+        "tx_touter_a",
+        "tx_touter_b",
+        "tx_touter_d",
+        "tx_touter_floor_gbps",
+    ),
+    "cat1": ("tx_cat1_a", "tx_cat1_b", "tx_cat1_d", "tx_cat1_floor_gbps"),
+}
+
+
+def _transport_kind(o) -> str:
+    """Classify a stick-plane transport from its logical shapes. cat0 and transpose carry an
+    ``hbm_pattern`` already; cat1 and transpose_outer do NOT (they ride the default), so they
+    are detected here from the input->output logical reshape. Returns "" for anything else."""
+    if getattr(o, "is_matmul", False) or o.is_reduction:
+        return ""
+    outs = [a for a in o.args if a.role == "output" and a.mem == "hbm" and a.logical]
+    ins = [a for a in o.args if a.role == "input" and a.mem == "hbm" and a.logical]
+    if not outs or not ins:
+        return ""
+    ol, il = outs[0].logical, ins[0].logical
+    # transpose_outer: [R, M, C] -> [M, R, C] (rank-3 outer-dim swap; stick dim C kept).
+    if (
+        len(ol) == 3
+        and len(il) == 3
+        and ol[0] == il[1]
+        and ol[1] == il[0]
+        and ol[2] == il[2]
+        and ol[0] > 1
+        and ol[1] > 1
+    ):
+        return "transpose_outer"
+    # cat1: a 2-D input [R, C] reused across k copies -> [R, k, C] (concat on the stick axis).
+    if (
+        len(ol) == 3
+        and len(il) == 2
+        and ol[1] >= 2
+        and ol[0] == il[0]
+        and ol[2] == il[1]
+    ):
+        return "cat1"
+    return ""
+
+
+def _transport_rc(o, kind):
+    """(rows R, cols C) for a stick-plane transport. C is always the stick dim (logical[-1]);
+    R is the big non-stick dim -- logical[-2] EXCEPT cat1, whose output logical is [R, k, C]
+    (the copy count k sits at [-2]), so R is the outer dim there."""
+    outs = [
+        a
+        for a in o.args
+        if a.role == "output" and a.mem == "hbm" and len(a.logical) >= 2
+    ]
+    if not outs:
+        return None
+    ol = outs[0].logical
+    rows = ol[0] if kind == "cat1" else ol[-2]
+    return rows, ol[-1]
+
+
+def transport_bw(o, p, kind):
+    """Shared stick-plane-transport effective BW: clamp(a - b*log2(sp) - d*log2(R), floor,
+    peak), sp = C/64. One form for cat0 / transpose_outer / cat1; per-op constants."""
+    a, b, d, fl = (getattr(p, n) for n in _TX_PARAM_ATTRS[kind])
+    rc = _transport_rc(o, kind)
+    if rc is None:
+        return fl
+    rows, cols = rc
+    if rows <= 0 or cols <= 0:
+        return fl
+    sp = max(1.0, cols / 64.0)
+    bw = a - b * math.log2(sp) - d * math.log2(max(2, rows))
+    return min(p.bw_peak_gbps, max(fl, bw))
 
 
 def _reduction_rows(o):
@@ -597,6 +892,24 @@ def reduction_read_bw(rows, p):
         p.red_read_bw_floor_gbps
         + p.red_read_bw_amp_gbps * math.exp(-rows / p.red_read_bw_scale_rows),
     )
+
+
+def _reduction_bw_cores_factor(cores, p):
+    """g(cores)=BW(cores)/BW(32): the fraction of full-bus reduction bandwidth realized
+    with `cores` active cores. Piecewise-linear in log2(cores) over the measured anchor
+    table; 1.0 at cores>=32 (or unknown) so the cores=32 gold path is unchanged."""
+    g = p.red_bw_cores_g
+    if cores is None or cores >= 32:
+        return 1.0
+    if cores <= 1:
+        return g[1]
+    ks = sorted(g)
+    lc = math.log2(cores)
+    for a, b in zip(ks, ks[1:]):
+        if a <= cores <= b:
+            la, lb = math.log2(a), math.log2(b)
+            return g[a] + (g[b] - g[a]) * (lc - la) / (lb - la)
+    return 1.0
 
 
 def predict_ops(ops: list, params: CostParams | None = None) -> float:
@@ -625,12 +938,17 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
 
     def _eff_bw(o):  # per-op effective-BW override, or None -> default turnaround
         pat = getattr(o, "hbm_pattern", "")
-        if pat == "stick_scatter":  # cat0: shape-dependent rate (falls with C)
-            return stick_scatter_bw(o, p)
+        if pat == "stick_scatter":  # cat0: strided stick-plane gather (tagged)
+            return transport_bw(o, p, "cat0")
         if pat in _pat_bw:  # restickify (transpose), reduce_outer (sumcol)
             return _pat_bw[pat]
         if _is_broadcast_op(o):
-            return p.bw_broadcast_gbps
+            return broadcast_bw(o, p)
+        kind = _transport_kind(
+            o
+        )  # cat1 / transpose_outer -- untagged, detected structurally
+        if kind:
+            return transport_bw(o, p, kind)
         return None
 
     if any(getattr(o, "is_matmul", False) for o in ops):
@@ -673,21 +991,22 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         # reads at a rate that FALLS with ROWS. The rate is fit as (R+W)/time, so it
         # already includes the read/write turnaround -- do NOT add it again. sumcol takes
         # the reduce_outer path above; a FUSED coarse kernel (len>1, e.g. softmax) stays on
-        # bw_peak below so its input dedup is not broken.
-        mem = (r + w) / reduction_read_bw(_reduction_rows(ops[0]), p)
+        # bw_peak below so its input dedup is not broken. The ROWS rate is the cores=32
+        # calibration; below 32 cores fewer streams drive the HBM bus, so derate by g(cores)
+        # (g(32)=1 -> gold untouched). Only read/amax/sumrow/mean reach here at cores<32;
+        # ctsum/ctamax/ctamin/sumall structurally qualify too but only ever run at cores=32.
+        _bw = reduction_read_bw(_reduction_rows(ops[0]), p) * _reduction_bw_cores_factor(
+            ops[0].cores, p
+        )
+        mem = (r + w) / _bw
     else:
         mem = (r + w) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(r, w)
-        # Multi-pass pointwise chain (add3/add4): intermediates round-trip HBM, so the
-        # bundle runs slower per byte than a single op. ~7.5% per extra HBM op.
-        n_pw = sum(
-            1
-            for o in ops
-            if not o.is_reduction
-            and not getattr(o, "is_matmul", False)
-            and not o.tiles_output_dim
-        )
-        if n_pw > 1:
-            mem *= 1.0 + p.pointwise_arity_derate * (n_pw - 1)
+        # NOTE: a multi-op dependent chain (e.g. add3/add4 = chained binary adds) runs slower
+        # than its byte count because the intermediate is written then read back through HBM --
+        # a READ-AFTER-WRITE dependency ACROSS op boundaries (§3). That is a program-level /
+        # coarse-tiling effect, NOT a single-op cost, so it is deliberately NOT modeled here.
+        # `add_n` is not a native op; the single-op model stays pure. See notes/new_experiments_plan.md
+        # ("Next model") for the byte-keyed read-after-write term to unify with the coarse §15 spill.
     # `write` outer-product re-read: empirical extra HBM traffic, super-linear in the
     # output shape (both operands broadcast, no full input). Charged at bw_peak.
     mem += (
@@ -720,11 +1039,38 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
                 pt_eff = underfill_eff(
                     o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
                 )
-            compute += o.matmul_macs / o.cores / (p.mac_peak_per_core_ns * pt_eff)
+            # A DEFAULT-LAYOUT bmm (both operands on the slow [0,1,2] tile order, B>=gate)
+            # runs the array at the slow rate; every other matmul keeps the plain peak.
+            mac_peak = _matmul_mac_peak(o, p)
+            compute += o.matmul_macs / o.cores / (mac_peak * pt_eff)
+    # SPLIT-SHAPE re-read (§12): a large per-core output tile that is ALSO split many ways
+    # re-reads operands beyond what the symmetric area spill counts. Two-sided: splitting the
+    # LONGER output dim (knee 8) is penalized sooner/harder than the SHORTER (knee 16). An
+    # INTERACTION of tile size and split; 0 for balanced splits and small tiles.
+    split_ns = 0.0
+    for o in ops:
+        if o.is_matmul and o.cores > 0:
+            m_dev = o.matmul_rows_per_core * o.matmul_m_split
+            n_dev = o.matmul_cols_per_core * o.matmul_n_split
+            if m_dev >= n_dev:  # M is the longer output dim
+                long_fan, short_fan = o.matmul_m_split, o.matmul_n_split
+            else:
+                long_fan, short_fan = o.matmul_n_split, o.matmul_m_split
+            area_exc = max(
+                0.0, o.matmul_rows_per_core * o.matmul_cols_per_core - p.mm_split_area0
+            )
+            split_us = area_exc * (
+                p.mm_split_reread_us_per_elem
+                * max(0.0, math.log2(max(1, long_fan) / p.mm_split_long_knee))
+                + p.mm_split_short_us_per_elem
+                * max(0.0, math.log2(max(1, short_fan) / p.mm_split_short_knee))
+            )
+            split_ns += split_us * 1000.0  # us -> ns
     # compute/HBM OVERLAP: memory transfers pipeline with the systolic compute, so the
     # smaller of the two is partly hidden (gamma=0.46). For a non-matmul bundle compute=0
-    # -> min(0, mem_t)=0 -> t = mem_t (unchanged).
-    t = compute + mem_t - p.overlap_gamma * min(compute, mem_t)
+    # -> min(0, mem_t)=0 -> t = mem_t (unchanged). The split re-read is charged AFTER the
+    # overlap (it is not hidden by compute -- it is why the lopsided kernel runs long).
+    t = compute + mem_t - p.overlap_gamma * min(compute, mem_t) + split_ns
     # (A genuine-reduction cross-core ring-combine term once lived here; it is provably
     # bounded by ~cores * a tiny per-elem cost <= ~5 ns -- below run-to-run noise --
     # so it is dropped as inert. K is never split for matmul, so there is no matmul analogue.
@@ -783,15 +1129,21 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     mm_us, mm_lines = 0.0, []
     for o in ops:
         if o.is_matmul and o.matmul_macs > 0 and o.cores > 0:
-            pe = underfill_eff(
-                o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
+            pe = (
+                1.0
+                if o.tiles_output_dim
+                else underfill_eff(
+                    o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
+                )
             )
-            c_ns = o.matmul_macs / o.cores / (p.mac_peak_per_core_ns * pe)
+            mac_peak = _matmul_mac_peak(o, p)
+            c_ns = o.matmul_macs / o.cores / (mac_peak * pe)
             mm_us += c_ns / 1000
+            slow = " [default-layout bmm slow rate]" if mac_peak != p.mac_peak_per_core_ns else ""
             mm_lines.append(
                 f"     compute = MACs/cores/(mac_peak*pt_eff) = {o.matmul_macs}/"
-                f"{o.cores}/({p.mac_peak_per_core_ns:.0f}*{pe:.3f}) = {c_ns / 1000:.2f}"
-                f" us  (M/m={o.matmul_rows_per_core:.0f}, pt_eff={pe:.3f})"
+                f"{o.cores}/({mac_peak:.0f}*{pe:.3f}) = {c_ns / 1000:.2f}"
+                f" us  (M/m={o.matmul_rows_per_core:.0f}, pt_eff={pe:.3f}){slow}"
             )
     t = predict_ops(ops, p)
     parts = "(R+W)/BW_PEAK + a*min(R,W)"
@@ -817,6 +1169,31 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             f"({eff_rows:.1f}/{p.coarse_underfill_rfull:.0f})"
             f"**{p.coarse_underfill_exp}) = {eff:.3f}  "
             f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
+        )
+    split_us = 0.0
+    for o in ops:
+        if getattr(o, "is_matmul", False) and o.cores > 0:
+            m_dev = o.matmul_rows_per_core * o.matmul_m_split
+            n_dev = o.matmul_cols_per_core * o.matmul_n_split
+            lf, sf = (
+                (o.matmul_m_split, o.matmul_n_split)
+                if m_dev >= n_dev
+                else (o.matmul_n_split, o.matmul_m_split)
+            )
+            area_exc = max(
+                0.0, o.matmul_rows_per_core * o.matmul_cols_per_core - p.mm_split_area0
+            )
+            split_us += area_exc * (
+                p.mm_split_reread_us_per_elem
+                * max(0.0, math.log2(max(1, lf) / p.mm_split_long_knee))
+                + p.mm_split_short_us_per_elem
+                * max(0.0, math.log2(max(1, sf) / p.mm_split_short_knee))
+            )
+    if split_us > 0:
+        lines.append(
+            f"     split_reread = max(0,area-{p.mm_split_area0:.0f})*"
+            f"[cL*log2(fan_long/{p.mm_split_long_knee:.0f}) + "
+            f"cS*log2(fan_short/{p.mm_split_short_knee:.0f})] = {split_us:.2f} us"
         )
     lines.append(f"     => T_model = {t / 1000:.2f} us")
     return "\n".join(lines)

@@ -57,7 +57,18 @@ _KV = re.compile(r"(\w+)=(\S+)")
 _SPLITS = re.compile(r"(d\d+):\s*(\d+)")
 _LBL_MNK = re.compile(r"\bM=(\d+)\s+K=(\d+)\s+N=(\d+)")
 _LBL_SPLIT = re.compile(r"\bsplit\s+m=(\d+)\s+n=(\d+)\s+k=(\d+)")
+_LBL_B = re.compile(r"\bB=(\d+)")  # batch size for bmm_wd labels
+_LBL_BMNK_SPLIT = re.compile(
+    r"\bb=(\d+)\s+m=(\d+)\s+n=(\d+)\s+k=(\d+)"
+)  # forced bmm split
+_LBL_LAYOUT = re.compile(
+    r"\blayoutA=([\d,]+)\s+layoutB=([\d,]+)"
+)  # bmm_layout dim_orders
 _LBL_RPC = re.compile(r"rows/core=(\d+)")
+_LBL_FA = re.compile(  # flash_attn hint knobs from the label
+    r"H=(\d+)\s+Lq=(\d+)\s+Lk=(\d+)\s+D=(\d+)\s+htiles=(\d+)\s+"
+    r"qtiles=(\d+)\s+ktiles=(\d+)\s+wd=(\S+)"
+)
 
 _M_RW = re.compile(r"R=(\d+) B.*?W=(\d+) B.*?loop_trip L=(\d+)")
 _M_BASE = re.compile(r"base =.*?=\s*([\d.]+) us")
@@ -166,6 +177,46 @@ def _derive(rec):
                 "n": sp.get("d1", 1),
                 "k": sp.get("d2", 1),
             }
+    elif op in ("bmm_wd", "bmm_wd_3d2d", "bmm_layout"):
+        # Forced-split bmm (bmm_layout also carries a device dim_order per operand). The
+        # LABEL is authoritative (we set the split), so read b/m/n/k from it; MACs include
+        # the batch (B*M*N*K). split_actual is left as the raw op_it_space_splits dict --
+        # d0..dN mapping shifts with whether the batch dim collapses (3-dim when B=1, 4-dim
+        # when B>=2), so we do NOT hard-map it here.
+        if g := _LBL_MNK.search(label):
+            rec["M"], rec["K"], rec["N"] = int(g[1]), int(g[2]), int(g[3])
+        if g := _LBL_B.search(label):
+            rec["B"] = int(g[1])
+        if all(rec.get(d) for d in ("B", "M", "K", "N")):
+            rec["macs"] = rec["B"] * rec["M"] * rec["N"] * rec["K"]
+        if g := _LBL_BMNK_SPLIT.search(label):
+            rec["split_forced"] = {
+                "b": int(g[1]),
+                "m": int(g[2]),
+                "n": int(g[3]),
+                "k": int(g[4]),
+            }
+        if g := _LBL_LAYOUT.search(label):  # bmm_layout: the two operand dim_orders
+            rec["layout_a"], rec["layout_b"] = g[1], g[2]
+    elif op == "flash_attn":
+        # Multi-op coarse-tiled flash attention. The label carries the hint knobs; derive
+        # the coarse loop trip count (h_tiles * q_tiles * k_tiles) and the ~2 matmul MACs.
+        if g := _LBL_FA.search(label):
+            rec["H"], rec["Lq"], rec["Lk"], rec["D"] = (
+                int(g[1]),
+                int(g[2]),
+                int(g[3]),
+                int(g[4]),
+            )
+            rec["h_tiles"], rec["q_tiles"], rec["k_tiles"] = (
+                int(g[5]),
+                int(g[6]),
+                int(g[7]),
+            )
+            rec["wd"] = g[8]
+            rec["loop_trips"] = rec["h_tiles"] * rec["q_tiles"] * rec["k_tiles"]
+            # ~2 batched matmuls (QK^T reduces D, PV reduces Lk); B assumed 1 (the example)
+            rec["macs"] = 2 * rec["H"] * rec["Lq"] * rec["Lk"] * rec["D"]
     elif op == "chain":
         if g := _LBL_RPC.search(label):
             rec["rows_per_core"] = int(g[1])
@@ -255,6 +306,11 @@ _CSV_COLS = [
     "cores",
     "macs",
     "kernel_us",
+    "kernel_us_min",
+    "kernel_us_median",
+    "kernel_us_std",
+    "kernel_us_cv",
+    "reps",
     "pred_us",
     "err_pct",
     "bw_gbps",
@@ -262,6 +318,13 @@ _CSV_COLS = [
     "other_dev_us",
     "total_dev_us",
     "io_hbm_bytes",
+    "layout_a",
+    "layout_b",
+    "h_tiles",
+    "q_tiles",
+    "k_tiles",
+    "loop_trips",
+    "wd",
     "failed",
 ]
 

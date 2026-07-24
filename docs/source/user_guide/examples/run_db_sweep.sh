@@ -70,12 +70,13 @@ DB_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null)"
   run_one run_matmul_validate_sweep.sh "M1"   # HBM only; compute/psum have own scripts
   run_one run_matmul_compute_sweep.sh
   run_one run_split_sweep.sh
+  run_one run_split_shape_sweep.sh   # FORCED-split deconfound (H1 N-tile vs H2 fanout) + bmm_wd
   run_one run_decouple_sweep.sh
   run_one run_matmul_psum_sweep.sh
   run_one run_coarse_tiling_sweep.sh
   # Softmax coarse-tiling validation (fused-input-once + coarse_underfill re-fit, 2026-07-09):
   # the rpc grid + LX-spill knee, and the cross-COLS control (coarse_terms SM only -- skip the
-  # dropped `chain` CH and the deferred matmul_row MR).
+  # deferred matmul_row MR).
   run_one run_softmax_terms_sweep.sh
   run_one run_coarse_terms_sweep.sh "SM"
   # Decoupler sweeps (2026-07-09, design-review-vetted) -- upgrade the HYPOTHESIS terms:
@@ -88,10 +89,10 @@ DB_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null)"
 
 echo
 echo "==== parsing $DB_LOG into notes/sweep_records.{json,csv} ===="
-# Drop retired ops (chain) and stamp THIS run's sha as the authoritative current model,
-# so every row from this rebuild is flagged is_current (old mixed-version rows are not).
+# Stamp THIS run's sha as the authoritative current model, so every row from this
+# rebuild is flagged is_current (old mixed-version rows are not).
 python "$ROOT/notes/parse_sweep_logs.py" "$DB_LOG" \
-  --drop-ops chain --current-sha "$DB_SHA" \
+  --current-sha "$DB_SHA" \
   || echo "## !!! parse_sweep_logs.py failed (run it by hand)"
 
 echo

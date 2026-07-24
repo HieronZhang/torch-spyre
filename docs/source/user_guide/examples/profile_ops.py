@@ -42,6 +42,8 @@ Examples:
 """
 
 import os
+import statistics
+import time
 
 # Enable the cost-model dump so we read ITS device-layout I/O size (the same byte
 # accounting the model uses), and force compile so the dump fires.
@@ -59,13 +61,31 @@ OP = os.environ.get("BENCH_OP", "gelu")
 ROWS = int(os.environ.get("BENCH_ROWS", "512"))
 COLS = int(os.environ.get("BENCH_COLS", "16384"))
 WARMUP = int(os.environ.get("BENCH_WARMUP", "5"))
+# Noise protocol: take BENCH_REPS back-to-back PROFILED measurements (not one) and report
+# min/median/mean/std/cv of kernel_us, so a jittery point is visible (cv) instead of read
+# as a model error. The profiled kernel is a small fraction of the run and the profiler
+# adds at most ~3x, so extra reps are nearly free. kernel_us in the SUMMARY = the median.
+REPS = max(1, int(os.environ.get("BENCH_REPS", "7")))
 SENCORES = os.environ.get("SENCORES", "")  # core count (read only to tag the SUMMARY)
 TILES = int(os.environ.get("BENCH_TILES", "0"))  # coarse-tile dim0 into K (>=2 on)
 LX = os.environ.get("LX_PLANNING", "1")  # scratchpad planning on(1)/off(0); SUMMARY tag
 NCOLS = int(os.environ.get("BENCH_N", str(COLS)))  # matmul N dim (M=ROWS, K=COLS, N)
-WD_M = os.environ.get("WD_M")  # forced matmul work-div split (spyre_hint work_div):
-WD_N = os.environ.get("WD_N")  # cores = WD_M*WD_N*WD_K. Unset dim -> stays 1 (the hint
-WD_K = os.environ.get("WD_K")  # is FINAL, not floor-filled). Used by the `mmwd` op.
+BB = int(os.environ.get("BENCH_B", "8"))  # batch dim for bmm ops (a[B,M,K] @ b[B,K,N])
+TO_MID = int(
+    os.environ.get("TO_MID", "8")
+)  # transpose_outer middle (outer-swap) dim M:
+# [R,M,C]->[M,R,C]. Swept to isolate whether the outer-scatter count M drives effBW (it is
+# fixed at 8 in the R×C grid; the block-transpose vs strided-gather mechanism hinges on it).
+WD_B = os.environ.get("WD_B")  # forced work-div split (spyre_hint work_div). cores =
+WD_M = os.environ.get("WD_M")  # WD_B*WD_M*WD_N*WD_K. Unset dim -> stays 1 (the hint is
+WD_N = os.environ.get("WD_N")  # FINAL, not floor-filled). WD_M/N/K used by `mmwd`; all
+WD_K = os.environ.get("WD_K")  # four (incl. WD_B) used by `bmm_wd`/`bmm_wd_3d2d`.
+# Device tensor-layout dim_order for the two bmm operands (op `bmm_layout`), e.g. "1,0,2".
+# The LAST element is the stick dim -- keep it = the original last axis (K for arg A, N for
+# arg B) so the compiler does NOT insert a restickify/clone (which would change the counted
+# bytes and confound the layout signal). "1,0,2" only reorders the two OUTER axes.
+WD_LAYOUT_A = os.environ.get("WD_LAYOUT_A")  # dim_order for A [B,M,K]
+WD_LAYOUT_B = os.environ.get("WD_LAYOUT_B")  # dim_order for B [B,K,N]
 
 torch.manual_seed(0xAFFE)
 
@@ -91,7 +111,13 @@ _UNARY = {  # 1 read + 1 write (gelu/relu/sigmoid/exp also probe arithmetic-free
     "exp": torch.exp,
 }
 _BINARY = {"mul": lambda a, b: a * b, "add": lambda a, b: a + b}  # 2R + 1W
-_NARY = {"add3": 3, "add4": 4}  # n inputs summed (intermediates staged in LX)
+_NARY = {
+    "add3": 3,
+    "add4": 4,
+    "add5": 5,
+    "add6": 6,
+    "add8": 8,
+}  # n inputs summed (dependent chain)
 _REDUCE = {  # read-dominated; sumall reduces to a scalar -> ring combine
     "read": lambda x: x.sum(dim=-1),
     "sumrow": lambda x: x.sum(dim=-1),  # reduce COLS -> [ROWS] (within-stick axis)
@@ -166,54 +192,6 @@ def _ct_workload(rtype: str):
     torch._dynamo.reset_code_caches()
     FxGraphCache.clear()
     return torch.compile(fn), (x_cpu.to(DEVICE),)
-
-
-def _chain_workload():
-    """Fused pointwise chain ``z = (a + b) * c`` over [A=ROWS, B=COLS] -- the Part-3
-    LX-residency probe (mirrors the scratchpad example in coarse_tiling_loops.md).
-    BENCH_TILES>=2 tiles the A (row) dim so the intermediate ``y = a + b`` stays in LX
-    instead of round-tripping HBM; ``allow_all_ops_in_lx_planning`` makes y LX-eligible.
-    Untiled (BENCH_TILES<=1) is the baseline where y is a full HBM buffer. Toggle
-    LX_PLANNING to compare. The IO dump shows y in lx (free, tiled) vs hbm (counted)."""
-    import torch_spyre._inductor.propagate_named_dims as pnd
-    from torch._inductor.codecache import FxGraphCache
-    from torch_spyre._inductor import config, spyre_hint
-
-    global _PREPARE
-    a_n, b_n = ROWS, COLS
-    config.allow_all_ops_in_lx_planning = True  # let the intermediate y be LX-placed
-    xa = torch.randn(a_n, b_n, dtype=torch.float16)
-    xb = torch.randn(a_n, b_n, dtype=torch.float16)
-    xc = torch.randn(a_n, b_n, dtype=torch.float16)
-
-    def _declare():
-        pnd.declare_tensor_dim("A", a_n)
-        pnd.declare_tensor_dim("B", b_n)
-
-    _declare()
-
-    def _name(a, b, c):
-        pnd.name_tensor_dims(a, ["A", "B"])
-        pnd.name_tensor_dims(b, ["A", "B"])
-        pnd.name_tensor_dims(c, ["A", "B"])
-
-    if TILES >= 2:
-
-        def fn(a, b, c):
-            _name(a, b, c)
-            with spyre_hint(num_tiles_per_dim={"A": TILES}):
-                return (a + b) * c
-
-        _PREPARE = _declare
-    else:
-
-        def fn(a, b, c):
-            return (a + b) * c
-
-    fn(xa, xb, xc)  # eager reference call
-    torch._dynamo.reset_code_caches()
-    FxGraphCache.clear()
-    return torch.compile(fn), (xa.to(DEVICE), xb.to(DEVICE), xc.to(DEVICE))
 
 
 def _softmax_row_tiling():
@@ -384,6 +362,327 @@ def _matmul_row_tiling():
     return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
 
 
+def _matmul_k_tiling():
+    """`a @ b` [M,K]@[K,N] COARSE-TILED over the K (reduction) dim via
+    spyre_hint(num_tiles_per_dim={"K": TILES}) -- mirrors coarse_tile/run_matmul_k_tiled.py
+    and run_mm_k_tiled.py. M=ROWS, K=COLS, N=BENCH_N; TILES>=2 tiles K, else untiled."""
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    m, k, n = ROWS, COLS, NCOLS
+    xa = torch.rand(m, k, dtype=torch.float16)
+    yb = torch.rand(k, n, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("M", m)
+        pnd.declare_tensor_dim("K", k)
+        pnd.declare_tensor_dim("N", n)
+
+    _declare()
+
+    if TILES >= 2:
+
+        def fn(a, b):
+            pnd.name_tensor_dims(a, ["M", "K"])
+            pnd.name_tensor_dims(b, ["K", "N"])
+            with spyre_hint(num_tiles_per_dim={"K": TILES}):
+                return a @ b
+
+        _PREPARE = _declare
+    else:
+
+        def fn(a, b):
+            return a @ b
+
+    fn(xa, yb)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
+
+
+def _mm_nested_m_k():
+    """torch.mm [M,K]@[K,N] with NESTED tiling -- outer M x2, inner K x TILES -- mirrors
+    coarse_tile/run_mm_nested_outer_M_inner_K.py. M=ROWS, K=COLS, N=BENCH_N."""
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    m, k, n = ROWS, COLS, NCOLS
+    xa = torch.rand(m, k, dtype=torch.float16)
+    yb = torch.rand(k, n, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("M", m)
+        pnd.declare_tensor_dim("K", k)
+        pnd.declare_tensor_dim("N", n)
+
+    _declare()
+
+    if TILES >= 2:
+
+        def fn(a, b):
+            pnd.name_tensor_dims(a, ["M", "K"])
+            pnd.name_tensor_dims(b, ["K", "N"])
+            with spyre_hint(num_tiles_per_dim={"M": 2}):
+                with spyre_hint(num_tiles_per_dim={"K": TILES}):
+                    return torch.mm(a, b)
+
+        _PREPARE = _declare
+    else:
+
+        def fn(a, b):
+            return torch.mm(a, b)
+
+    fn(xa, yb)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (xa.to(DEVICE), yb.to(DEVICE))
+
+
+def _to_dev(t: torch.Tensor, layout_spec):
+    """Place a CPU tensor on the device, optionally with a chosen ``dim_order`` device
+    layout (op ``bmm_layout``). ``layout_spec`` is a comma-separated order like ``"1,0,2"``
+    (or None for the default placement). The LAST element must be the tensor's original
+    last axis so the compiler inserts NO restickify/clone (verified by the sweep's IR
+    grep). Lazy-init caveat: the very first ``.to(DEVICE)`` in the process must be plain,
+    so we do a tiny plain ``.to`` first to initialize before any ``device_layout`` copy."""
+    if not layout_spec:
+        return t.to(DEVICE)
+    from torch_spyre._C import SpyreTensorLayout
+
+    order = [int(x) for x in layout_spec.split(",")]
+    torch.zeros(1, dtype=t.dtype).to(DEVICE)  # plain to() first (fragile lazy init)
+    stl = SpyreTensorLayout(list(t.size()), list(t.stride()), t.dtype, order)
+    return t.to(DEVICE, device_layout=stl)
+
+
+def _bmm_workload(kind: str):
+    """Batched matmul -- mirrors coarse_tile/run_bmm_*.py. B=BENCH_B, M=ROWS, K=COLS,
+    N=BENCH_N; TILES>=2 tiles K (else untiled). ``kind``:
+      "k"      -> torch.bmm(a[B,M,K], b[B,K,N])       tiled over K
+      "3d2d"   -> torch.matmul(a[B,M,K], b[K,N])      2-D weight shared over the batch
+      "nested" -> torch.bmm(a[B,M,K], b[B,K,N])       outer B x2, inner K x TILES
+
+    If any of WD_B/WD_M/WD_N/WD_K is set, a FORCED work-division split
+    (spyre_hint work_div) is applied instead of coarse tiling -- the `bmm_wd` /
+    `bmm_wd_3d2d` ops, mirroring `mmwd` but for a batched output.
+    """
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    b_n, m, k, n = BB, ROWS, COLS, NCOLS
+    xa = torch.rand(b_n, m, k, dtype=torch.float16)
+    yb = (
+        torch.rand(k, n, dtype=torch.float16)
+        if kind == "3d2d"
+        else torch.rand(b_n, k, n, dtype=torch.float16)
+    )
+    mm = torch.matmul if kind == "3d2d" else torch.bmm
+
+    def _declare():
+        pnd.declare_tensor_dim("B", b_n)
+        pnd.declare_tensor_dim("M", m)
+        pnd.declare_tensor_dim("K", k)
+        pnd.declare_tensor_dim("N", n)
+
+    _declare()
+
+    def _name(a, b):
+        pnd.name_tensor_dims(a, ["B", "M", "K"])
+        pnd.name_tensor_dims(b, ["K", "N"] if kind == "3d2d" else ["B", "K", "N"])
+
+    # FORCED-split path (bmm_wd): any WD_* set -> hint work_div instead of coarse tiling.
+    # NB: must call _name(a,b) here -- the untiled `else` branch below does NOT name dims,
+    # and work_div_loop_info (which the cost-model decode reads) is populated only for
+    # NAMED, work_div-hinted ops.
+    wd = {
+        nm: int(os.environ[ev])
+        for nm, ev in (("B", "WD_B"), ("M", "WD_M"), ("N", "WD_N"), ("K", "WD_K"))
+        if os.environ.get(ev)
+    }
+    if wd:
+
+        def fn(a, b):
+            _name(a, b)
+            with spyre_hint(work_div=wd):
+                return mm(a, b)
+
+        _PREPARE = _declare
+    elif TILES >= 2 and kind == "nested":
+
+        def fn(a, b):
+            _name(a, b)
+            with spyre_hint(num_tiles_per_dim={"B": 2}):
+                with spyre_hint(num_tiles_per_dim={"K": TILES}):
+                    return mm(a, b)
+
+        _PREPARE = _declare
+    elif TILES >= 2:
+
+        def fn(a, b):
+            _name(a, b)
+            with spyre_hint(num_tiles_per_dim={"K": TILES}):
+                return mm(a, b)
+
+        _PREPARE = _declare
+    else:
+
+        def fn(a, b):
+            return mm(a, b)
+
+    fn(xa, yb)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    # Operand placement: default `.to(DEVICE)`, or a chosen device dim_order when
+    # WD_LAYOUT_A/B is set (op `bmm_layout`) -- see `_to_dev`.
+    return torch.compile(fn), (_to_dev(xa, WD_LAYOUT_A), _to_dev(yb, WD_LAYOUT_B))
+
+
+def _softmax_unrolled():
+    """Manual softmax chain (amax/sub/exp/sum/div) over [B,D]=[ROWS,COLS], tiled over B
+    with the tile loop UNROLLED (config.unroll_loops=True, sencores=1) -- mirrors
+    coarse_tile/run_softmax_unrolled.py. The unrolled IR has NO CoarseTileInfo (tiling
+    shows only as dim_hints), so it exercises the extractor's non-loop coarse path."""
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import config, spyre_hint
+
+    global _PREPARE
+    b_n, d = ROWS, COLS
+    x_cpu = torch.randn(b_n, d, dtype=torch.float16)
+
+    def _declare():
+        pnd.declare_tensor_dim("B", b_n)
+        pnd.declare_tensor_dim("D", d)
+
+    _declare()
+
+    def _softmax(x):
+        mx = x.amax(dim=-1, keepdim=True)
+        e = (x - mx).exp()
+        return e / e.sum(dim=-1, keepdim=True)
+
+    if TILES >= 2:
+
+        def fn(x):
+            pnd.name_tensor_dims(x, ["B", "D"])
+            with spyre_hint(num_tiles_per_dim={"B": TILES}):
+                return _softmax(x)
+
+        _PREPARE = _declare
+    else:  # TILES<=1: the UNTILED single-core reference (no B-tiling)
+        fn = _softmax
+
+    # Match the example's config: unroll the tile loop, single core, LX planning on.
+    config.unroll_loops = True
+    config.sencores = 1
+    config.lx_planning = True
+    config.allow_all_ops_in_lx_planning = True
+
+    fn(x_cpu)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    return torch.compile(fn), (x_cpu.to(DEVICE),)
+
+
+def _flash_attn_workload():
+    """Spyre flash-attention (mirrors flash_attn_example.py::flash_spyre) with the
+    coarse-tiling + work-division HINTS made env-configurable, so a sweep can vary the
+    block sizes and read the measured time for each. A MULTI-OP coarse-tiled program
+    (~28 ops): two batched matmuls (QK^T reduces over D, PV reduces over Lk) glued by the
+    online-softmax reductions, fused under one tiled loop nest -- see notes/flash_attn_hints.md.
+    Knobs: FA_B/FA_H/FA_LQ/FA_LK/FA_D (shape); FA_B_TILES/FA_H_TILES/FA_LQ_TILES/
+    FA_LK_TILES (coarse tile COUNTS per dim -> loop nest); FA_WD ("H:4,Lq:8,Lk:8" work_div
+    -> intra-tile cores). We are NOT modeling flash attn yet; this is data + IR capture."""
+    import math as _math
+
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    B = int(os.environ.get("FA_B", "1"))
+    H = int(os.environ.get("FA_H", "32"))
+    Lq = int(os.environ.get("FA_LQ", "4096"))
+    Lk = int(os.environ.get("FA_LK", "4096"))
+    D = int(os.environ.get("FA_D", "128"))
+    bt = int(os.environ.get("FA_B_TILES", "1"))
+    ht = int(os.environ.get("FA_H_TILES", "8"))
+    qt = int(os.environ.get("FA_LQ_TILES", "4"))
+    kt = int(os.environ.get("FA_LK_TILES", "1"))
+    wd = {}
+    for part in os.environ.get("FA_WD", "H:4,Lq:8,Lk:8").split(","):
+        nm, val = part.split(":")
+        wd[nm.strip()] = int(val)
+    scale = 1.0 / _math.sqrt(_math.sqrt(D))
+
+    def _declare():
+        pnd.declare_tensor_dim("B", B)
+        pnd.declare_tensor_dim("H", H)
+        pnd.declare_tensor_dim("Lq", Lq)
+        pnd.declare_tensor_dim("Lk", Lk)
+        pnd.declare_tensor_dim("D", D)
+
+    _declare()
+
+    def _name(q, k, v, m):
+        pnd.name_tensor_dims(q, ["B", "H", "Lq", "D"])
+        pnd.name_tensor_dims(k, ["B", "H", "Lk", "D"])
+        pnd.name_tensor_dims(v, ["B", "H", "Lk", "D"])
+        pnd.name_tensor_dims(m, ["B", "H", "Lq", "Lk"])
+
+    def flash(queries, keys, values, mask):
+        _name(queries, keys, values, mask)
+        output = torch.zeros_like(queries)
+        # sparse running max / denominator (the example's reduction hack)
+        real_max = torch.full(
+            (B, H, Lq, 64), float("-inf"), device=queries.device, dtype=torch.float16
+        ).amax(dim=-1)
+        denominator = torch.zeros(
+            (B, H, Lq, 64), device=queries.device, dtype=torch.float16
+        ).amax(dim=-1)
+        with spyre_hint(tiles={"B": bt}):
+            with spyre_hint(tiles={"H": ht}):
+                with spyre_hint(tiles={"Lq": qt}):
+                    with spyre_hint(tiles={"Lk": kt}):
+                        with spyre_hint(work_div=wd):
+                            keys_t = (keys * scale).transpose(-1, -2)
+                            scores = torch.matmul(queries * scale, keys_t) + mask
+                            block_max = torch.amax(scores, dim=-1)
+                            running_max = torch.maximum(real_max, block_max)
+                            exp_scores = torch.exp(scores - running_max.unsqueeze(-1))
+                            correction = torch.exp(real_max - running_max)
+                            denominator.copy_(
+                                denominator * correction + exp_scores.sum(dim=-1)
+                            )
+                            output.copy_(
+                                output * correction.unsqueeze(-1)
+                                + torch.matmul(exp_scores, values)
+                            )
+                            real_max.copy_(running_max)
+        return output / denominator.unsqueeze(-1)
+
+    q = torch.randn(B, H, Lq, D, dtype=torch.float16)
+    k = torch.randn(B, H, Lk, D, dtype=torch.float16)
+    v = torch.randn(B, H, Lk, D, dtype=torch.float16)
+    causal = torch.tril(torch.ones(Lq, Lk, dtype=torch.bool))
+    m = torch.zeros(1, 1, Lq, Lk, dtype=torch.float16)
+    m.masked_fill_(~causal, float("-inf"))
+    flash(q, k, v, m)  # eager reference call
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    _PREPARE = _declare
+    return (
+        torch.compile(flash),
+        (q.to(DEVICE), k.to(DEVICE), v.to(DEVICE), m.to(DEVICE)),
+    )
+
+
 def make_workload():
     if OP in _UNARY:
         return torch.compile(_UNARY[OP]), (_rand(ROWS, COLS),)
@@ -398,23 +697,70 @@ def make_workload():
         return torch.compile(_BCAST[OP]), (_rand(ROWS, COLS), _rand(1, COLS))
     if OP in _TRANSPORT:  # data movement (restickify): same bytes as a copy, scattered
         return torch.compile(_TRANSPORT[OP]), (_rand(ROWS, COLS),)
-    if OP == "transpose_outer":  # 3D [R,8,C]: swap OUTER dims, stick (last dim C) kept
+    if OP == "transpose_outer":  # 3D [R,M,C]: swap OUTER dims, stick (last dim C) kept
         tp = lambda x: x.transpose(0, 1).contiguous()  # noqa: E731
-        return torch.compile(tp), (_rand(ROWS, 8, COLS),)
+        return torch.compile(tp), (_rand(ROWS, TO_MID, COLS),)
     if OP == "bcastcol":  # col-vector broadcast: a[R,C] + b[R,1] (b cached across cols)
         return torch.compile(lambda a, b: a + b), (_rand(ROWS, COLS), _rand(ROWS, 1))
     if OP == "write":  # write-only: both inputs broadcast -> cached
         return torch.compile(lambda b, c: b + c), (_rand(1, COLS), _rand(ROWS, 1))
+    if (
+        OP == "add_indep2"
+    ):  # §3 control: two INDEPENDENT adds, same 4R:2W as add3 but NO
+        # read-after-write dependency (op0=a+b, op1=c+d). add3 − add_indep2 isolates the
+        # dependent round-trip cost from the byte count. (Verify in the IR whether Inductor
+        # fuses the two into one kernel or emits two; both readings are informative.)
+        indep = lambda a, b, c, d: (a + b, c + d)  # noqa: E731
+        return torch.compile(indep), tuple(_rand(ROWS, COLS) for _ in range(4))
+    import regex as _re
+
+    _sepm = _re.fullmatch(r"add(\d+)_sep", OP)
+    if (
+        _sepm
+    ):  # add{N}_sep -- §3 control: the SAME dependent chain as add{N} but forced into
+        # SEPARATE kernels (each add is its own torch.compile), read-after-write dependency
+        # IDENTICAL (the intermediate is written to HBM by one kernel and read by the next).
+        # add{N} vs add{N}_sep = the fusion cost with the dependency held fixed (same bytes).
+        # NOTE: the cost-model dump captures only the LAST sub-kernel's feats; the MEASURED
+        # kernel time (what we compare) covers all sub-kernels.
+        f = torch.compile(lambda a, b: a + b)  # noqa: E731
+        n = int(_sepm[1])
+
+        def chain(*ts):  # ((t0+t1)+t2)+... each '+' is a distinct compiled kernel
+            acc = f(ts[0], ts[1])
+            for t in ts[2:]:
+                acc = f(acc, t)
+            return acc
+
+        return chain, tuple(_rand(ROWS, COLS) for _ in range(n))
     if OP in _CT_REDUCE:  # coarse-tiled dim0 reduction (BENCH_TILES, LX_PLANNING)
         return _ct_workload(_CT_REDUCE[OP])
-    if OP == "chain":  # fused pointwise chain z=(a+b)*c, tiled -> y in LX (BENCH_TILES)
-        return _chain_workload()
     if OP == "softmax_row_tiling":  # softmax(dim=-1) NROW-tiled -> 5 ops fuse in LX
         return _softmax_row_tiling()
     if OP == "softmax_noexp_row_tiling":  # matched control: softmax structure, exp->mul
         return _softmax_noexp_row_tiling()
     if OP == "matmul_row_tiling":  # a@b coarse-tiled over M (num_tiles, not core split)
         return _matmul_row_tiling()
+    if OP == "matmul_k_tiling":  # a@b coarse-tiled over K (reduction dim)
+        return _matmul_k_tiling()
+    if OP == "mm_nested_m_k":  # mm nested: outer M x2, inner K x TILES
+        return _mm_nested_m_k()
+    if OP == "bmm_k_tiling":  # bmm [B,M,K]@[B,K,N] tiled over K
+        return _bmm_workload("k")
+    if OP == "bmm_3d2d_k_tiling":  # matmul [B,M,K]@[K,N] (shared weight) tiled over K
+        return _bmm_workload("3d2d")
+    if OP == "bmm_nested_b_k":  # bmm nested: outer B x2, inner K x TILES
+        return _bmm_workload("nested")
+    if OP == "bmm_wd":  # bmm [B,M,K]@[B,K,N] with a FORCED split via WD_B/M/N/K
+        return _bmm_workload("k")
+    if OP == "bmm_wd_3d2d":  # matmul [B,M,K]@[K,N] shared weight, FORCED split
+        return _bmm_workload("3d2d")
+    if OP == "bmm_layout":  # full bmm with a chosen device dim_order (WD_LAYOUT_A/B), +
+        return _bmm_workload("k")  # optional forced split (WD_B/M/N/K) -- see _to_dev
+    if OP == "flash_attn":  # multi-op coarse-tiled flash attention (FA_* hint knobs)
+        return _flash_attn_workload()
+    if OP == "softmax_unrolled":  # unrolled softmax chain over B (no CoarseTileInfo)
+        return _softmax_unrolled()
     if OP == "mm":  # matmul [M=ROWS, K=COLS] @ [K=COLS, N=BENCH_N]: a Reduction over K
         # -> work-division Pass 2 (cost_model_matmul_division) picks the (m,n,k) split.
         mm = lambda a, b: a @ b  # noqa: E731
@@ -431,10 +777,22 @@ def make_workload():
         + [
             "bcastcol",
             "write",
-            "chain",
+            "add_indep2",
+            "add3_sep",
+            "add4_sep",
             "softmax_row_tiling",
             "softmax_noexp_row_tiling",
+            "softmax_unrolled",
             "matmul_row_tiling",
+            "matmul_k_tiling",
+            "mm_nested_m_k",
+            "bmm_k_tiling",
+            "bmm_3d2d_k_tiling",
+            "bmm_nested_b_k",
+            "bmm_wd",
+            "bmm_wd_3d2d",
+            "bmm_layout",
+            "flash_attn",
             "mm",
             "mmwd",
             "transpose_outer",
@@ -499,11 +857,6 @@ def _print_model(feats: list) -> float:
             e = cost_model.coarse_underfill_eff(o.tile_rows_per_core, p)
             if e < eff:
                 eff, eff_rows = e, o.tile_rows_per_core
-    red_trip = max((o.loop_trip for o in feats if not o.tiles_output_dim), default=1)
-    pw_trip = max((o.loop_trip for o in feats if o.tiles_output_dim), default=1)
-    loop_ns = (p.c_loop_ns * red_trip if red_trip > 1 else 0.0) + (
-        p.c_loop_pointwise_ns * pw_trip if pw_trip > 1 else 0.0
-    )
     # Matmul compute term (additive).
     mm_us, mm_lines = 0.0, []
     for o in feats:
@@ -524,8 +877,6 @@ def _print_model(feats: list) -> float:
         parts = f"[{parts}] / eff_underfill"
     if mm_us > 0:
         parts = f"compute + {parts}"
-    if loop_ns > 0:
-        parts += " + c_loop*L"
     print(f"MODEL -- estimate (turnaround): T = {parts} --")
     print(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
     for ln in mm_lines:
@@ -547,9 +898,6 @@ def _print_model(feats: list) -> float:
             f"**{p.coarse_underfill_exp}) = {eff:.3f} "
             f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
         )
-    if loop_ns > 0:
-        lab = f"c_loop*{red_trip}" if red_trip > 1 else f"c_loop_pw*{pw_trip}"
-        print(f"MODEL   loop = {lab} = {loop_ns / 1000:.2f} us")
     print(f"MODEL   => T_model = {t / 1000:.2f} us")
     # Machine-readable feature vector (the model's INPUT) so a NEW model version can be
     # scored OFFLINE against the stored measured time -- no hardware re-run. Prefixed
@@ -564,50 +912,92 @@ def _print_model(feats: list) -> float:
 
 
 def _run():
+    def _sync(
+        out,
+    ):  # move result(s) to host; multi-output workloads return a tuple/list
+        for t in out if isinstance(out, (tuple, list)) else (out,):
+            t.cpu()
+
     compiled, args = make_workload()
     for _ in range(WARMUP):  # compile (-> cost-model dump fires) + warm the kernel
         if _PREPARE is not None:  # coarse-tile: re-declare named dims before each trace
             _PREPARE()
-        compiled(*args).cpu()
+        _sync(compiled(*args))
     io = dict(dump_cost_model.LAST_IO)  # device-layout I/O the model computed
     feats = list(dump_cost_model.LAST_FEATS)  # raw OpFeatures for predict_ops()
     io_hbm_bytes = io.get("hbm_bytes", 0)
 
-    with profile(
-        activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1],
-        record_shapes=True,
-        profile_memory=True,
-    ) as prof:
-        if _PREPARE is not None:  # coarse-tile: re-declare before the profiled trace
-            _PREPARE()
-        compiled(*args).cpu()
+    def _profile_once():
+        """One profiled trace -> (kernel_us, memset_us, other_us), classified by
+        EXCLUSION (a Memset / Memcpy is NOT the fused compute kernel; the new image
+        leaves the kernel event name BLANK, so a name match silently reports 0)."""
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1],
+            record_shapes=True,
+            profile_memory=True,
+        ) as prof:
+            if (
+                _PREPARE is not None
+            ):  # coarse-tile: re-declare before the profiled trace
+                _PREPARE()
+            _sync(compiled(*args))
+        kernel = memset = other = 0.0
+        for ev in prof.key_averages():
+            us = getattr(ev, "self_device_time_total", 0) or getattr(
+                ev, "self_cuda_time_total", 0
+            )
+            if not us or us <= 0:
+                continue
+            key = ev.key or ""
+            if "Memset" in key:
+                memset += us
+            elif "Memcpy" in key:
+                other += us
+            else:
+                kernel += (
+                    us  # fused compute kernel (sdsc_fused / inductor-spyre / BLANK)
+                )
+        return prof, kernel, memset, other
+
+    # NOISE PROTOCOL: REPS back-to-back profiled measurements. The kernel time is
+    # jitter-prone (esp. large-COLS memory ops), so a single measurement can read as a
+    # model error; we report min/median/mean/std/cv and use the MEDIAN as kernel_us.
+    kernels, memsets, others = [], [], []
+    first_prof = None
+    t_prof0 = time.perf_counter()
+    for i in range(REPS):
+        prof, k, ms, ot = _profile_once()
+        if i == 0:
+            first_prof = prof
+        if k > 0:
+            kernels.append(k)
+            memsets.append(ms)
+            others.append(ot)
+    prof_wall_s = time.perf_counter() - t_prof0
 
     print(f"== {OP}[{ROWS}x{COLS}] -- profiler kernel time vs cost-model I/O ==")
-    ka = prof.key_averages()
-    print(ka.table(sort_by="cuda_time_total", row_limit=20).replace("CUDA", "AIU"))
+    if first_prof is not None:  # show the first trace's event table (diagnostic)
+        print(
+            first_prof.key_averages()
+            .table(sort_by="cuda_time_total", row_limit=20)
+            .replace("CUDA", "AIU")
+        )
     _print_io(io)
     pred_us = _print_model(feats)  # cost-model estimate + rough calc (after I/O dump)
 
-    # Parseable one-liner for a size sweep -> re-fit fill + BW on the GOLDEN kernel
-    # time, and track the (non-deterministic) Memset overhead separately. The fused
-    # compute kernel is the SPYRE device time that is neither a Memset nor a Memcpy
-    # (DtoH/HtoD copy). We classify by EXCLUSION, not by name: older runtimes named it
-    # sdsc_fused_*/inductor-spyre-*, but the new image leaves the kernel event name
-    # BLANK -- so a name match silently reports 0. Memcpy copies go to `other`.
-    kernel = memset = other = 0.0
-    for ev in ka:
-        us = getattr(ev, "self_device_time_total", 0) or getattr(
-            ev, "self_cuda_time_total", 0
-        )
-        if not us or us <= 0:
-            continue
-        key = ev.key or ""
-        if "Memset" in key:
-            memset += us
-        elif "Memcpy" in key:
-            other += us
-        else:
-            kernel += us  # fused compute kernel (sdsc_fused / inductor-spyre / BLANK)
+    # Aggregate the replicate kernel times. MEDIAN is the reported kernel_us (robust);
+    # MIN is the cleanest true-kernel estimate; CV is the noise gate for the analysis.
+    if kernels:
+        k_med = statistics.median(kernels)
+        k_min = min(kernels)
+        k_mean = statistics.fmean(kernels)
+        k_std = statistics.pstdev(kernels) if len(kernels) > 1 else 0.0
+        k_cv = (k_std / k_mean * 100.0) if k_mean > 0 else 0.0
+        memset = statistics.median(memsets)
+        other = statistics.median(others)
+    else:
+        k_med = k_min = k_mean = k_std = k_cv = memset = other = 0.0
+    kernel = k_med  # SUMMARY kernel_us = median (back-compat)
     # Effective BW from the GOLDEN kernel time and the model's device-layout I/O.
     bw = io_hbm_bytes / (kernel * 1000) if kernel > 0 else 0.0
     err = (pred_us - kernel) / kernel * 100.0 if kernel > 0 else 0.0
@@ -615,12 +1005,21 @@ def _run():
     # forced (mmwd) split uses cores = m*n*k, which may be < SENCORES.
     mcores = max((getattr(o, "cores", 0) for o in feats), default=0)
     cores_tag = mcores if mcores > 0 else (SENCORES or "-")
+    # Per-run TIMING feedback: profiled-region wall time + per-rep, so future sweeps can
+    # be sized from real numbers instead of guessing. Prefixed TIMING for the sweep grep.
+    print(
+        f"TIMING op={OP} reps={len(kernels)}/{REPS} prof_wall_s={prof_wall_s:.2f} "
+        f"per_rep_s={prof_wall_s / max(1, REPS):.3f}"
+    )
     print(
         f"SUMMARY op={OP} rows={ROWS} cols={COLS} cores={cores_tag} "
         f"tiles={TILES} lx={LX} io_hbm_bytes={io_hbm_bytes} "
         f"kernel_us={kernel:.3f} pred_us={pred_us:.3f} err_pct={err:+.1f} "
         f"bw_gbps={bw:.1f} memset_us={memset:.3f} "
-        f"other_dev_us={other:.3f} total_dev_us={kernel + memset + other:.3f}"
+        f"other_dev_us={other:.3f} total_dev_us={kernel + memset + other:.3f} "
+        f"kernel_us_min={k_min:.3f} kernel_us_median={k_med:.3f} "
+        f"kernel_us_mean={k_mean:.3f} kernel_us_std={k_std:.3f} "
+        f"kernel_us_cv={k_cv:.2f} reps={len(kernels)}"
     )
 
 

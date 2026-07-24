@@ -183,22 +183,25 @@ def _row_split(op, default: int) -> int:
 
 
 def _matmul_features(op, out_elems: int, dtype_bytes: int):
-    """(macs, rows_per_core, cols_per_core, a_bytes, b_bytes, k_split) for a batchmatmul.
+    """(macs, rows_per_core, cols_per_core, a_bytes, b_bytes, k_split, m_split, n_split).
 
     ``macs`` = device(M*N)*K. ``rows_per_core`` = M/m (drives pt_eff + A re-read),
     ``cols_per_core`` = N/n (drives B re-read). ``a_bytes`` = |A| = M*K, ``b_bytes`` =
-    |B| = K*N (device dtype). ``k_split`` = the K-dim core split. M/N/K + splits are
-    recovered from the iteration space the way ``_cores`` decodes it: reduction (K) vars
-    have coeff 0 in the write index; among output vars M has the LARGEST write-index
-    coeff (row/outer dim), N the SMALLEST (stick/inner). Falls back to zeros/1 on any
-    failure -> the model drops the spill (safe for the validated balanced regime).
+    |B| = K*N (device dtype). ``k_split``/``m_split``/``n_split`` = the K/M/N core splits.
+    M/N/K + splits are recovered from the iteration space: reduction (K) vars have coeff 0
+    in the write index. Among the OUTPUT vars the batch is EXCLUDED -- a 3D [B,M,N] bmm
+    output puts the batch at the LARGEST write-index coeff, so the old "largest coeff = M"
+    mis-picked batch as M for B>=2 (rows_per_core came out as the batch size). M/N are taken
+    from the named-dim map when present (work_div-hinted runs) else from the two smallest
+    coeffs (M the larger, N the stick/inner). Falls back to zeros/1 on any failure -> the
+    model drops the spill (safe for the validated balanced regime).
     """
     data = getattr(op, "data", None)
     k_size = _prod_ints(getattr(data, "reduction_ranges", None) or [])
     macs = out_elems * k_size
     rows_per_core = cols_per_core = 0.0
     a_bytes = b_bytes = 0
-    k_split = 1
+    k_split = m_split = n_split = 1
     try:
         splits = getattr(op, "op_it_space_splits", None)
         if splits:
@@ -217,21 +220,40 @@ def _matmul_features(op, out_elems: int, dtype_bytes: int):
                 else:  # reduction (K) dim -> contributes to the K-split
                     k_split *= max(1, int(readable.get(s, 1)))
             if out_vars:
-                out_vars.sort(key=lambda t: t[0])  # largest coeff = M, smallest = N
-                m_sym, n_sym = out_vars[-1][1], out_vars[0][1]
+                # Identify M (row/outer) and N (stick/inner), EXCLUDING batch. Prefer the
+                # exact named-dim map (present on work_div-hinted runs); else drop the
+                # largest-coeff var(s) as batch and take M/N from the two smallest coeffs.
+                m_sym = n_sym = None
+                wdli = getattr(op, "work_div_loop_info", None)
+                if wdli:
+                    for _, s in out_vars:
+                        names = wdli.get(s, ())
+                        if m_sym is None and "M" in names:
+                            m_sym = s
+                        elif n_sym is None and "N" in names:
+                            n_sym = s
+                if m_sym is None or n_sym is None:
+                    ordered = sorted(out_vars, key=lambda t: t[0])  # ascending by coeff
+                    mn = ordered[:2]  # two smallest = (N, M); larger-coeff vars are batch
+                    m_sym = mn[-1][1]
+                    n_sym = mn[0][1] if len(mn) >= 2 else None
                 m_size = _int(it_space[m_sym], 1)
-                n_size = _int(it_space[n_sym], 1) if len(out_vars) >= 2 else 1
+                n_size = _int(it_space[n_sym], 1) if n_sym is not None else 1
+                m_split = max(1, int(readable.get(m_sym, 1)))
+                n_split = (
+                    max(1, int(readable.get(n_sym, 1))) if n_sym is not None else 1
+                )
                 if m_size > 1:
-                    rows_per_core = m_size / max(1, int(readable.get(m_sym, 1)))
+                    rows_per_core = m_size / m_split
                 if n_size > 1:
-                    cols_per_core = n_size / max(1, int(readable.get(n_sym, 1)))
+                    cols_per_core = n_size / n_split
                 a_bytes = m_size * k_size * dtype_bytes
                 b_bytes = k_size * n_size * dtype_bytes
     except Exception:  # noqa: BLE001 - best-effort feature extraction
         rows_per_core = cols_per_core = 0.0
         a_bytes = b_bytes = 0
-        k_split = 1
-    return macs, rows_per_core, cols_per_core, a_bytes, b_bytes, k_split
+        k_split = m_split = n_split = 1
+    return macs, rows_per_core, cols_per_core, a_bytes, b_bytes, k_split, m_split, n_split
 
 
 def _hbm_pattern(op, is_reduction: bool, out_dims) -> str:
@@ -336,6 +358,7 @@ def extract_op_features(op) -> OpFeatures:
     is_matmul = getattr(data, "reduction_type", None) == BATCH_MATMUL_OP
     matmul_macs, matmul_rows_per_core, matmul_cols_per_core = 0, 0.0, 0.0
     matmul_a_bytes = matmul_b_bytes = 0
+    matmul_m_split = matmul_n_split = 1
     if is_matmul:
         (
             matmul_macs,
@@ -344,6 +367,8 @@ def extract_op_features(op) -> OpFeatures:
             matmul_a_bytes,
             matmul_b_bytes,
             k_split,
+            matmul_m_split,
+            matmul_n_split,
         ) = _matmul_features(op, out_elems, dtype_bytes)
         reduction_cores = k_split
 
@@ -446,6 +471,8 @@ def extract_op_features(op) -> OpFeatures:
         matmul_cols_per_core=matmul_cols_per_core,
         matmul_a_bytes=matmul_a_bytes,
         matmul_b_bytes=matmul_b_bytes,
+        matmul_m_split=matmul_m_split,
+        matmul_n_split=matmul_n_split,
         hbm_pattern="" if is_matmul else _hbm_pattern(op, is_reduction, out_dims),
     )
 
