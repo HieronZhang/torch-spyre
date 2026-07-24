@@ -483,46 +483,119 @@ def _broadcast_log_rows():
 # C (the b[1,C] row operand) AND with R -> C-dominant but not a clean single spill.
 # ============================================================================
 def fig_write_spill(_recs):
-    # effective BW = HBM bytes moved / time -- collapses as the op does far more work
-    # (the outer-product write) than its counted bytes suggest. Use ALL write records
-    # (version-independent measured times), averaging repeats, for denser coverage.
+    # effective BW = HBM bytes moved / time. The outer-product write does far more work than
+    # its counted bytes suggest, so effBW collapses as ROWS *and* COLS grow. Plot EVERY ROWS
+    # present (measured, solid) with the refit model overlaid (dashed) so fit + coverage are
+    # both visible. Uses ALL write records (measured times are version-independent).
     from collections import defaultdict
 
+    cm = _cost_model()
     recs = _load(current_only=False)
-    agg = defaultdict(lambda: defaultdict(list))
+    meas = defaultdict(dict)  # meas[R][C] = mean measured effBW
+    model = defaultdict(dict)  # model[R][C] = model effBW (from predict_ops on the feats)
+    tmp = defaultdict(lambda: defaultdict(list))
     for r in recs:
-        if r.get("op") == "write" and r.get("io_hbm_bytes") and r.get("cols"):
-            agg[r.get("rows")][r["cols"]].append(
-                int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"]
-            )
-    fig, ax = plt.subplots(figsize=(5.2, 3.8))
-    colors = {512: "#1f77b4", 2048: "#ff7f0e", 8192: "#d62728"}
-    for R in (512, 2048, 8192):
-        pts = sorted((c, sum(v) / len(v)) for c, v in agg.get(R, {}).items())
-        if pts:
-            xs, ys = zip(*pts)
-            ax.plot(xs, ys, "-o", color=colors[R], ms=5, label=f"ROWS={R}")
-    ax.axhline(
-        118, ls="--", color="0.5", lw=1.0, label="broadcast rate 118 (small-op start)"
-    )
+        if r.get("op") != "write" or not r.get("io_hbm_bytes") or not r.get("cols"):
+            continue
+        if r.get("cores") not in (32, None) or r.get("failed"):
+            continue
+        R, C, io = r.get("rows"), r["cols"], int(r["io_hbm_bytes"])
+        tmp[R][C].append(io / 1e3 / r["kernel_us"])
+        if C not in model[R] and r.get("feats"):  # one model point per (R,C)
+            try:
+                feats = r["feats"]
+                feats = feats if isinstance(feats, list) else json.loads(feats)
+                pred = cm.predict_ops(cm.ops_from_json(json.dumps(feats))) / 1e3
+                model[R][C] = io / 1e3 / pred
+            except Exception:  # noqa: BLE001 - a bad feats row just omits its model point
+                pass
+    for R in tmp:
+        for C, v in tmp[R].items():
+            meas[R][C] = sum(v) / len(v)
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    # only ROWS with >=2 COLS points -- a lone point (R=64/256, measured only at C=16384)
+    # shows no trend, so it is omitted rather than drawn as an isolated dot.
+    rows_present = sorted(R for R in meas if len(meas[R]) >= 2)
+    cmap = plt.cm.viridis(np.linspace(0, 0.9, len(rows_present)))
+    for color, R in zip(cmap, rows_present):
+        mpts = sorted(meas[R].items())
+        xs, ys = zip(*mpts)
+        ax.plot(xs, ys, "-o", color=color, ms=5, label=f"ROWS={R}")
+        gpts = sorted(model.get(R, {}).items())
+        if gpts:
+            gx, gy = zip(*gpts)
+            ax.plot(gx, gy, "--", color=color, lw=1.1, alpha=0.7)
+    ax.plot([], [], "k--", lw=1.1, label="model (refit)")
     ax.set_xscale("log", base=2)
     ax.set_xticks([1024, 2048, 4096, 8192, 16384])
     ax.set_xticklabels(["1k", "2k", "4k", "8k", "16k"])
     ax.set_xlabel("COLS")
     ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
-    ax.set_title("§4  write: effective BW falls with ROWS and COLS")
-    ax.annotate(
-        "starts near ~118 at small size;\ncollapses as ROWS and COLS grow",
-        xy=(0.03, 0.05),
-        xycoords="axes fraction",
-        va="bottom",
-        ha="left",
-        fontsize=8,
-        color="0.3",
-        bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"),
-    )
-    ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
+    ax.set_title("§4  write: effective BW vs COLS, every ROWS (solid=measured, dashed=model)")
+    ax.legend(loc="upper right", fontsize=7.5, framealpha=0.9, ncol=2)
+    ax.grid(True, which="both", ls=":", alpha=0.35)
     _save(fig, "fig4b_write_spill")
+
+
+# ============================================================================
+# §4c -- small-ROWS broadcast valley: bcast effBW vs ROWS, one line per COLS. The
+# minimum sits at ROWS = COLS/64 (output stick-planes) -- a V that is only a rising
+# side for small COLS (dip below range) and a full V for large COLS. Model overlaid.
+# ============================================================================
+def fig_broadcast_smallr(_recs):
+    from collections import defaultdict
+
+    cm = _cost_model()
+    recs = _load(current_only=False)
+    meas = defaultdict(dict)  # meas[C][R]
+    model = defaultdict(dict)
+    tmp = defaultdict(lambda: defaultdict(list))
+    for r in recs:  # the dense small-ROWS sweep (bcast), cores=32
+        if r.get("op") != "bcast" or r.get("cores") != 32 or r.get("failed"):
+            continue
+        if "bcast_smallr" not in (r.get("log_file") or ""):  # dense same-build sweep only
+            continue
+        R, C, io = r.get("rows"), r.get("cols"), r.get("io_hbm_bytes")
+        if not io or not R or not C or R > 1024:
+            continue
+        tmp[C][R].append(io / 1e3 / r["kernel_us"])
+        if R not in model[C] and r.get("feats"):
+            try:
+                feats = r["feats"]
+                feats = feats if isinstance(feats, list) else json.loads(feats)
+                pred = cm.predict_ops(cm.ops_from_json(json.dumps(feats))) / 1e3
+                model[C][R] = io / 1e3 / pred
+            except Exception:  # noqa: BLE001
+                pass
+    for C in tmp:
+        for R, v in tmp[C].items():
+            meas[C][R] = sum(v) / len(v)
+
+    fig, ax = plt.subplots(figsize=(6.6, 4.2))
+    cols = sorted(meas)
+    cmap = plt.cm.plasma(np.linspace(0, 0.85, len(cols)))
+    for color, C in zip(cmap, cols):
+        mp = sorted(meas[C].items())
+        xs, ys = zip(*mp)
+        ax.plot(xs, ys, "-o", color=color, ms=6, label=f"COLS={C // 1024}k")
+        gp = sorted(model.get(C, {}).items())
+        if gp:
+            gx, gy = zip(*gp)
+            ax.plot(gx, gy, "--", color=color, lw=1.1, alpha=0.75)
+        dipR = C / 64.0  # the model's valley floor: ROWS = COLS/64 (stick-planes)
+        if xs[0] <= dipR <= xs[-1]:
+            ax.axvline(dipR, color=color, ls=":", lw=0.8, alpha=0.5)
+    ax.plot([], [], "k--", lw=1.1, label="model (quad COLS≤4k / V COLS≥8k)")
+    ax.set_xscale("log", base=2)
+    ax.set_xticks([64, 128, 256, 512, 1024])
+    ax.set_xticklabels([64, 128, 256, 512, 1024])
+    ax.set_xlabel("ROWS")
+    ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
+    ax.set_title("§4  small-ROWS bcast: a V-valley with minimum at ROWS = COLS/64")
+    ax.legend(loc="lower right", fontsize=7.5, framealpha=0.9, ncol=2)
+    ax.grid(True, which="both", ls=":", alpha=0.35)
+    _save(fig, "fig4c_broadcast_smallr")
 
 
 # ============================================================================
@@ -1422,6 +1495,7 @@ _FIGS = {
     "pointwise_arity_reads": fig_pointwise_arity_reads,
     "broadcast_effbw": fig_broadcast_effbw,
     "write_spill": fig_write_spill,
+    "broadcast_smallr": fig_broadcast_smallr,
     "reduction": fig_reduction,
     "transport": fig_transport,
 }

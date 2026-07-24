@@ -1,4 +1,4 @@
-# Spyre Cost Model — Status / Handoff (2026-07-07)
+# Spyre Cost Model — Status / Handoff (updated 2026-07-24)
 
 Living status + detail doc — **read this first on resume**. The full model write-up is
 [cost_model_report.md](cost_model_report.md) (the MAIN doc — the long-form derivation of every
@@ -9,6 +9,230 @@ number changes here, update the report.
 Goal: a HIGH-LEVEL **relative** cost model over the after-pre-scheduling LoopLevel IR, to
 guide optimization (LX placement, coarse-tiling). Bar: correct ranking + ±15-20%. No local HW —
 edit locally, hand commands to a run machine, logs pasted back.
+
+---
+
+## ⭐ CURRENT STATE & PLAN (2026-07-24) — supersedes the older dated sections below
+
+**The active effort is the "outlier attack": fix every ≥10% mispredicted *normal/valid* input,
+mechanistically and noise-controlled** (standing directive, see memory `outlier-attack-six-categories`;
+detailed plan `~/.claude/plans/shimmering-percolating-rivest.md`). Ignore tiny matmuls and
+1×32/32×1 extremes.
+
+### Data + how to score (do this on resume)
+
+- **Overnight sweep** `haoyang_logs/outlier_20260723_072217.log` (450 usable points) + targeted
+  **broadcast small-ROWS sweep** `haoyang_logs/bcast_smallr_20260724_015428.log`, both folded into
+  `notes/sweep_records.json`. Per-run IR dumps in `haoyang_logs/ir/`.
+- **Noise protocol** now in `profile_ops.py`: `BENCH_REPS` back-to-back profiled measurements →
+  `kernel_us_min/median/std/cv` in the SUMMARY. **Score on CLEAN, MATCHED data** (cores=32, low
+  `cv`). `eval_model.py --all` mixes core counts (a real `BW(cores)` effect) and old runs, so it
+  is NOT the accuracy number — filter to matched conditions.
+- Sweep scripts: `docs/source/user_guide/examples/run_outlier_sweep.sh` (the superset, 9 sections,
+  budget-guarded via `MAX_SECONDS`), `run_broadcast_smallr_sweep.sh`.
+
+### The six categories — status + key finding
+
+1. **broadcast / write** — ✅ **DONE** (report §4, models below). RMS 12.0→6.3%.
+2. **transport** — **IN PROGRESS (2026-07-24).** Ops understood from device `dims`:
+   `transpose` [R,C]→[C,R] = within-stick reshuffle → **flat ~116 GB/s, already ±2% at 32 cores
+   (DONE, the −15% is only cores=1, out of scope)**; `transpose_outer` [R,**M**,C]→[M,R,C]
+   (M=middle dim, hardcoded 8 → moves 8× the R×C bytes) = whole-stick outer scatter, unmodeled
+   (−13…−25%); `cat0` append-rows = strided stick gather (sp=C/64 strided reads/row, stride=R
+   sticks), current `stick_scatter` log-fit miscalibrated (over-predicts large C +26%, under mid
+   −15%); `cat1` append-stick-dim = rides default, systematic −8…−12% at large C/R. MECHANISM
+   (well-supported): effBW falls with **sp = C/64** (the stick-plane count → more strided per-row
+   gathers) and mildly with R. NOT yet resolved (needs data): whether the outer-swap count M
+   matters (block-transpose vs pure gather), the sp saturation form, and a real R U-shape (both
+   small AND large R slow at fixed sp). Isolation sweep WRITTEN + ready:
+   `docs/source/user_guide/examples/run_transport_iso_sweep.sh` (46 runs: TOMID M-sweep = the
+   crux, SPSAT larger sp, RSHAPE R-extremes, XIR IR capture) + harness knob `TO_MID` in
+   `profile_ops.py`. Model AFTER data returns; scratch scorer `notes/analyze_transport.py`.
+3. **matmul γ(cores)** — pending. FINDING: error drifts **−6.3% (1 core) → +7.6% (32 cores)** — a
+   single scalar γ=0.46 mis-tracks core count. New forced 1/2/4-core data exists (`mmwd`).
+4. **bmm layout** — pending, **HIGH VALUE.** FINDING: at matched shape/MACs/split, `[1,0,2]` vs
+   default `[0,1,2]` device tile order is **−54…−70%** — a pure dataflow effect (bytes identical,
+   no inserted copy). This is the long-unexplained bmm residual. Model a layout-keyed rate. Op
+   `bmm_layout` + `WD_LAYOUT_A/B` in the harness.
+5. **softmax_unrolled** — pending. −91%: its IR has **no `CoarseTileInfo`**, runs `cores=1`,
+   `loop_trip=1` → the extractor under-counts. IR captured in `haoyang_logs/ir/`. It's an
+   extractor bug in `dump_cost_model.py`, not a rate.
+6. **coarse mm/bmm** — pending, after pure mm/bmm are solid (LX-resident intermediates make the
+   overlap harder).
+
+### ⭐⭐ The original directive (VERBATIM, categories 2–6) — the load-bearing spec
+
+The user's exact framing for the remaining categories. **Overarching rule (repeated at the end):
+in many of these cases, do NOT use direct mathematical fitting — do mechanism-based modeling.**
+Keep this block intact; it is the acceptance bar for each category, not just a to-do list.
+
+> **(2) transport:** There are still some cases:
+>
+> ```
+> cat1              512×8192     243.2    215.9     −11.2
+> cat0              8192×8192    8219.3   10011.6   +21.8
+> transpose_outer   1024×4096    1477.1   1280.0    −13.3
+> transpose_outer   512×8192     1635.7   1280.0    −21.7
+> transpose_outer   4096×4096    6010.8   5120.0    −14.8
+> transpose_outer   8192×8192    25324.2  20479.8   −19.1
+> ```
+>
+> It seems that we didn't build a good enough model for transpose_outer. What I'm thinking: as we
+> wrote, "each output row is reassembled from the 64-element stick blocks of the inputs — a shuffle
+> at block granularity — so a wider row has more blocks to permute into place, and that per-block
+> shuffle, not the byte count, sets the cost." So we should actually try to model how this shuffle
+> effect affects the hbm I/O cost, not just follow the data and build a mathematical model. To
+> achieve this, we may need much more data with more coverage. And cat0 and transpose_outer both
+> should be somehow affected by this effect and should be properly modeled.
+>
+> **(3) Matmul.** We can ignore those tiny matrices and very extreme work-division split cases
+> (1×32 or 32×1). However, all the other cases we should have a more accurate prediction. According
+> to the new figure in figure 10, a lot of normal cases still cannot be accurately predicted with
+> our current model. So we have to think more carefully about our model. Some points we have to
+> think of: a. why/how we model the overlap of compute and memory I/O. Currently we simply use a
+> gamma to estimate how well it can overlap. But this is very naive and I believe can hardly be
+> true; especially, I don't think in different cases (e.g., different tensor shapes, or different
+> work division splits, batched or not) the gamma are the same value because they could have much
+> different access patterns. So we should probably rethink about this first. One thing we should
+> definitely do is to design a large set of sweep experiments to isolate the effect of work
+> division split by forcing the work to be done with **only one core** and maybe 2, 4 cores (try
+> all three of them, especially with only one core). The contents in current section 11 and 12 are
+> more convincible, but the data still looks a bit messy. And a big problem in those sections is
+> still, as I said, we should probably make better hypothesis about how each of these effects
+> affects/hurts the hbm I/O pattern and hence increase hbm or compute cost, we should probably
+> really model this instead of doing mathematical regressions. However, I would say section 11 and
+> 12 is not as important as broadcast/transport modeling. If it's really hard to model exactly
+> these at this time, pure-math modeling based on profile is weakly acceptable.
+>
+> **(4) batched matmuls.** Currently, nearly all the bmm points look really bad. Currently, we
+> still have this problem unresolved: "The residual is over and above the B× accounting — on both
+> sides. At equal MACs, the full bmm and the projection differ only in weight traffic" and
+> unexplained. A potential explanation is that the device layout of the tensors for bmm is
+> currently critically affecting the performance. A bad way of device layout may severely affect
+> the performance. We should design comprehensive sweep experiments to address this question and
+> verify the hypothesis. To write those corresponding benchmarks, we should use SpyreTensorLayout
+> to control the memory layout of the tensors on device. The theory is that [1,0,2] order may
+> perform better than the default [0,1,2] order of BMMs. Some constraints: the last dimension is
+> the stick dimension. For a mm or bmm to be legal it must be the K dimension of the first argument
+> and the N dimension of the second. The compiler will automatically insert a copy of the tensor to
+> make this true if given different format. This will confuse the modeling (so avoid it). The
+> `to(..., device_layout)` cannot be the very first `to` in your program. The lazy initialization
+> of torch spyre is a bit fragile. Be sure to do a normal `to` first and all will be fine. Example:
+>
+> ```python
+> import torch
+> from torch_spyre._C import SpyreTensorLayout
+>
+> DEVICE = torch.device("spyre")
+>
+> x = torch.rand(3, 128, 256, dtype=torch.float16)
+> y = torch.rand(3, 256, 1024, dtype=torch.float16)
+>
+> @torch.compile
+> def bmm(a, b):
+>     return a.bmm(b)
+>
+> # Default layout result
+> x_dev = x.to(DEVICE)
+> y_dev = y.to(DEVICE)
+> result_1 = bmm(x_dev, y_dev).cpu()
+>
+> # Same as the default memory layout, but specified explicitly
+> x_stl = SpyreTensorLayout(x.size(), x.stride(), torch.float16, [0, 1, 2])
+> y_stl = SpyreTensorLayout(y.size(), y.stride(), torch.float16, [0, 1, 2])
+> x_dev = x.to(DEVICE, device_layout=x_stl)
+> y_dev = y.to(DEVICE, device_layout=y_stl)
+> result_2 = bmm(x_dev, y_dev).cpu()
+>
+> # Alternate memory layout: both tensors with dim 1 tiled with 2
+> x_stl = SpyreTensorLayout(x.size(), x.stride(), torch.float16, [1, 0, 2])
+> y_stl = SpyreTensorLayout(y.size(), y.stride(), torch.float16, [1, 0, 2])
+> x_dev = x.to(DEVICE, device_layout=x_stl)
+> y_dev = y.to(DEVICE, device_layout=y_stl)
+> result_3 = bmm(x_dev, y_dev).cpu()
+>
+> # You can mix memory layouts as long as the stick dimension is unchanged.
+> x_stl = SpyreTensorLayout(x.size(), x.stride(), torch.float16, [1, 0, 2])
+> y_stl = SpyreTensorLayout(y.size(), y.stride(), torch.float16, [0, 1, 2])
+> x_dev = x.to(DEVICE, device_layout=x_stl)
+> y_dev = y.to(DEVICE, device_layout=y_stl)
+> result_4 = bmm(x_dev, y_dev).cpu()
+>
+> torch.testing.assert_close(result_1, result_2, rtol=0.001, atol=0.00001)
+> torch.testing.assert_close(result_2, result_3, rtol=0.001, atol=0.00001)
+> torch.testing.assert_close(result_3, result_4, rtol=0.001, atol=0.00001)
+> ```
+>
+> **(5) coarse tiling with softmax family (row_tiling, unrolled).** The unrolled part is especially
+> bad. Examples:
+>
+> ```
+> softmax_unrolled   1024×512    1  1   288   23   -92
+> softmax_unrolled   1024×512    4  1   294   21   -93
+> softmax_unrolled   1024×512    8  1   301   21   -93
+> softmax_unrolled   1024×512   16  1   339   21   -94
+> softmax_unrolled   2048×512    1  1   676  154   -77
+> softmax_unrolled   2048×512    8  1   584   42   -93
+> softmax_unrolled   2048×512   16  1   596   42   -93
+> softmax_unrolled   2048×512   32  1   675   42   -94
+> ```
+>
+> For unrolled, I think we probably have to first make sure that what it is actually doing and we
+> are understanding it correctly, so maybe we need much more sweep run examples for it while
+> printing out the loop level IR and what inputs our model actually uses and see if there are bugs.
+> Besides, we just discussed the multi-op read-write dependency issues. Also examine it for the
+> coarse tiling. (Although I think likely it doesn't make much difference here because most of the
+> intermediate tensor is located in LX in coarse tiling. However, we also have modeled the cases
+> where the LX space is not enough and still some part need to be placed in hbm then it may also
+> worth a verification and observation.)
+>
+> **(6) coarse tiling with matmul or bmm.** Currently we got really bad prediction accuracies. What
+> I think is that we should first make sure we fully understand modeling for pure matmul and bmm
+> first and then look deeper into coarse tiling. But we should still think carefully about this
+> here. As we discussed, gamma may not be able to model how hbm I/O and compute overlap with each
+> other. Now since we used coarse tiling, most intermediate tensors are supposed to be located in
+> LX, so it makes this overlapping pattern and modeling more complex. To get a clearer picture, we
+> may have to design extra sweep experiments that can potentially give us clearer picture about this
+> modeling.
+
+**Note (user, emphasized):** in some of these cases you should NOT use direct mathematical fitting
+to do the modeling — do more mechanism-based modeling. Pure-math regression is only a
+weakly-acceptable fallback for the §11/§12-class (cat 3 non-crux) effects when a mechanism is
+genuinely out of reach right now.
+
+### Cat 1 (broadcast/write) — IMPLEMENTED (report §4.1–§4.5)
+
+- **broadcast** — all four ops share ONE surface *shape* (the small-ROWS collapse is a general
+  kernel effect, NOT a `b[1,C]`-operand effect — `copy`, a scalar, shows it too); the row-broadcast
+  operand only adds a small rate lift. TWO families, each: well-filled surface (ROWS≥1024,
+  `a−b·log₂C−c·log₂R`) + short-tensor quadratic (COLS≤4k) / V-valley (COLS≥8k, minimum at
+  **ROWS=COLS/64** = the stick-plane count). Params `bcast_*` (row-broadcast) and `cbc_*`
+  (scalar/column) in `cost_model.py`. RMS: `bcast`/`mulbcast` **3.4/3.5%**, `copy`/`bcastcol`
+  **7.2/7.5%**.
+- **write** (outer-product) — refit + capped empirical term
+  `min(2.0e-9·ROWS^1.75·COLS^2.6, 2.4·out_bytes)`. **9.6%** (was 18.9%). Still a black-box; worst
+  residual `2048×8192` −30% (the power-law is the best simple form — surface/hybrid scored worse).
+- Figures `fig4b_write_spill` (all ROWS + model), `fig4c_broadcast_smallr` (the V-valley),
+  regenerated by `plot_report.py`.
+
+### Workflow discipline (memories — pull these before report/model work)
+
+`modeling-report-section-workflow` (run-then-claim; verify per-config not RMS; model must depend
+on X if data does; mechanism must fit the controls; get-data-don't-guess), `report-writing-style`
+(prose + regenerate tables/figures from the live model, never hand-type numbers; revision order),
+`claim-discipline-perf-modeling`, `conservative-claims-adversarial-check`, `do-not-commit` (the
+user manages ALL git — never commit/push/stage).
+
+### Immediate next step
+
+Start **(2) transport** — read the verbatim directive for it above. Model the **stick-block shuffle
+mechanism** (each output row reassembled from 64-element input stick blocks; the per-block shuffle,
+not byte count, sets the cost) that both `transpose_outer` and `cat0` are subject to — *not* a bare
+math fit. Get more coverage first if needed. Then update report §6. (Per-category loop: get/confirm
+clean data → hypothesize the mechanism → fit its form → verify per-config no-regression → implement
+→ re-score → regenerate figures/tables → write the section.)
+
+---
 
 ## Golden measurement
 
@@ -29,9 +253,9 @@ Form: `T = compute + HBM/eff − γ·min(compute, HBM/eff)` (see presentation §
 | `mm_spill_t0 / slope / cap` | **448 / 1.10 / 1.70** (NEW) | ✅ decouple+reread sweeps |
 | `bw_restickify / stick_scatter / reduce_outer` | **116 / shape-dep / 113** | cat0 = 252−4·log2R−12.3·log2C (shape sweep, R²0.93) |
 | reduction read rate | **min(150, 114+61·e^(−ROWS/3700))** | ✅ reduction-rows sweep (op-independent, 2.6% RMS) |
-| `bw_broadcast_gbps` | **118** (2026-07-09) | ✅ copy/bcast/bcastcol/mulbcast; pointwise RMS 5.1→2.0% |
-| `write_reread_coef/r_exp/c_exp` | **2.15e-7 / 1.60 / 2.20** (2026-07-10) | ⚠️ EMPIRICAL outer-product term; broadcast 19→7.7% (black-box) |
-| `pointwise_arity_derate` | **0.075** (NEW) | ✅ add3/add4 |
+| broadcast rate | **SUPERSEDED 2026-07-24** → two-family `BW_eff(R,C)` surface, params `bcast_*`/`cbc_*`. See CURRENT STATE + report §4. RMS 3.4–7.5% |
+| `write_reread_coef/r_exp/c_exp` | **2.0e-9 / 1.75 / 2.60 + cap 2.4·out_bytes** (2026-07-24) | ⚠️ EMPIRICAL outer-product term; write 18.9→9.6% (black-box) |
+| `pointwise_arity_derate` | **REMOVED** (add3/add4 are chained ops, not a single-op term — see report §3) | — |
 | matmul `pt_eff` (`r_full=64`, `exp 0.35`) | matmul only | ✅ unchanged |
 | `coarse_underfill` (`r_full 13`, `exp 0.68`, `cap 0.95`) | coarse/softmax only (2026-07-09) | ✅ HW: softmax non-spill RMS 7.2% (spill regime deferred) |
 | `psum_per_elem_ns` | **0.14, GATED off matmul** (2026-07-08) | ✅ bug fixed (was +489% on forced `WD_K>1`) |
@@ -57,7 +281,15 @@ Parser stamps provenance: `model_sha` (from each sweep's `git:` header), `log_da
 The extractor false-positive fixes are **now confirmed on HW in-record**: `sumall` +2.8/+5.6%
 (was +37/+40%), `transpose_outer` −4.6/−14.9% (was +66/+49%), `sumcol` +7.4/−0.7%.
 
-## Findings by category (all HW-validated unless noted)
+## ⚠️ HISTORICAL (pre-2026-07-23, may be stale) — trust the CURRENT STATE section at the top
+
+Everything from here down is the July 7–10 handoff, **before** the overnight outlier-attack sweep
+and the §4 rework. The accuracy claims ("HW-validated ±5%", per-op RMS) predate the noise-controlled
+sweep and the current models — verify against `sweep_records.json` before trusting any number below.
+Kept for the implementation detail on matmul / coarse-tiling / reductions (still the basis for the
+pending categories 3–6). The methodology + tooling sections further down are still valid.
+
+## Findings by category (all HW-validated unless noted — SEE HISTORICAL WARNING ABOVE)
 
 **Pointwise / reduction / broadcast / transport** — ±5% on anchors, but the adversarial review
 (2026-07-08) found several claims thinner than presented. Per-op effective-BW overrides
@@ -119,7 +351,7 @@ avoids), skewed >8 −23%, tiny +2.5 (floor), non-pow2 −16%. γ pinned by the 
 NOT the small-shape GH sweep (GH alone prefers γ=0; floor-contaminated). See report §7–§12.
 
 Adversarial review (2026-07-08) downgraded several matmul terms to HYPOTHESIS pending the re-run
-+ decouplers: (a) `BW_w=156 > 150` one-directional peak is physically impossible → the "compute-
+- decouplers: (a) `BW_w=156 > 150` one-directional peak is physically impossible → the "compute-
 free" M1 fit absorbed compute-overlap; re-fit BW_r/BW_w on the FULL model (subtract γ), not raw
 bytes/time. *(Now resolved — see the RESOLVED note above.)* (b) `peak=1140 / γ=0.46` sit on a non-identifiable ridge — (1190,0.40)/(1220,0.30)
 fit equal or better OOS; γ is pinned by ~one shape → need an HBM-dominant cores-scan to pin γ
@@ -137,41 +369,41 @@ The `softmax_terms` grid (ROWS×T at COLS=2048) + the `coarse_terms` softmax run
 **both COLS=2048 and 4096**) together isolate the softmax cost, and an adversarial challenge was
 run + addressed. Results (units: `us/1k-row/1k-col` ≈ per-byte cost):
 
-+ **SETTLED — the driver is `rpc`, NOT the tile count `L`.** At `rpc=16` the four points span
+- **SETTLED — the driver is `rpc`, NOT the tile count `L`.** At `rpc=16` the four points span
   `T=4..32` (4× tile count) at ~flat cost → kills any `L`/pipeline-overlap story. Normalized
   cost/row collapses onto `rpc` across 4 ROWS values.
-+ **SETTLED — underfill is ROWS-driven, NOT per-core-tile BYTES.** The old confound (COLS fixed →
+- **SETTLED — underfill is ROWS-driven, NOT per-core-tile BYTES.** The old confound (COLS fixed →
   rows≡bytes) is broken by the cross-COLS data: at **matched `rpc`, doubling COLS (2× tile bytes)
   leaves per-byte cost unchanged (ratio 0.96–1.02)** across the whole non-spill range. So the
   underfill derate keys on `rpc` (rows), independent of COLS.
-+ **cost(`rpc`) is U-shaped** (per-byte): min ~40 at `rpc≈32`; steep underfill rise below
+- **cost(`rpc`) is U-shaped** (per-byte): min ~40 at `rpc≈32`; steep underfill rise below
   (`rpc8`≈49, `rpc4`≈78, `rpc2`≈126 — i.e. 1.2×/1.9×/3.1× the floor); MILD rise above
   (`rpc64`≈43, `rpc128`≈46), COLS-independent (so also rows-driven, not LX pressure). The current
   derate `min(1,(rpc/16)**0.35)` is mis-shaped: under-derates `rpc≤4`, ignores the `rpc>32` rise.
-+ **HYPOTHESIS (leaning likely) — double-counted `arg0` read.** At the floor softmax runs at
+- **HYPOTHESIS (leaning likely) — double-counted `arg0` read.** At the floor softmax runs at
   ~100 GB/s single-read-equiv (≈ the balanced copy rate), matching arg0-read-ONCE on both COLS;
   arg0-read-TWICE implies ~150 GB/s (at/above peak). So the fused kernel likely reads arg0 once
   (2nd read LX-served) and the model's 2× read over-counts the floor ~25%. **Confound (from the
   adversarial agent): not separated from a compute-bound (exp) floor or a BW_peak error** — the
   deciding test is a pure-copy of identical footprint vs the softmax floor.
-+ **SETTLED mechanism / under-sampled shape — LX-spill is BYTE-driven, separate from underfill.**
+- **SETTLED mechanism / under-sampled shape — LX-spill is BYTE-driven, separate from underfill.**
   At `rpc=256`, C4096 (2.1 MB/core tile) SPILLED (per-byte 145, `io_hbm_bytes` itself jumped as
   intermediates went to HBM) while C2048 (1.05 MB/core) did NOT. So spill triggers on per-core
   tile MB (~knee 1–2 MB/core), independent of the rows-driven underfill. Only 1 point past the
   knee → exact threshold + post-knee slope need a finer sweep.
-+ **Noise:** VAR (5× within-process) = 0.3%; cross-config agreement at matched rpc ≈ ±2–4%. The
+- **Noise:** VAR (5× within-process) = 0.3%; cross-config agreement at matched rpc ≈ ±2–4%. The
   `rpc>32` "mild rise" (+7…+15%) is real vs that, but **cross-process/thermal variance is still
   unbounded** — bound it before trusting single-digit-% effects.
 
 **IMPLEMENTED + HW-VALIDATED 2026-07-09** (cost_model.py; confirmed in the sha-`078922c` re-run):
-+ (a) **Fused-kernel HBM counts each distinct external input ONCE** — `_fused_hbm_bytes(ops)`
+- (a) **Fused-kernel HBM counts each distinct external input ONCE** — `_fused_hbm_bytes(ops)`
   dedups `arg`-named HBM inputs across the bundle (softmax `arg0` read by `amax`+`sub` → once).
   Fixes the ~25% floor over-count. Non-softmax ops unaffected (no `arg` reused across ops).
-+ (b) **Re-fit `rpc` underfill, decoupled from matmul** — new `coarse_underfill_eff` +
+- (b) **Re-fit `rpc` underfill, decoupled from matmul** — new `coarse_underfill_eff` +
   `coarse_underfill_{rfull=13,exp=0.68,cap=0.95}`; matmul `pt_eff` untouched. **HW: softmax
   non-spill RMS 7.2%** (n=44, was ~20%), floor (rpc16–32) ±0.6%; residual rpc≤8 (+8–10%) and
   rpc≥64 (−7…−14%, the mild rise the cap omits) — matches the synthetic fit exactly.
-+ (c) **NO categorical spill term** — the plan said add one, but the IR check showed the
+- (c) **NO categorical spill term** — the plan said add one, but the IR check showed the
   extractor **already counts spilled bytes**: when a per-core tile overflows LX (~1–2 MB/core)
   the compiler moves intermediates to HBM and the IR reflects it (LX total collapses,
   `io_hbm_bytes` jumps). A predicted-knee term would double-count. The real residual is that
@@ -187,24 +419,24 @@ DROPPED (per user). `matmul_row_tiling` deferred (needs `pt_eff` keyed on coarse
 
 Four new sweeps to upgrade the HYPOTHESIS terms; each design was adversarially challenged and
 the flaws fixed BEFORE writing (memory: conservative-claims-adversarial-check). Not yet run.
-+ `run_pointwise_ratio_sweep.sh` — BW_peak vs α. Vetting reframed it as an explicit **read/write
+- `run_pointwise_ratio_sweep.sh` — BW_peak vs α. Vetting reframed it as an explicit **read/write
   asymmetry test**: fit `R/BW_read + W/BW_write + α·min(R,W)` and CHECK BW_read==BW_write (a
   symmetric 2-param fit can never surface the misspecification the 105/138–147/150 tension hints
   at). Adds a streaming `read` probe next to the (circular) reduction anchor; sweeps ROWS for the
   plateau; `write` at small COLS is a flagged low-confidence write anchor.
-+ `run_matmul_gamma_sweep.sh` — peak/γ + BW_r/BW_w. Vetting confirmed the compute-dom cores-scan
+- `run_matmul_gamma_sweep.sh` — peak/γ + BW_r/BW_w. Vetting confirmed the compute-dom cores-scan
   recovers peak via a **γ-independent slope** (escapes the ridge); FIXED the γ scan to a
   **spill-free small shape** (M=N=512/768, K=64, per-core tile <448) so spill can't drift into
   the γ slope. BW section is a **rank-2 (R,W) grid** with min(R,W) on both sides (the naive
   fixed-M K-sweep was BROKEN: W constant → BW_w unidentifiable, BW_r/α collinear).
-+ `run_nonpow2_n_sweep.sh` — the stick-padding sawtooth is in the **per-core tile N/n**, not full
+- `run_nonpow2_n_sweep.sh` — the stick-padding sawtooth is in the **per-core tile N/n**, not full
   N (the naive N∈{2048..8192} step 1024 was BROKEN: all stick-aligned → sawtooth invisible; 8192
   broke the MNK cap). FIXED: forced 4×8×1, N stepped 64 so N/8 sweeps 512→576 across a stick edge.
-+ `run_softmax_floor_sweep.sh` — double-count vs exp-compute. Vetting rejected the untiled-copy
+- `run_softmax_floor_sweep.sh` — double-count vs exp-compute. Vetting rejected the untiled-copy
   control (tiling-overhead confound); added a NEW matched harness op **`softmax_noexp_row_tiling`**
   (softmax structure, `exp`→`mul`) so `T(softmax) − T(noexp)` at matched [ROWS,COLS,TILES]
   isolates exp by **wall-clock time** (not effBW, which presupposes the byte-count answer).
-+ `run_broadcast_sweep.sh` (2026-07-09) — pins the **broadcast effBW** (`bw_broadcast=118`,
+- `run_broadcast_sweep.sh` (2026-07-09) — pins the **broadcast effBW** (`bw_broadcast=118`,
   fit on one clean point/op) over COLS at ROWS=2048, AND confirms the **`write` spill**: a
   write ROWS×COLS grid separates C-driven (row operand `b[1,C]` spills → super-linear in C)
   from R-driven (`c[R,1]`). Report §4. `copy` is a broadcast op (increment `x+1.0`).
@@ -221,20 +453,20 @@ the flaws fixed BEFORE writing (memory: conservative-claims-adversarial-check). 
 
 ## Tooling
 
-+ **Harness** `docs/source/user_guide/examples/profile_ops.py` (BENCH_OP=…; knobs BENCH_ROWS/
+- **Harness** `docs/source/user_guide/examples/profile_ops.py` (BENCH_OP=…; knobs BENCH_ROWS/
   COLS/N, BENCH_TILES, WD_M/N/K, SENCORES, LX_PLANNING).
-+ **DB rebuild** `run_db_sweep.sh` — chains all sweeps into ONE `haoyang_logs/db_sweep.log`
+- **DB rebuild** `run_db_sweep.sh` — chains all sweeps into ONE `haoyang_logs/db_sweep.log`
   (children write there via `DB_LOG`; per-run `timeout` guard) + auto-parses. New sweeps:
   `run_hbm_ops_sweep.sh`, `run_matmul_compute_sweep.sh`, `run_matmul_psum_sweep.sh`,
   `run_reread_sweep.sh` (RA/RB tile-spill, FB/FA fanout-isolation — falsified fanout),
   `run_decouple_sweep.sh`, `run_split_sweep.sh`, `run_coarse_tiling_sweep.sh`,
   `run_coarse_terms_sweep.sh`, `run_softmax_terms_sweep.sh` (active).
-+ **Parser** `notes/parse_sweep_logs.py` → `notes/sweep_records.{json,csv}` (merge by
+- **Parser** `notes/parse_sweep_logs.py` → `notes/sweep_records.{json,csv}` (merge by
   `log:lineno`, idempotent). Carries per-op split/model-term breakdown + **provenance**:
   `model_sha` (from `git:` header), `log_date`, `is_current`. Flags: `--drop-ops chain`,
   `--current-sha <sha>` (default: newest parsed log's sha). Also captures `feats` (the
   serialized `OpFeatures`) from each run's `MODEL FEATS` line.
-+ **Offline scorer** `notes/eval_model.py` — **recompute accuracy WITHOUT hardware** (the
+- **Offline scorer** `notes/eval_model.py` — **recompute accuracy WITHOUT hardware** (the
   measured `kernel_us` is version-independent; only the prediction changes). The harness now
   dumps `MODEL FEATS <json>` (the model's exact input) per run for free, so a new model version
   is scored by `predict_ops(feats)` in pure Python (`cost_model.py` has no torch dep → runs
@@ -244,7 +476,7 @@ the flaws fixed BEFORE writing (memory: conservative-claims-adversarial-check). 
   against their stored `pred_us`** (mismatches excluded; matmul needs a `feats` re-run — 119/185
   reconstruct today). THE model-iteration loop: edit params/form → `eval_model.py` → new
   accuracy, no Spyre. (`cost_model.op_to_dict`/`op_from_dict`/`ops_to_json` do the (de)serialize.)
-+ **Extractor** `dump_cost_model.py`: `_matmul_features` (MACs, M/m, N/n, |A|, |B|, k),
+- **Extractor** `dump_cost_model.py`: `_matmul_features` (MACs, M/m, N/n, |A|, |B|, k),
   `_hbm_pattern` (restickify / stick_scatter / reduce_outer from IR index+layout).
 
 ## Immediate next steps

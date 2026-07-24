@@ -47,7 +47,7 @@ T   = compute + mem − γ·min(compute, mem) + split      mem = HBM / (eff · s
 | `α·min(R,W)` | `α = 0.00574 ns/B` — read↔write bus **turnaround** (0 for one-directional traffic) | §2 |
 | `spill` | `(A_bytes+B_bytes)·f(area)`, `area=(M/m)·(N/n)`, `f=min(1.5, max(0, 0.45·log₂(area/65536)))` — matmul operand **re-read** when the per-core output tile overflows on-chip capacity | §11 |
 | `split` | `max(0,area−a₀)·[c_L·max(0,log₂(fan_long/8)) + c_S·max(0,log₂(fan_short/16))]`, `area=(M/m)·(N/n)`, `a₀=131072`, `c_L=2.6e−3`, `c_S=2.9e−3 µs/elem` — extra matmul operand re-read when a **large** per-core tile is **also** split many ways; two-sided (splitting the longer output dim bites sooner than the shorter); 0 for balanced or small tiles | §12 |
-| `write_extra` | `2.148e-7·ROWS^1.6·COLS^2.2` (÷BW) — `write` outer-product, empirical | §4 |
+| `write_extra` | `min(2.0e-9·ROWS^1.75·COLS^2.6, 2.4·out_bytes)` (÷BW) — `write` outer-product, empirical + capped | §4.5 |
 | `compute` | `MACs / cores / (peak · pt_eff)`, `peak = 1140 MAC/ns/core`; 0 for non-matmul | §9 |
 | `pt_eff` (derates **compute**) | systolic-array fill: `min(1,(rows/64)^0.35)` (`rows` = per-core rows); a coarse-tiled matmul's extra per-tile underfill is flagged, not modeled (`pt_eff=1`) | §9, §16 |
 | `eff` (derates **memory**) | `min(0.95, (h/13)^0.68)`, `h = per-core tile height = ROWS/(cores·tiles)` — streaming-pipeline fill, coarse memory-bound | §16 |
@@ -262,25 +262,31 @@ cost is a program-level effect not modeled here; see §3. `copy` is excluded too
 
 ## Part II — Other memory-bound ops
 
-### §4. Broadcast: a broadcast operand is read at its small size — and raises the effective BW
+### §4. Broadcast operands and the outer-product write
 
 A *broadcast* operand is a small tensor (a row `[1,C]`, a column `[R,1]`, or a scalar)
-added/multiplied against a full tensor and reused across the broadcast dimension. It has
-two effects, both distinct from a plain 1R:1W op.
+added/multiplied against a full tensor and reused across the broadcast dimension. This section
+builds the model in four steps: how the operand is **counted** (§4.1), why the op runs **faster**
+than a plain copy (§4.2), how that rate varies with shape in the **normal** regime (§4.3) and in
+the **short-tensor** regime (§4.4), and finally the outer-product **write** (§4.5).
 
-**(a) I/O counting — the operand is not expanded.** In `bcast` (`a[R,C] + b[1,C]`) the
+#### §4.1 — I/O counting: the operand is not expanded
+
+In `bcast` (`a[R,C] + b[1,C]`) the
 broadcast operand `b[1,C]` is read at its actual `[1,C]` size (one row of `C` elements) — it is
 **not** expanded to `b[R,C]` to match the output. So the kernel reads the full input `a[R,C]`
 plus a negligible `[1,C]` operand — about a single streaming pass over `a`, not two full `[R,C]`
 reads.
 
-**(b) A broadcast operand raises the effective bandwidth.** At well-filled sizes (ROWS ≥ 2048)
-the four broadcast-operand ops run above `neg`'s steady ~105 GB/s in effective bandwidth
-(`(R+W)/time`):
+#### §4.2 — A broadcast operand raises the effective bandwidth above the plain read-write baseline
 
-| op | effective BW `(R+W)/time` (GB/s), ROWS=2048, COLS 2048–16384 |
+The reference is the ~105 GB/s a plain read-then-write pointwise op runs at (the baseline `neg`,
+§2). At well-filled sizes (ROWS ≥ 2048) all four broadcast-operand ops run **above** that ~105 in
+effective bandwidth (bytes moved ÷ time):
+
+| op | effective BW (GB/s), ROWS=2048, COLS 2048–16384 |
 |---|---:|
-| `neg` (1R:1W baseline) | ≈ 105 |
+| `neg` (read-then-write baseline) | ≈ 105 |
 | `copy` = `x + 1.0` (add a broadcast scalar) | 118–119 |
 | `bcast` (`a + b[1,C]`) | 117–123 |
 | `bcastcol` (`a + b[R,1]`) | 118–121 |
@@ -288,103 +294,255 @@ the four broadcast-operand ops run above `neg`'s steady ~105 GB/s in effective b
 
 ![§4 broadcast-operand ops run ~118 GB/s, stable across COLS, above neg's ~105](figures/fig4_broadcast_effbw.png)
 
-A dedicated COLS sweep confirms it: all four settle at **~117–118 GB/s for COLS ≥ 4096**, and the
-three *vector*-broadcast ops (`bcast`/`bcastcol`/`mulbcast`) run **higher at small COLS** — up to
-~124–132 at COLS = 1024 — easing to the plateau as COLS grows (`copy`, a scalar broadcast, stays
-flat throughout). We sweep **COLS** because the
-broadcast operand `b[1,C]` grows with COLS — the axis that could make the operand expensive (and
-does, for `write` below); ROWS would not change the operand at all. All four ops (three adds and
-a multiply) show the lift, so it is the broadcast operand, not the instruction, that raises the
-rate.
+All four ops — three adds and a multiply — show the lift, so it is the presence of a broadcast
+operand, not the arithmetic, that raises the rate.
 
-**Model.** All four ops get one effective bandwidth, `bw_broadcast = 118 GB/s` (we do not fit per
-op). Sweeping down to small `ROWS` and `COLS` shows the rate sits ~130 GB/s while either dimension
-is small and settles to 118 only when both are large — a bounded small-operand speedup common to
-all four (`copy` included), not a growing trend. So 118 is the large-size rate; small operands are
-over-predicted by ~10 %, left as a flagged residual. Why a broadcast operand beats a plain 1R:1W
-op is not established — 118 is calibrated, not derived.
+A single flat rate (~118 GB/s) is a fair first cut but leaves errors up to ~50 % once shape varies.
+Measured across sizes, all four ops share the *same shape*: a normal regime (§4.3) and a
+short-tensor regime (§4.4), split at `ROWS ≈ 1024`. Crucially, that shape is **not** a property of
+the `b[1,C]` operand — `copy`, a scalar broadcast with no size-growing operand, collapses at short
+lengths exactly like `bcast` does. The only operand-specific difference is a small **rate lift**:
+the row-broadcast ops (`bcast`/`mulbcast`) run a few GB/s faster than the scalar/column ops
+(`copy`/`bcastcol`), so the two families share one shape with their own constants.
 
-**`write` — an outer-product write, modeled empirically.** `write` (`b[1,C] + c[R,1]`)
-broadcasts *both* operands. On the device the row operand `b[1,C]` is only `C` elements
-(~32 KB even at C=16384) and the column operand `c[R,1]` is stick-inflated to `R × 64` (each
-of the R values occupies its own 64-element stick); both are small next to the `[R,C]`
-output, so a naive model treats `write` as an output-dominated write. Empirically it is much
-slower — its effective bandwidth falls from ~140 GB/s at small/normal sizes to ~56 at large — and
-the cost per output byte rises with COLS, and more weakly with ROWS:
+#### §4.3 — The normal regime (ROWS ≥ 1024): a rate that declines with both dimensions
 
-![§4 write effective bandwidth starts near 118 and collapses as ROWS and COLS grow](figures/fig4b_write_spill.png)
-
-The slowdown is in the **outer-product write** itself: the output device layout is
-`[C/64, R, 64]`, so a larger `C` means more column-stick planes and the write becomes less
-efficient — the exact mechanism is not yet clear. We charge an **empirical extra HBM cost**, fit
-on the write sweep:
+The rate eases down with COLS and, more weakly, with ROWS — a two-term surface, one constant set
+per family:
 
 ```
-extra_bytes  =  2.148e-7 · ROWS^1.60 · COLS^2.20   (charged at BW_peak)
+BW  =  a − b·log₂(COLS) − c·log₂(ROWS)   GB/s
+   row-broadcast (bcast/mulbcast):  a=183.5, b=2.8, c=2.6   (clamped 100–135, 1.3 % RMS)
+   scalar/column (copy/bcastcol):   a=162,   b=1.8, c=2.2   (clamped  95–130, 5.1 % RMS)
 ```
 
-This brings `write` to ~10 % RMS (broadcast category 19 % → **7.7 %**) — an empirical black-box
-for a rare op, to be replaced once the mechanism is understood.
+This removes the small-COLS over-prediction the flat rate left — a `2048×1024` multiply goes from
+`+12 %` to `+2 %` — and gives `copy`/`bcastcol` their (steeper) large-ROWS decline instead of the
+wrong flat `118`. The residual on `copy`/`bcastcol` is a small jump between `ROWS = 1024` and
+`2048` that the monotonic surface cannot follow (~−16 % at `1024×2048`).
 
-**§4 accuracy — every broadcast data point.** RMS **7.6 %**, mean +2.2 %, over 77 points. The
-error budget: `write` (the outer-product black-box, worst −24 %) and the small-operand
-over-prediction (~+8…+13 %, since 118 is the large-size rate). One point bucks the trend —
-`bcast`/`mulbcast` at `256 × 16384` measure ~95 GB/s (−20 %), *slower* not faster, and
-`bcastcol` at that size is fine — so it reads as noise in a single run, queued for a re-measure.
+#### §4.4 — The short-tensor regime (ROWS < 1024): a V-valley at ROWS = COLS/64
 
-| op | R×C | measured µs | predicted µs | err % |
+Below ~1024 rows the rate stops being monotonic: it forms a **V-shaped valley**, *lowest* at
+`ROWS = COLS/64` — exactly the number of 64-wide output stick-planes — and climbing steeply toward
+fewer rows, gently toward more.
+
+![§4 short-tensor bcast: effective BW vs ROWS, one line per COLS. A V-valley whose floor sits at ROWS = COLS/64 (the stick-plane count): the dip walks from 128 rows at COLS=8k to 256 rows at COLS=16k. For COLS ≤ 4k the floor is at/below the smallest tensor so only the rising side shows.](figures/fig4c_broadcast_smallr.png)
+
+The two halves of the valley model separately, split at `COLS = 4096`; same forms for both
+families (the row-broadcast constants shown, the scalar/column constants in parentheses):
+
+- **`COLS ≤ 4096` — only the rising side shows** (the floor `COLS/64 ≤ 64` is at or below the
+  smallest tensor). A downward **quadratic** in `lr = log₂(ROWS)`:
+
+  ```
+  BW = a + b·lr + c·lr² + e·log₂(COLS)   GB/s   (clamped 45–140 / 45–120)
+     row-broadcast:  a=−350, b=105, c=−5.5, e=−2.0     scalar/column:  a=−270, b=70, c=−3.5, e=+3.0
+  ```
+
+- **`COLS ≥ 8192` — the full V**, minimum at `ROWS = COLS/64` (floor walks `128`→`256` rows as
+  `COLS` goes `8k`→`16k`):
+
+  ```
+  d = log₂(ROWS) − log₂(COLS/64)
+  BW = floor + bl·max(0, −d) + br·max(0, +d)   GB/s
+     row-broadcast:  floor=92, bl=32, br=10 (cap 128)    scalar/column:  floor=98, bl=15, br=8 (cap 120)
+  ```
+
+For the row-broadcast ops this brings the short-tensor error from **~22 %** to **~4.5 %**; for
+`copy`/`bcastcol` the same forms reach ~6–10 %. Both regimes meet the §4.3 surface continuously at
+`ROWS = 1024`. The floor at `ROWS = COLS/64` — where the tensor is "square" in planes × rows — is a
+real, reproducible effect whose physical cause is still open; the one remaining miss is the
+smallest short-and-narrow corner, which falls a little faster than the quadratic.
+
+#### §4.5 — The outer-product write
+
+`write` (`b[1,C] + c[R,1]`) broadcasts *both* operands into a full `[R,C]` output — the shape of
+an **outer product** (`out[i,j] = b[j] + c[i]`). The operands are tiny (`b` is `C` elements; the
+column `c[R,1]` is stick-inflated to `R × 64`), so a naive model treats `write` as an
+output-dominated write. Empirically it is far slower and depends on **both** dimensions: the
+effective bandwidth is ~135–145 GB/s for a small tensor and collapses toward a ~40 GB/s floor when
+*both* ROWS and COLS are large.
+
+![§4 write: effective BW vs COLS, one line per ROWS (solid = measured, dashed = model). Fast (~140) when either dimension is small; collapses toward ~40 GB/s only when both ROWS and COLS are large. ROWS=512 stays fast throughout.](figures/fig4b_write_spill.png)
+
+The physical cause is not established — the operands are tiny, yet the write is slow, so the cost
+is in *producing* the outer-product output, not in reading inputs. Pending a mechanism, `write` is
+modeled by an **empirical** extra-traffic term, **capped** so it cannot run away at the extreme
+corner (where the uncapped form over-predicted by +59 %):
+
+```
+extra_bytes  =  min( 2.0e-9 · ROWS^1.75 · COLS^2.60 ,  2.4 · output_bytes )
+```
+
+This takes `write` from **18.9 %** error to **9.6 %**. It is an honest black-box for a rare op; the
+worst residuals are `2048×8192` (−30 %) and narrow-COLS over-predictions (`16384×2048` +12 %).
+
+**§4 accuracy** (per-op error, `(pred − meas)/meas`):
+
+| op | error |
+|---|---:|
+| `bcast` | **3.4 %** (nothing over ±10 %) |
+| `mulbcast` | **3.5 %** (nothing over ±10 %) |
+| `copy` | **7.5 %** |
+| `bcastcol` | **7.2 %** |
+| `write` | **9.6 %** |
+
+Overall **6.3 %**. `bcast`/`mulbcast` have no point over ±10 %; the residuals are the
+`copy`/`bcastcol` boundary corners and the `write` black-box.
+
+**Every measured broadcast/write point** (error = `(pred − meas)/meas`):
+
+| op | R×C | meas µs | pred µs | err % |
 |---|---|---:|---:|---:|
-| `copy` | 2048×1024 | 67.5 | 71.1 | +5.4 |
-| `copy` | 2048×1024 | 70.4 | 71.1 | +1.0 |
-| `copy` | 2048×2048 | 141.2 | 142.2 | +0.7 |
-| `copy` | 2048×4096 | 283.7 | 284.4 | +0.2 |
-| `copy` | 2048×4096 | 286.2 | 284.4 | −0.7 |
-| `copy` | 2048×8192 | 558.0 | 568.7 | +1.9 |
-| `copy` | 2048×16384 | 1131.8 | 1137.4 | +0.5 |
-| `copy` | 2048×16384 | 1136.4 | 1137.4 | +0.1 |
-| `copy` | 8192×2048 | 604.3 | 568.7 | −5.9 |
-| `copy` | 16384×2048 | 1230.8 | 1137.4 | −7.6 |
-| `copy` | 16384×4096 | 2473.0 | 2274.9 | −8.0 |
-| `bcast` | 64×16384 | 34.5 | 35.8 | +3.9 |
-| `bcast` | 256×16384 | 180.6 | 142.5 | −21.1 |
-| `bcast` | 2048×1024 | 64.8 | 71.1 | +9.8 |
-| `bcast` | 2048×2048 | 136.3 | 142.2 | +4.3 |
-| `bcast` | 2048×4096 | 278.5 | 284.4 | +2.1 |
-| `bcast` | 2048×8192 | 570.8 | 568.9 | −0.3 |
-| `bcast` | 2048×16384 | 1147.7 | 1137.7 | −0.9 |
-| `bcast` | 2048×16384 | 1151.3 | 1137.7 | −1.2 |
-| `bcastcol` | 64×16384 | 33.6 | 35.6 | +5.9 |
-| `bcastcol` | 256×16384 | 146.6 | 142.5 | −2.8 |
-| `bcastcol` | 2048×1024 | 69.6 | 73.3 | +5.4 |
-| `bcastcol` | 2048×2048 | 141.1 | 144.4 | +2.3 |
-| `bcastcol` | 2048×4096 | 280.9 | 286.6 | +2.0 |
-| `bcastcol` | 2048×8192 | 567.8 | 570.9 | +0.5 |
-| `bcastcol` | 2048×16384 | 1138.6 | 1139.7 | +0.1 |
-| `bcastcol` | 2048×16384 | 1143.2 | 1139.7 | −0.3 |
-| `mulbcast` | 64×16384 | 31.6 | 35.8 | +13.5 |
-| `mulbcast` | 256×16384 | 177.8 | 142.5 | −19.9 |
-| `mulbcast` | 2048×1024 | 63.4 | 71.1 | +12.2 |
-| `mulbcast` | 2048×2048 | 136.9 | 142.2 | +3.9 |
-| `mulbcast` | 2048×4096 | 277.7 | 284.4 | +2.4 |
-| `mulbcast` | 2048×8192 | 568.3 | 568.9 | +0.1 |
-| `mulbcast` | 2048×16384 | 1159.2 | 1137.7 | −1.9 |
-| `mulbcast` | 2048×16384 | 1166.7 | 1137.7 | −2.5 |
-| `write` | 64×16384 | 15.4 | 16.6 | +7.8 |
-| `write` | 256×16384 | 70.7 | 75.8 | +7.3 |
-| `write` | 512×1024 | 8.5 | 8.0 | −6.4 |
-| `write` | 512×4096 | 29.9 | 31.6 | +5.8 |
-| `write` | 512×16384 | 163.0 | 170.9 | +4.9 |
-| `write` | 2048×1024 | 31.1 | 32.4 | +4.4 |
-| `write` | 2048×1024 | 32.0 | 32.4 | +1.3 |
-| `write` | 2048×2048 | 59.6 | 64.7 | +8.6 |
-| `write` | 2048×4096 | 150.7 | 140.4 | −6.9 |
-| `write` | 2048×16384 | 1190.1 | 982.9 | −17.4 |
-| `write` | 2048×16384 | 1299.6 | 982.9 | −24.4 |
-| `write` | 8192×1024 | 133.4 | 135.8 | +1.8 |
-| `write` | 8192×1024 | 137.9 | 135.8 | −1.5 |
-| `write` | 8192×2048 | 255.0 | 287.1 | +12.6 |
-| `write` | 8192×4096 | 700.4 | 692.0 | −1.2 |
-| `write` | 8192×16384 | 6653.1 | 6690.5 | +0.6 |
+| `copy` | 64×2048 | 9.4 | 9.2 | -2.4 |
+| `copy` | 64×4096 | 17.2 | 17.5 | +1.6 |
+| `copy` | 64×8192 | 17.5 | 18.6 | +6.3 |
+| `copy` | 64×16384 | 34.4 | 35.0 | +1.6 |
+| `copy` | 128×2048 | 14.2 | 12.9 | -9.6 |
+| `copy` | 128×4096 | 26.5 | 24.8 | -6.3 |
+| `copy` | 128×8192 | 52.5 | 42.8 | -18.4 |
+| `copy` | 128×16384 | 78.8 | 74.2 | -5.8 |
+| `copy` | 256×2048 | 20.6 | 21.2 | +2.9 |
+| `copy` | 256×4096 | 40.7 | 41.1 | +0.9 |
+| `copy` | 256×8192 | 79.8 | 79.1 | -0.8 |
+| `copy` | 256×16384 | 159.2 | 171.2 | +7.5 |
+| `copy` | 512×2048 | 42.5 | 38.3 | -9.9 |
+| `copy` | 512×4096 | 83.5 | 74.6 | -10.7 |
+| `copy` | 512×8192 | 173.2 | 147.2 | -15.0 |
+| `copy` | 512×16384 | 353.8 | 316.6 | -10.5 |
+| `copy` | 1024×2048 | 83.0 | 69.8 | -15.9 |
+| `copy` | 1024×4096 | 167.3 | 141.7 | -15.3 |
+| `copy` | 1024×8192 | 334.8 | 287.8 | -14.0 |
+| `copy` | 1024×16384 | 614.3 | 584.6 | -4.8 |
+| `copy` | 2048×2048 | 141.8 | 142.2 | +0.3 |
+| `copy` | 2048×4096 | 281.9 | 288.8 | +2.4 |
+| `copy` | 2048×8192 | 562.2 | 586.6 | +4.3 |
+| `copy` | 2048×16384 | 1129.8 | 1192.0 | +5.5 |
+| `copy` | 8192×2048 | 609.3 | 590.7 | -3.0 |
+| `copy` | 8192×4096 | 1221.6 | 1200.5 | -1.7 |
+| `copy` | 8192×8192 | 2454.0 | 2440.3 | -0.6 |
+| `copy` | 8192×16384 | 4969.0 | 4961.8 | -0.1 |
+| `copy` | 16384×2048 | 1231.7 | 1204.8 | -2.2 |
+| `copy` | 16384×4096 | 2476.8 | 2449.2 | -1.1 |
+| `copy` | 16384×8192 | 4962.7 | 4980.3 | +0.4 |
+| `copy` | 16384×16384 | 10160.4 | 10129.6 | -0.3 |
+| `bcast` | 64×2048 | 9.7 | 8.8 | -8.9 |
+| `bcast` | 64×4096 | 17.0 | 18.2 | +7.3 |
+| `bcast` | 64×8192 | 17.4 | 17.0 | -2.0 |
+| `bcast` | 64×16384 | 32.8 | 33.0 | +0.7 |
+| `bcast` | 128×2048 | 11.0 | 11.3 | +2.7 |
+| `bcast` | 128×4096 | 22.3 | 23.0 | +3.3 |
+| `bcast` | 128×8192 | 45.6 | 45.8 | +0.3 |
+| `bcast` | 128×16384 | 68.2 | 67.9 | -0.4 |
+| `bcast` | 256×2048 | 16.9 | 18.1 | +7.0 |
+| `bcast` | 256×4096 | 39.3 | 36.9 | -6.2 |
+| `bcast` | 256×8192 | 82.8 | 82.4 | -0.5 |
+| `bcast` | 256×16384 | 181.6 | 182.7 | +0.6 |
+| `bcast` | 512×2048 | 31.1 | 32.9 | +5.7 |
+| `bcast` | 512×4096 | 70.7 | 66.9 | -5.3 |
+| `bcast` | 512×8192 | 152.2 | 149.9 | -1.5 |
+| `bcast` | 512×16384 | 316.5 | 329.3 | +4.0 |
+| `bcast` | 1024×2048 | 66.8 | 66.2 | -0.8 |
+| `bcast` | 1024×4096 | 139.3 | 135.5 | -2.8 |
+| `bcast` | 1024×8192 | 283.7 | 277.2 | -2.3 |
+| `bcast` | 1024×16384 | 583.5 | 567.6 | -2.7 |
+| `bcast` | 2048×2048 | 137.1 | 135.2 | -1.4 |
+| `bcast` | 2048×4096 | 278.1 | 276.7 | -0.5 |
+| `bcast` | 2048×8192 | 568.1 | 566.5 | -0.3 |
+| `bcast` | 2048×16384 | 1164.4 | 1160.3 | -0.4 |
+| `bcast` | 8192×2048 | 572.3 | 564.4 | -1.4 |
+| `bcast` | 8192×4096 | 1160.2 | 1156.1 | -0.4 |
+| `bcast` | 8192×8192 | 2384.5 | 2369.4 | -0.6 |
+| `bcast` | 8192×16384 | 4876.3 | 4858.9 | -0.4 |
+| `bcast` | 16384×2048 | 1165.2 | 1154.1 | -1.0 |
+| `bcast` | 16384×4096 | 2375.2 | 2365.1 | -0.4 |
+| `bcast` | 16384×8192 | 4821.6 | 4849.9 | +0.6 |
+| `bcast` | 16384×16384 | 9688.1 | 9951.6 | +2.7 |
+| `bcastcol` | 64×2048 | 9.4 | 9.3 | -0.4 |
+| `bcastcol` | 64×4096 | 16.9 | 17.6 | +4.5 |
+| `bcastcol` | 64×8192 | 17.6 | 18.6 | +5.8 |
+| `bcastcol` | 64×16384 | 34.8 | 35.0 | +0.8 |
+| `bcastcol` | 128×2048 | 14.1 | 13.1 | -7.2 |
+| `bcastcol` | 128×4096 | 27.4 | 25.0 | -8.9 |
+| `bcastcol` | 128×8192 | 52.7 | 43.0 | -18.5 |
+| `bcastcol` | 128×16384 | 77.7 | 74.4 | -4.3 |
+| `bcastcol` | 256×2048 | 20.3 | 21.5 | +5.9 |
+| `bcastcol` | 256×4096 | 39.1 | 41.4 | +5.9 |
+| `bcastcol` | 256×8192 | 74.9 | 79.4 | +6.1 |
+| `bcastcol` | 256×16384 | 148.9 | 171.5 | +15.2 |
+| `bcastcol` | 512×2048 | 36.4 | 38.9 | +6.9 |
+| `bcastcol` | 512×4096 | 77.4 | 75.1 | -2.9 |
+| `bcastcol` | 512×8192 | 141.0 | 147.7 | +4.8 |
+| `bcastcol` | 512×16384 | 282.3 | 317.2 | +12.4 |
+| `bcastcol` | 1024×2048 | 73.6 | 70.9 | -3.7 |
+| `bcastcol` | 1024×4096 | 162.4 | 142.8 | -12.0 |
+| `bcastcol` | 1024×8192 | 324.5 | 288.9 | -11.0 |
+| `bcastcol` | 1024×16384 | 647.2 | 585.7 | -9.5 |
+| `bcastcol` | 2048×2048 | 140.7 | 144.4 | +2.7 |
+| `bcastcol` | 2048×4096 | 280.8 | 291.0 | +3.6 |
+| `bcastcol` | 2048×8192 | 572.4 | 588.9 | +2.9 |
+| `bcastcol` | 2048×16384 | 1147.0 | 1194.3 | +4.1 |
+| `bcastcol` | 8192×2048 | 613.7 | 600.0 | -2.2 |
+| `bcastcol` | 8192×4096 | 1222.9 | 1209.9 | -1.1 |
+| `bcastcol` | 8192×8192 | 2457.3 | 2449.9 | -0.3 |
+| `bcastcol` | 8192×16384 | 4985.9 | 4971.5 | -0.3 |
+| `bcastcol` | 16384×2048 | 1251.9 | 1223.7 | -2.3 |
+| `bcastcol` | 16384×4096 | 2501.3 | 2468.4 | -1.3 |
+| `bcastcol` | 16384×8192 | 5060.0 | 4999.7 | -1.2 |
+| `bcastcol` | 16384×16384 | 10318.3 | 10149.4 | -1.6 |
+| `mulbcast` | 64×2048 | 9.7 | 8.8 | -8.9 |
+| `mulbcast` | 64×4096 | 16.7 | 18.2 | +8.9 |
+| `mulbcast` | 64×8192 | 17.3 | 17.0 | -1.2 |
+| `mulbcast` | 64×16384 | 33.0 | 33.0 | +0.1 |
+| `mulbcast` | 128×2048 | 11.1 | 11.3 | +1.7 |
+| `mulbcast` | 128×4096 | 22.4 | 23.0 | +2.7 |
+| `mulbcast` | 128×8192 | 45.2 | 45.8 | +1.3 |
+| `mulbcast` | 128×16384 | 67.0 | 67.9 | +1.4 |
+| `mulbcast` | 256×2048 | 17.1 | 18.1 | +5.8 |
+| `mulbcast` | 256×4096 | 39.0 | 36.9 | -5.5 |
+| `mulbcast` | 256×8192 | 83.3 | 82.4 | -1.1 |
+| `mulbcast` | 256×16384 | 181.3 | 182.7 | +0.8 |
+| `mulbcast` | 512×2048 | 31.0 | 32.9 | +6.1 |
+| `mulbcast` | 512×4096 | 70.8 | 66.9 | -5.4 |
+| `mulbcast` | 512×8192 | 154.1 | 149.9 | -2.7 |
+| `mulbcast` | 512×16384 | 321.0 | 329.3 | +2.6 |
+| `mulbcast` | 1024×2048 | 65.5 | 66.2 | +1.1 |
+| `mulbcast` | 1024×4096 | 138.5 | 135.5 | -2.2 |
+| `mulbcast` | 1024×8192 | 284.9 | 277.2 | -2.7 |
+| `mulbcast` | 1024×16384 | 586.8 | 567.6 | -3.3 |
+| `mulbcast` | 2048×1024 | 64.7 | 66.1 | +2.2 |
+| `mulbcast` | 2048×2048 | 133.9 | 135.2 | +1.0 |
+| `mulbcast` | 2048×4096 | 278.1 | 276.7 | -0.5 |
+| `mulbcast` | 2048×8192 | 576.6 | 566.5 | -1.8 |
+| `mulbcast` | 2048×16384 | 1160.4 | 1160.3 | -0.0 |
+| `mulbcast` | 8192×2048 | 575.0 | 564.4 | -1.8 |
+| `mulbcast` | 8192×4096 | 1173.1 | 1156.1 | -1.4 |
+| `mulbcast` | 8192×8192 | 2395.0 | 2369.4 | -1.1 |
+| `mulbcast` | 8192×16384 | 4870.0 | 4858.9 | -0.2 |
+| `mulbcast` | 16384×2048 | 1164.4 | 1154.1 | -0.9 |
+| `mulbcast` | 16384×4096 | 2368.9 | 2365.1 | -0.2 |
+| `mulbcast` | 16384×8192 | 4842.3 | 4849.9 | +0.2 |
+| `mulbcast` | 16384×16384 | 9735.9 | 9951.6 | +2.2 |
+| `write` | 512×1024 | 9.1 | 7.9 | -13.0 |
+| `write` | 512×2048 | 16.2 | 15.1 | -6.6 |
+| `write` | 512×4096 | 31.0 | 30.7 | -0.9 |
+| `write` | 512×8192 | 81.3 | 67.9 | -16.5 |
+| `write` | 512×16384 | 165.2 | 179.7 | +8.8 |
+| `write` | 2048×1024 | 31.8 | 31.8 | +0.1 |
+| `write` | 2048×2048 | 60.9 | 62.6 | +2.7 |
+| `write` | 2048×4096 | 153.2 | 135.7 | -11.4 |
+| `write` | 2048×8192 | 503.4 | 351.5 | -30.2 |
+| `write` | 2048×16384 | 1234.0 | 1204.9 | -2.4 |
+| `write` | 8192×1024 | 134.7 | 131.2 | -2.6 |
+| `write` | 8192×2048 | 254.1 | 275.0 | +8.2 |
+| `write` | 8192×4096 | 709.0 | 692.5 | -2.3 |
+| `write` | 8192×8192 | 2454.0 | 2314.6 | -5.7 |
+| `write` | 8192×16384 | 6498.5 | 6098.0 | -6.2 |
+| `write` | 16384×1024 | 284.6 | 271.0 | -4.8 |
+| `write` | 16384×2048 | 539.4 | 602.2 | +11.6 |
+| `write` | 16384×4096 | 1594.2 | 1701.3 | +6.7 |
+| `write` | 16384×16384 | 11593.6 | 12195.5 | +5.2 |
 
 ### §5. Reduction: read-bound, at a rate that falls with ROWS
 
@@ -717,7 +875,6 @@ by ~40 %, `32×1` by ~61 %. The per-core output-tile *area* `(M/m)·(N/n)` is id
 at fixed cores, so §11's area spill is the same for all of them and cannot see this — the miss
 depends on **how** the output is split, not just the tile size.
 
-
 **The data.** The figure plots the base-model residual (measured − model *without* this term) against
 per-core tile size. **Balanced splits stay flat near zero at any tile size**; splitting either
 dimension past its knee climbs once the tile passes the ~256 KB gate, and the two-sided term (dashed)
@@ -750,7 +907,6 @@ The long-dim knee `/8` is the compiler's own cohort limit (`_COHORT_LIMIT` in it
 model); the short-dim knee `/16` is empirical — the shorter dimension tolerates a wider split before
 it costs. `a₀` (twice §11's knee) gates out small tiles. Both terms are **exactly 0 for balanced
 splits and for small tiles**, so §8–§11 is unchanged.
-
 
 **After the term.** On the lopsided rows the error drops from **RMS 36 % → 15 %** (mean −29 → −2 %),
 and both extremes are pulled in — the tall `16×2` a real compiler emits (long-dim term), and the

@@ -71,6 +71,11 @@ TILES = int(os.environ.get("BENCH_TILES", "0"))  # coarse-tile dim0 into K (>=2 
 LX = os.environ.get("LX_PLANNING", "1")  # scratchpad planning on(1)/off(0); SUMMARY tag
 NCOLS = int(os.environ.get("BENCH_N", str(COLS)))  # matmul N dim (M=ROWS, K=COLS, N)
 BB = int(os.environ.get("BENCH_B", "8"))  # batch dim for bmm ops (a[B,M,K] @ b[B,K,N])
+TO_MID = int(
+    os.environ.get("TO_MID", "8")
+)  # transpose_outer middle (outer-swap) dim M:
+# [R,M,C]->[M,R,C]. Swept to isolate whether the outer-scatter count M drives effBW (it is
+# fixed at 8 in the R×C grid; the block-transpose vs strided-gather mechanism hinges on it).
 WD_B = os.environ.get("WD_B")  # forced work-div split (spyre_hint work_div). cores =
 WD_M = os.environ.get("WD_M")  # WD_B*WD_M*WD_N*WD_K. Unset dim -> stays 1 (the hint is
 WD_N = os.environ.get("WD_N")  # FINAL, not floor-filled). WD_M/N/K used by `mmwd`; all
@@ -692,9 +697,9 @@ def make_workload():
         return torch.compile(_BCAST[OP]), (_rand(ROWS, COLS), _rand(1, COLS))
     if OP in _TRANSPORT:  # data movement (restickify): same bytes as a copy, scattered
         return torch.compile(_TRANSPORT[OP]), (_rand(ROWS, COLS),)
-    if OP == "transpose_outer":  # 3D [R,8,C]: swap OUTER dims, stick (last dim C) kept
+    if OP == "transpose_outer":  # 3D [R,M,C]: swap OUTER dims, stick (last dim C) kept
         tp = lambda x: x.transpose(0, 1).contiguous()  # noqa: E731
-        return torch.compile(tp), (_rand(ROWS, 8, COLS),)
+        return torch.compile(tp), (_rand(ROWS, TO_MID, COLS),)
     if OP == "bcastcol":  # col-vector broadcast: a[R,C] + b[R,1] (b cached across cols)
         return torch.compile(lambda a, b: a + b), (_rand(ROWS, COLS), _rand(ROWS, 1))
     if OP == "write":  # write-only: both inputs broadcast -> cached

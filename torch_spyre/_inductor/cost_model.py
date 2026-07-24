@@ -416,27 +416,50 @@ class CostParams:
     # Ops that stream a FULL input plus a small BROADCAST operand (loaded once) -- copy
     # (x+const), bcast, bcastcol, mulbcast -- run FASTER than a plain 1R:1W op (~118 vs
     # ~105 GB/s; mechanism open). NOT `write` (both operands broadcast, no full input).
-    bw_broadcast_gbps: float = 118.0  # copy (scalar) / bcastcol (b[R,1]): flat, no COLS effect
-    # The ROW-broadcast ops (bcast, mulbcast: operand b[1,C]) run FASTER at small COLS (~130 at
-    # C=1024) easing to a plateau (~112 at C=16384) -- b[1,C] grows with COLS, so a wider operand
-    # costs relatively more. In the well-filled regime (ROWS>=1024 at 32 cores) this is a clean,
-    # monotonic COLS curve fit on the dense sweep (TIME-RMS 3.2%); it removes the mulbcast 2048x1024
-    # (+12%) small-COLS outlier and the mild large-COLS over-prediction, with no regression.
-    bcast_bw_a: float = 183.5  # effBW = a - b*log2(COLS) - d*log2(ROWS), bcast/mulbcast, R>=min
-    bcast_bw_b: float = 2.8  # COLS slope (wider b[1,C] operand -> slower)
-    bcast_bw_d: float = 2.6  # ROWS slope (row-dependent -- the surface is NOT COLS-only)
-    bcast_bw_min_rows: float = 1024.0  # below this ROWS the surface is NON-MONOTONIC (64x16384
-    # ~129 FAST vs 256x16384 ~92 SLOW, confirmed real, not a build artifact) -> no smooth fit;
-    # left on flat 118 and FLAGGED. run_broadcast_smallr_sweep.sh maps R in {64..768} to resolve it.
+    bw_broadcast_gbps: float = 118.0  # fallback rate (used only if the logical shape is absent)
+    # ALL FOUR broadcast ops share the SAME shape of effective-BW surface (a dense R×C sweep):
+    # a well-filled regime (ROWS >= min_rows) where the rate declines gently with both COLS and
+    # ROWS, and a short-tensor regime (ROWS < min_rows) that is a V-valley with its minimum at
+    # ROWS = COLS/64 (the output stick-plane count). The small-ROWS collapse and the COLS/ROWS
+    # dependence are GENERAL broadcast-kernel effects -- they are NOT specific to the b[1,C]
+    # operand (copy, a scalar broadcast, shows the same collapse). The only operand-specific
+    # difference is a small rate lift: the ROW-broadcast ops (bcast/mulbcast, b[1,C]) run a few
+    # GB/s faster than the scalar/column ops (copy/bcastcol), so each FAMILY gets its own fit.
+    bcast_bw_min_rows: float = 1024.0  # split between the well-filled and short-tensor regimes
+    bcast_v_cols_split: float = 4096.0  # short-tensor: COLS<=split -> quadratic, else -> V
+    # -- ROW-broadcast family (bcast, mulbcast: operand b[1,C]) --
+    bcast_bw_a: float = 183.5  # well-filled: effBW = a - b*log2(COLS) - d*log2(ROWS)  (1.3% RMS)
+    bcast_bw_b: float = 2.8
+    bcast_bw_d: float = 2.6
+    bcast_q_a: float = -350.0  # short COLS<=4k: a + b*lr + c*lr^2 + e*log2(COLS)  (lr=log2 ROWS)
+    bcast_q_b: float = 105.0
+    bcast_q_c: float = -5.5
+    bcast_q_e: float = -2.0
+    bcast_v_plateau: float = 128.0  # short COLS>=8k V: min at ROWS=COLS/64
+    bcast_v_floor: float = 92.0
+    bcast_v_bl: float = 32.0
+    bcast_v_br: float = 10.0
+    # -- SCALAR/COLUMN family (copy: scalar; bcastcol: b[R,1]) -- same shape, slightly slower --
+    cbc_bw_a: float = 162.0  # well-filled surface (5.1% RMS)
+    cbc_bw_b: float = 1.8
+    cbc_bw_d: float = 2.2
+    cbc_q_a: float = -270.0  # short COLS<=4k quadratic (6.0% RMS)
+    cbc_q_b: float = 70.0
+    cbc_q_c: float = -3.5
+    cbc_q_e: float = 3.0
+    cbc_v_plateau: float = 120.0  # short COLS>=8k V (10.2% RMS)
+    cbc_v_floor: float = 98.0
+    cbc_v_bl: float = 15.0
+    cbc_v_br: float = 8.0
     # `write` (b[1,C] + c[R,1]: BOTH operands broadcast -> an outer-product write) is slow
     # and SUPER-LINEAR: the operands are re-read in the outer-product and the cost grows
     # steeply with COLS (and, more weakly, ROWS). No clean mechanism yet; the extra HBM
     # traffic is fit EMPIRICALLY on the write sweep -- extra_bytes = coef * ROWS^r * COLS^c,
     # charged at bw_peak. ~12% RMS over the sweep (worst ~-30% at mid sizes). Black-box,
     # to be replaced when the mechanism is understood (see report §4).
-    write_reread_coef: float = 2.148e-7
-    write_reread_r_exp: float = 1.60
-    write_reread_c_exp: float = 2.20
+    write_reread_coef: float = 2.0e-9  # refit on the full dense write sweep (38 pts, 8.2% RMS)
+    write_reread_r_exp: float = 1.75
+    write_reread_c_exp: float = 2.60
     # The power-law grows super-linearly and EXPLODES at the extreme corner (16384x16384
     # predicts ~4.3x the output bytes of extra traffic -> +59% over-prediction; the measured
     # effBW there is ~46 GB/s, implying ~2.2x). Cap the extra at a bounded multiple of the
@@ -620,18 +643,33 @@ def _has_row_broadcast_operand(o) -> bool:
 
 
 def broadcast_bw(o, p):
-    """Effective HBM BW for a broadcast-operand op. copy/bcastcol keep the flat base rate.
-    The ROW-broadcast ops (bcast/mulbcast, operand b[1,C]) follow a COLS curve in the
-    well-filled regime (ROWS >= min_rows): faster at small COLS, easing to a plateau. Below
-    min_rows the surface is non-monotonic and unmodelled -> flat base (flagged). See §4."""
+    """Effective HBM BW for a broadcast-operand op. All four ops share one surface SHAPE
+    (well-filled COLS/ROWS decline + a short-tensor V-valley whose min is at ROWS=COLS/64);
+    the ROW-broadcast ops (bcast/mulbcast, b[1,C]) run a few GB/s faster than the scalar/
+    column ops (copy/bcastcol), so each family has its own constants. See report §4."""
     rc = _logical_rc(o)
-    if rc is None or not _has_row_broadcast_operand(o):
+    if rc is None:
         return p.bw_broadcast_gbps
     rows, cols = rc
-    if rows < p.bcast_bw_min_rows or cols <= 0:
+    if cols <= 0 or rows <= 0:
         return p.bw_broadcast_gbps
-    bw = p.bcast_bw_a - p.bcast_bw_b * math.log2(cols) - p.bcast_bw_d * math.log2(rows)
-    return max(100.0, min(135.0, bw))
+    if _has_row_broadcast_operand(o):  # bcast / mulbcast
+        sa, sb, sd = p.bcast_bw_a, p.bcast_bw_b, p.bcast_bw_d
+        qa, qb, qc, qe = p.bcast_q_a, p.bcast_q_b, p.bcast_q_c, p.bcast_q_e
+        vp, vf, vbl, vbr = p.bcast_v_plateau, p.bcast_v_floor, p.bcast_v_bl, p.bcast_v_br
+        s_lo, s_hi, q_hi = 100.0, 135.0, 140.0
+    else:  # copy (scalar) / bcastcol (b[R,1])
+        sa, sb, sd = p.cbc_bw_a, p.cbc_bw_b, p.cbc_bw_d
+        qa, qb, qc, qe = p.cbc_q_a, p.cbc_q_b, p.cbc_q_c, p.cbc_q_e
+        vp, vf, vbl, vbr = p.cbc_v_plateau, p.cbc_v_floor, p.cbc_v_bl, p.cbc_v_br
+        s_lo, s_hi, q_hi = 95.0, 130.0, 120.0
+    lr, lc = math.log2(rows), math.log2(cols)
+    if rows >= p.bcast_bw_min_rows:  # well-filled: gentle decline with both dims
+        return max(s_lo, min(s_hi, sa - sb * lc - sd * lr))
+    if cols <= p.bcast_v_cols_split:  # short + narrow: only the V's rising side (a quadratic)
+        return max(45.0, min(q_hi, qa + qb * lr + qc * lr * lr + qe * lc))
+    dip = lc - 6.0  # short + wide: the full V-valley, minimum at ROWS = COLS/64
+    return max(40.0, min(vp, vf + vbl * max(0.0, dip - lr) + vbr * max(0.0, lr - dip)))
 
 
 def stick_scatter_bw(o, p):
