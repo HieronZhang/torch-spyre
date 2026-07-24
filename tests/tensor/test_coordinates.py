@@ -28,6 +28,7 @@ from torch_spyre._inductor.propagate_layouts import (
     PropArg,
     _check_supported_input_sticks,
     _matches_preferred_matmul_device_order,
+    _matmul_preferred_input_orders,
     _preferred_matmul_output_dim_order,
     find_stick_compatible_input_layout,
 )
@@ -316,6 +317,42 @@ class TestMatmulPreferredLayout(TestCase):
         )
 
         self.assertEqual(result, preferred)
+
+    def test_preferred_input_orders_with_y_broadcast_batch(self):
+        b, m, k, n = sympy.symbols("b m k n", integer=True, nonnegative=True)
+        x_dep = MemoryDep("x", 1024 * b + 128 * m + k, (b, m, k), (2, 8, 128))
+        y_dep = MemoryDep("y", 64 * k + n, (k, n), (128, 64))
+
+        x_order, y_order = _matmul_preferred_input_orders(
+            x_dep, y_dep, [b, m, n], 2, k, n
+        )
+
+        self.assertEqual(x_order, MatmulPreferredOrder(frozenset({b}), k, m))
+        self.assertEqual(y_order, MatmulPreferredOrder(frozenset(), n, k))
+
+    def test_preferred_input_orders_with_x_broadcast_batch(self):
+        b, m, k, n = sympy.symbols("b m k n", integer=True, nonnegative=True)
+        x_dep = MemoryDep("x", 128 * m + k, (m, k), (8, 128))
+        y_dep = MemoryDep("y", 8192 * b + 64 * k + n, (b, k, n), (2, 128, 64))
+
+        x_order, y_order = _matmul_preferred_input_orders(
+            x_dep, y_dep, [b, m, n], 2, k, n
+        )
+
+        self.assertEqual(x_order, MatmulPreferredOrder(frozenset(), k, m))
+        self.assertEqual(y_order, MatmulPreferredOrder(frozenset({b}), n, k))
+
+    def test_preferred_input_orders_keep_y_when_row_dim_is_folded(self):
+        b, m, k, n = sympy.symbols("b m k n", integer=True, nonnegative=True)
+        x_dep = MemoryDep("x", 128 * b + k, (b, m, k), (2, 1, 128))
+        y_dep = MemoryDep("y", 64 * k + n, (k, n), (128, 64))
+
+        x_order, y_order = _matmul_preferred_input_orders(
+            x_dep, y_dep, [b, 0, n], 2, k, n
+        )
+
+        self.assertIsNone(x_order)
+        self.assertEqual(y_order, MatmulPreferredOrder(frozenset(), n, k))
 
     def test_preferred_order_allows_folded_batch_dim(self):
         b, m, k = sympy.symbols("b m k", integer=True, nonnegative=True)

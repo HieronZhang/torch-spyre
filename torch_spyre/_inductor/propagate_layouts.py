@@ -681,6 +681,42 @@ def _preferred_matmul_output_dim_order(out_dims: int, out_stick_dim: int) -> lis
     return [out_row_dim] + out_batch_dims + [out_stick_dim]
 
 
+def _matmul_preferred_input_orders(
+    x_dep: MemoryDep,
+    y_dep: MemoryDep,
+    out_coords: list[sympy.Expr],
+    out_stick_dim: int,
+    reduction_var: sympy.Symbol,
+    generated_var: sympy.Symbol,
+) -> tuple[MatmulPreferredOrder | None, MatmulPreferredOrder]:
+    x_syms = x_dep.index.free_symbols
+    y_syms = y_dep.index.free_symbols
+    out_row_dim = (
+        len(out_coords) - 2
+        if out_stick_dim == len(out_coords) - 1
+        else len(out_coords) - 1
+    )
+    out_batch_vars = frozenset(
+        sym
+        for dim, coord in enumerate(out_coords)
+        if dim not in (out_row_dim, out_stick_dim)
+        for sym in sympy.sympify(coord).free_symbols
+    )
+
+    row_vars = sympy.sympify(out_coords[out_row_dim]).free_symbols & x_syms
+    x_preferred_order = None
+    if len(row_vars) == 1:
+        row_var = next(iter(row_vars))
+        x_preferred_order = MatmulPreferredOrder(
+            out_batch_vars & x_syms, reduction_var, row_var
+        )
+
+    y_preferred_order = MatmulPreferredOrder(
+        out_batch_vars & y_syms, generated_var, reduction_var
+    )
+    return x_preferred_order, y_preferred_order
+
+
 def find_stick_compatible_input_layout(
     arg: PropArg,
     reduction_var: sympy.Symbol,
@@ -781,16 +817,18 @@ def _matmul_layouts(
     x_preferred_order = None
     y_preferred_order = None
     if preferred_mode == "on":
-        x_syms = x.dep.index.free_symbols
-        y_syms = y.dep.index.free_symbols
-        out_syms = output_dep.index.free_symbols
-        row_vars = (x_syms & out_syms) - y_syms
-        if len(row_vars) == 1:
-            row_var = next(iter(row_vars))
-            batch_vars = frozenset(x_syms & y_syms & out_syms)
-            x_preferred_order = MatmulPreferredOrder(batch_vars, reduction_var, row_var)
-            y_preferred_order = MatmulPreferredOrder(
-                batch_vars, generated_var, reduction_var
+        out_stick_dim = next(
+            (i for i, c in enumerate(out_coords) if generated_var in c.free_symbols),
+            None,
+        )
+        if out_stick_dim is not None:
+            x_preferred_order, y_preferred_order = _matmul_preferred_input_orders(
+                x.dep,
+                y.dep,
+                out_coords,
+                out_stick_dim,
+                reduction_var,
+                generated_var,
             )
 
     x_req_stl = find_stick_compatible_input_layout(
