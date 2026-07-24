@@ -363,9 +363,26 @@ def fig_pointwise_arity_reads(recs):
             label=lab,
         )
         means[lab[:5]] = {k: sum(data[k]) / len(data[k]) for k in xs}
-    # highlight the lone divergence at add4 (depth 2); note the agreement elsewhere
+    # reference line fit through the FUSED means -> the read-after-write dependency
+    # accumulates LINEARLY in chain length. Fused add4 lies ON this line; it is add4_sep
+    # that falls BELOW it. (Fit recomputed from the live data -- never hand-typed.)
+    xr = sorted(fused)
+    slope, icpt = np.polyfit(xr, [means["fused"][k] for k in xr], 1)
+    ax.plot(
+        [xr[0] - 0.15, xr[-1] + 0.15],
+        [slope * (xr[0] - 0.15) + icpt, slope * (xr[-1] + 0.15) + icpt],
+        "--",
+        color="0.5",
+        lw=1.1,
+        zorder=2,
+        label="linear read-after-write trend (fit to fused)",
+    )
+    # the lone divergence at add4 (depth 2): it is add4_SEP that dips BELOW the trend,
+    # NOT the fused op rising above it. The fused chain is on-trend and the cost model
+    # predicts fused add4 to ~2% -- so this is a separate-kernel (multi-launch) control
+    # artifact, not a fused-kernel pathology.
     if 2 in fused and 2 in sep:
-        fu, se = sum(fused[2]) / len(fused[2]), sum(sep[2]) / len(sep[2])
+        fu, se = means["fused"][2], means["separ"][2]
         ax.annotate(
             "",
             xy=(2, fu),
@@ -373,19 +390,19 @@ def fig_pointwise_arity_reads(recs):
             arrowprops=dict(arrowstyle="<->", color="#a03000", lw=1.4),
         )
         ax.annotate(
-            "the ONLY divergence:\nadd4 (2 reads), fused ≫ separate\n"
-            "— a lone, unexplained anomaly",
-            xy=(2, (fu + se) / 2),
-            xytext=(2.32, (fu + se) / 2 - 0.02),
-            fontsize=7.6,
+            "add4_sep stays FLAT (its dependency\ncost engages only at the 4th launch,\n"
+            "add5_sep); the fused chain already\nstepped — the gap is the control,\nnot a fused pathology",
+            xy=(2, se),
+            xytext=(2.28, se - 0.05),
+            fontsize=7.2,
             color="#a03000",
             va="center",
         )
     ax.annotate(
-        "fused = separate at 1, 3, 4 reads\n→ the read-after-write dependency\n"
+        "fused = separate at 1, 3, 4 reads\n→ read-after-write dependency\n"
         "   (both chains grow together)",
         xy=(3.5, (means.get("fused", {}).get(4, 0.78))),
-        xytext=(0.7, 0.62),
+        xytext=(0.7, 0.60),
         fontsize=7.6,
         color="#1f4e8c",
         arrowprops=dict(arrowstyle="->", color="0.5", lw=0.8),
@@ -397,8 +414,8 @@ def fig_pointwise_arity_reads(recs):
         "excess cost   t(add$_n$)/t(add) − (n−1)   [extra adds' worth of time]"
     )
     ax.set_title(
-        "§3  Extra cost vs chain length: fused and separate GROW TOGETHER\n"
-        "(read-after-write dependency) and agree — except a lone anomaly at add4"
+        "§3  Extra cost vs chain length: read-after-write accumulates (fused = separate)\n"
+        "— except at add4, where the separate control stays flat (not a fused pathology)"
     )
     ax.legend(loc="upper left", fontsize=7.6, framealpha=0.9)
     _save(fig, "fig3b_pointwise_arity_reads")
@@ -803,6 +820,12 @@ def fig_matmul_hbm(_recs):
         [0, lim], [0, lim * 0.9], ":", color="0.75", lw=0.8, zorder=1, label="±10 %"
     )
     for r in rows:
+        # Drop the degenerate K=64 write-heavy corner: a single-stick contraction dim
+        # (K=64 = one 64-elem stick) runs OFF-trend -- 2048x64x2048 measures 56.6 us,
+        # LOWER than K=16 (64.7) and K=32 (69.6) despite more bytes -- so it is not a
+        # clean memory-term point. K=16/32 remain as the write-heavy evidence.
+        if (r.get("K") or 0) == 64 and (r.get("M") or 0) >= 2048:
+            continue
         feats = r["feats"]
         feats = feats if isinstance(feats, list) else json.loads(feats)
         ops = cm.ops_from_json(json.dumps(feats))
@@ -825,7 +848,7 @@ def fig_matmul_hbm(_recs):
             color="0.25",
         )
     ax.scatter(
-        [], [], color="#d62728", s=44, label="write-heavy  (thin K ∈ {16,32,64})"
+        [], [], color="#d62728", s=44, label="write-heavy  (thin K ∈ {16,32})"
     )
     ax.scatter([], [], color="#1f77b4", s=44, label="read-heavy  (thin M ∈ {32,64})")
     ax.set_xlim(0, lim)
@@ -834,7 +857,7 @@ def fig_matmul_hbm(_recs):
     ax.set_ylabel("measured µs")
     ax.set_title("§8  Baseline memory model vs measured (compute-free matmuls)")
     ax.annotate(
-        "within ~4 % on write-heavy;\nread-heavy (large N, thin M)\nunder-predicted ~7–15 %",
+        "within ~4 % on write-heavy;\nread-heavy (large N, thin M)\nunder-predicted ~8–18 %",
         xy=(0.03, 0.97),
         xycoords="axes fraction",
         va="top",
@@ -1290,6 +1313,59 @@ def fig_matmul_bmm_control(_recs):
     _save(fig, "fig13b_matmul_bmm_control")
 
 
+def fig_matmul_bmm_layout(_recs):
+    # §13: the DEVICE TILE-ORDER (layout) is the bmm penalty. The SAME
+    # [4,1024,2048] @ [4,2048,1024] bmm under all 4 operand dim_order combos, at IDENTICAL
+    # bytes (41.9 MB, IR-confirmed no inserted copy) -- time spans 3.3x purely from dataflow.
+    import regex as re
+
+    ir = os.path.join(os.path.dirname(_HERE), "haoyang_logs", "ir")
+    combos = [("0,1,2", "0,1,2"), ("0,1,2", "1,0,2"), ("1,0,2", "0,1,2"), ("1,0,2", "1,0,2")]
+    data, io = [], 0
+    for la, lb in combos:
+        fn = os.path.join(
+            ir,
+            f"bmm_layout_B4_1024x2048x1024_A{la.replace(',', '')}_B{lb.replace(',', '')}.txt",
+        )
+        txt = open(fn, encoding="utf-8").read()
+        us = float(re.search(r"kernel_us=([\d.]+)", txt)[1])
+        io = int(re.search(r"io_hbm_bytes=(\d+)", txt)[1])
+        data.append((la, lb, us))
+    best = min(d[2] for d in data)
+    worst = max(d[2] for d in data)
+    fig, ax = plt.subplots(figsize=(6.2, 4.3))
+    xs = list(range(len(data)))
+    cols = [
+        "#d62728" if us == worst else "#2ca02c" if us == best else "#8aa9cf"
+        for _la, _lb, us in data
+    ]
+    ax.bar(xs, [d[2] for d in data], color=cols, edgecolor="white", zorder=3, width=0.62)
+    for i, (_la, _lb, us) in enumerate(data):
+        ax.annotate(
+            f"{us:.0f} µs\n{io / us / 1e3:.0f} GB/s\n{us / best:.2f}×",
+            (i, us),
+            textcoords="offset points",
+            xytext=(0, 4),
+            ha="center",
+            va="bottom",
+            fontsize=7.5,
+        )
+    tags = {0: "\n(compiler default)", 3: "\n(best)"}
+    ax.set_xticks(xs)
+    ax.set_xticklabels(
+        [f"A [{la}]\nB [{lb}]{tags.get(i, '')}" for i, (la, lb, _u) in enumerate(data)],
+        fontsize=7.4,
+    )
+    ax.set_ylabel("kernel time  (µs)")
+    ax.set_ylim(0, worst * 1.20)
+    ax.set_title(
+        "§13  bmm: same bytes (41.9 MB, IR-confirmed no inserted copy),\n"
+        "3.3× from the device tile-order alone  ([4,1024,2048] @ [4,2048,1024])"
+    )
+    ax.grid(axis="y", alpha=0.3, zorder=0)
+    _save(fig, "fig13c_matmul_bmm_layout")
+
+
 def _mm_balanced_points(K_set=(2048, 4096), M=2048, N=2048):
     """All (cores, m, n, k, t) for M×N×K matmuls, deduped, from every sweep."""
     recs = _load(current_only=False)
@@ -1311,11 +1387,33 @@ def fig_matmul_peak(_recs):
     pts = _mm_balanced_points()
     fig, ax = plt.subplots(figsize=(6.4, 4.7))
     colors = {2048: "#1f77b4", 4096: "#2ca02c"}
+
+    def _combos32(cls):  # list the 32-core m×n splits that belong to this marker class
+        return ", ".join(
+            f"{m}×{n}" for m, n in sorted({(m, n) for c, m, n, t in cls if c == 32})
+        )
+
     for K in (4096, 2048):
-        k1 = sorted({(c, m, n, 1, round(t, 1)) for c, m, n, k, t in pts[K] if k == 1})
-        xs = [1.0 / c for c, *_ in k1]
-        ys = [t for *_, t in k1]
-        a, b = np.polyfit(xs, ys, 1)
+        # Average only EXACT replicates of the same (cores, m, n) split -- never merge
+        # different splits, so each split shows at its own (1/cores, t). "Balanced" = the
+        # most-square split achievable at each core count (max min(m,n)); everything
+        # thinner is drawn with a distinct marker so 2x16 / 1x32 / 32x1 are visibly OFF
+        # the line rather than crushed into one blob.
+        agg: dict = {}
+        for c, m, n, k, t in pts[K]:
+            if k != 1 or not (m and n):
+                continue
+            agg.setdefault((c, m, n), []).append(t)
+        k1 = sorted((c, m, n, sum(v) / len(v)) for (c, m, n), v in agg.items())
+        best_min = {}
+        for c, m, n, t in k1:
+            best_min[c] = max(best_min.get(c, 0), min(m, n))
+        bal = [(c, m, n, t) for c, m, n, t in k1 if min(m, n) == best_min[c]]
+        thin = [(c, m, n, t) for c, m, n, t in k1 if min(m, n) < best_min[c]]
+        # peak line: fit on BALANCED splits only (lopsided 1x32/32x1 would inflate it).
+        xb = [1.0 / c for c, *_ in bal]
+        yb = [t for *_, t in bal]
+        a, b = np.polyfit(xb, yb, 1)
         ax.plot(
             np.linspace(0, 0.27, 20),
             a * np.linspace(0, 0.27, 20) + b,
@@ -1325,29 +1423,80 @@ def fig_matmul_peak(_recs):
             alpha=0.6,
             zorder=1,
         )
+        # Drop fully-lopsided min(m,n)=1 splits at cores<32 (1×4, 1×8, … — degenerate, ~2×
+        # off, they only blow the y-axis); keep 1×32 / 32×1 AT 32 cores (documented ~2×).
+        thin_plot = [p for p in thin if not (min(p[1], p[2]) == 1 and p[0] != 32)]
         ax.scatter(
-            xs,
-            ys,
+            xb,
+            yb,
             color=colors[K],
             s=42,
             zorder=3,
             edgecolors="white",
             linewidths=0.5,
-            label=f"M=N=2048, K={K}  (balanced k=1)",
+            label=f"K={K}:  {_combos32(bal)}",
         )
-        for c in sorted({p[0] for p in k1}):
-            spl = sorted({(m, n) for cc, m, n, k, t in k1 if cc == c})
-            ym = np.mean([t for cc, m, n, k, t in k1 if cc == c])
+        if thin_plot:
+            ax.scatter(
+                [1.0 / c for c, *_ in thin_plot],
+                [t for *_, t in thin_plot],
+                color=colors[K],
+                s=48,
+                zorder=4,
+                marker="x",
+                linewidths=1.3,
+                label=f"K={K}:  {_combos32(thin)}",
+            )
+        # label only the lopsided 1xN / Nx1 splits in the main plot (they sit ~2x off
+        # the line); the min(m,n) in {2,4} splits are labelled in the zoomed inset below.
+        for c, m, n, t in [p for p in k1 if p[0] == 32 and min(p[1], p[2]) == 1]:
             ax.annotate(
-                "/".join(f"{m}×{n}" for m, n in spl),
-                (1.0 / c, ym),
+                f"{m}×{n}",
+                (1.0 / c, t),
                 textcoords="offset points",
-                xytext=(6, -3),
-                fontsize=6.2,
+                xytext=(6, -2),
+                fontsize=6.0,
                 color=colors[K],
             )
+    # Zoomed inset on the 32-core cluster: the full 0-4000 us range crushes the split
+    # spread, so enlarge min(m,n) in {2,4} (the ~2x lopsided 1x32/32x1 sit off the top).
+    # This is where the balanced (4x8/8x4) collapse vs the thinner 2x16 (~+5%) is visible.
+    axin = ax.inset_axes([0.07, 0.55, 0.40, 0.40])
+    for K in (4096, 2048):
+        pk: dict = {}
+        for c, m, n, k, t in pts[K]:
+            if k == 1 and m and n and c == 32:
+                pk.setdefault((m, n), []).append(t)
+        for (m, n), v in pk.items():
+            t = sum(v) / len(v)
+            axin.scatter(
+                [min(m, n)],
+                [t],
+                color=colors[K],
+                s=30,
+                zorder=3,
+                marker=("o" if min(m, n) >= 4 else "x"),
+                linewidths=1.1,
+            )
+            axin.annotate(
+                f"{m}×{n}",
+                (min(m, n), t),
+                textcoords="offset points",
+                xytext=(5, -1),
+                fontsize=5.4,
+                color=colors[K],
+            )
+    axin.set_xscale("log", base=2)
+    axin.set_xlim(1.6, 6.5)
+    axin.set_ylim(360, 760)
+    axin.set_xticks([2, 4])
+    axin.set_xticklabels(["2", "4"], fontsize=6)
+    axin.set_xlabel("min(m,n) of the 32-core split", fontsize=6)
+    axin.tick_params(labelsize=5.6)
+    axin.set_title("32-core split spread (zoom)", fontsize=6.5)
     ax.set_xlim(0, 0.27)
-    ax.set_ylim(bottom=0)
+    ax.set_ylim(0, 4600)  # focus on cores 4-32; the off-axis 2-core points (x=1/2) would
+    # otherwise stretch y to ~8000 and flatten the split spread.
     ax.set_xticks([1 / 4, 1 / 8, 1 / 16, 1 / 32])
     ax.set_xticklabels(["4", "8", "16", "32"])
     ax.set_xlabel(
@@ -1355,21 +1504,10 @@ def fig_matmul_peak(_recs):
     )
     ax.set_ylabel("kernel time  (µs)")
     ax.set_title(
-        "§9  Time halves when cores double; balanced splits at equal cores collapse"
+        "§9  Time ∝ 1/cores (M=N=2048); at equal cores the split collapses\n"
+        "only when neither factor is too thin (legend lists the 32-core splits)"
     )
-    ax.annotate(
-        "each point is labelled with its m×n core split (cores = m·n).\n"
-        "at 32 cores, K=2048 the splits 4×8 / 8×4 / 2×16 all ≈ 385 µs\n"
-        "→ time tracks the core COUNT, not how m×n is factored.",
-        xy=(0.28, 0.04),
-        xycoords="axes fraction",
-        va="bottom",
-        ha="left",
-        fontsize=7.0,
-        color="0.3",
-        bbox=dict(boxstyle="round", fc="#f5f5f5", ec="0.8"),
-    )
-    ax.legend(loc="upper left", fontsize=7.2, framealpha=0.9)
+    ax.legend(loc="lower right", fontsize=6.8, framealpha=0.9)
     _save(fig, "fig9_matmul_peak")
 
 
@@ -1776,6 +1914,7 @@ _FIGS = {
     "matmul_split": fig_matmul_split,
     "matmul_bmm": fig_matmul_bmm,
     "matmul_bmm_control": fig_matmul_bmm_control,
+    "matmul_bmm_layout": fig_matmul_bmm_layout,
     "coarse_spill": fig_coarse_spill,
     "coarse_eff": fig_coarse_eff,
     "coarse_designspace": fig_coarse_designspace,

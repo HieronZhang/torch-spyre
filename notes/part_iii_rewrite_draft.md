@@ -8,6 +8,22 @@ FINALIZE the numeric coefficients (peak, γ, spill) on the clean forced-core swe
 (`run_matmul_overlap_iso_sweep.sh` + `run_coarse_bwcores_sweep.sh`) — the values here are from the
 noisy overnight data and are provisional. Full spec + validation in `cost_model_status.md`.
 
+> **⚠️ 2026-07-24 ADVERSARIAL DOWNGRADES (apply before merging — see the status-doc block):**
+> (1) peak is **≈1040**, not 1046 (1046 folds in M=4096's outlier 1073). (2) **γ is NOT a proven
+> constant** — it is UNIDENTIFIABLE on the clean (saturated, low-core) data and binds only on ~30
+> noisy 16/32-core points where the RMS-vs-γ valley is flat over 0.4–0.7. What the data proves is
+> that *reads hide*; the `min(read, γ·compute)` regime-switch is what makes a single γ *defensible*,
+> not a measured invariance. State γ as a central value, not a pinned constant — the corrected re-fit
+> harness (`analyze_matmul_overlap.py`) actually prefers **γ≈0.70** (entanglement best-fit 0.70–0.78;
+> unsaturated valley min ~0.7), a bit above the 0.6 in the body below. (3) The
+> writes-serial benefit is small (~0.2–0.3pt, within noise) and the write-heavy "shape family"
+> evidence is one noisy shape — keep writes-serial as a modeling choice that never hurts, but drop
+> the "markedly better / most visible on write-heavy shapes" claim below. (4) The entanglement
+> rationale for the *spill* term is wrong: 2·min helps under BOTH overlap forms (~1.3pt each), so it
+> is a robust standalone win; the genuine entanglement is **peak↔overlap-form** (dropping peak alone
+> regresses the shipped form). These rest on 132 records, all `is_current=False`, one noisy log —
+> re-fit on the clean overnight data before shipping.
+
 ---
 
 ## §9 (revised). The compute term — a measured sustained rate, not the datasheet peak

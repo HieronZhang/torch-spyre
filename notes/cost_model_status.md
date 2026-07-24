@@ -29,6 +29,129 @@ commit/git; regenerate figure + full end-of-section table after any model change
 consistent. Analysis scripts: `notes/analyze_matmul_overlap.py` (cat3), `notes/analyze_bmm_layout.py`
 (cat4). **Findings below are UNDER REVIEW / not yet verified until their challenge workflow passes.**
 
+### TASK 8 (report figure fixes) — DONE (2026-07-24), adversarial review in flight
+
+User-added task: fix three report figures/claims. All done on EXISTING data (no HW), each
+independently re-verified against `sweep_records.json` before editing; a Task-8 challenge workflow
+is reviewing the revisions.
+
+- **§3 add4 (fig3b):** the fused-vs-separate +0.31 gap at add4 is REAL (cv 0%, n≥5, all 7 shapes)
+  but the earlier figure had the DIRECTION backwards. Verified: the **fused** chain is a clean line
+  (add4 residual +0.07; model predicts fused add4 to **+2.1%**); it is **add4_sep** that dips ~0.2
+  BELOW the trend (~2/3 of the gap). Fuser code (`fusion.py::_max_bundle_tensors` = len(SEGMENT_OFFSETS,
+  7) −1 = 6; `spyre_fuse_nodes`) shows add4 = 5 non-intermediate tensors = ONE left-associative bundle;
+  first split at add5/add6, **never add4** → refutes the reassociation/barrier hypothesis. The effect
+  lives in the SEPARATE multi-launch control (host launch-scheduling regime, a HYPOTHESIS). NOT
+  modelled. Confirmatory sweep written: `docs/source/user_guide/examples/run_add_chain_ir.sh`
+  (add3–6 + _sep, SPYRE_DUMP_IR=1, grep `async_compile.sdsc(` bundle count).
+- **§8 fig8 (memory term):** the two literal requests are WRONG for this figure — "drop K≤64" would
+  delete the whole write-heavy corner; "add 8×4/4×8/16×2 marked" tests nothing because the memory
+  term is **split-agnostic** (`cost_model.py::_fused_hbm_bytes` returns TOTAL bytes, no m/n/k). Did:
+  dropped only the DEGENERATE K=64 point (`2048×64×2048`=56.6µs, below K=16/32 despite more bytes),
+  kept K=16/32; added prose that split coverage lives in §9/§11/§12. Live errs: write-heavy ≤4%,
+  read-heavy +8–18%.
+- **§9 fig9 (compute term):** the claim "4×8/8×4/2×16 all ≈385µs" is FALSE. Verified 32-core splits:
+  K2048 {4×8=387,8×4=386} collapse, 2×16=404(+4.7%), 16×2=396; K4096 {4×8,8×4,16×2}≈670 collapse,
+  2×16=704(+5%), 1×32/32×1≈2×. Rewrote fig9: every split at true (1/cores,t), balanced/thin markers,
+  peak line fit on balanced-only, + a 32-core zoom INSET so 2×16 is visible (the "missing green 2×16"
+  was crushed by the 0–4000µs range + a mean-merge annotation, not filtered). Prose now agrees with the
+  §11–§12 work-div table (2×16 measured ~399µs).
+
+### ⚠️ ADVERSARIAL REVIEW (2026-07-24) — DOWNGRADES that SUPERSEDE the cat 3–7 claims below
+
+A 6-agent challenge panel + noise-weighting lead re-derived every load-bearing number from
+`sweep_records.json` + compiler source. The DIRECTIONS mostly survive; several SETTLED-sounding
+claims below are downgraded to HYPOTHESIS or REJECTED. **Apply these before the Part III re-fit.**
+Critical systemic finding: **the `haoyang_logs/ir/ircap_*` files are STUBS** (kernel_us=1.0, 121–126
+bytes, `cores=32` placeholder) from the no-HW/mock runs — so EVERY "confirmed in the IR" claim for
+cats 5/6 is actually UNVERIFIED until the real overnight IR lands. Also: only **132/602** matmul-family
+records carry repeat structure, ALL model_sha c201383, ALL `is_current=False` — the whole cat-3/4/6
+quantitative story rests on that one noisy cohort.
+
+- **Cat 3:** peak **≈1040** (not 1046 — 1046 only if M=4096's 1073 folds in); peak survives STRONGLY
+  (13 single-core pts, CV≈0). γ=0.6 is a **HYPOTHESIS, not a proven constant** — γ is UNIDENTIFIABLE
+  on all clean data (low-core pts saturated: overlap=read for any γ≳0.2), binds ONLY on ~30 noisy
+  16/32-core pts (CV median 0.55, max 3.87) where the RMS-vs-γ valley is flat 0.4–0.7. What the DATA
+  proves is "reads hide" (g=0 → 15% vs 3%), the `min(read,γ·compute)` regime-switch makes a *constant*
+  defensible — NOT a measured γ-invariance. **Deciding experiment WRITTEN & ready:**
+  `run_gamma_bind_sweep.sh` sweeps small **M=N** (not K — read/compute ∝ cores·(1/M+1/N) is
+  K-independent) at cores 16/32 so read/compute straddles γ (512→1.73 … 2560→0.35 at 32c), stick-aligned,
+  pt_eff=1, reps=25 to beat the CV~0.55. The old MMISO_CORE (M=N=2048 fixed, varying K) is saturated
+  even at 32c (0.43<0.6) so it can NOT pin γ; this sweep can. **The correct re-fit harness is now
+  written** (`notes/analyze_matmul_overlap.py`, replacing the stale γ(cores) scratch tool): it
+  reproduces the panel (read-overlap+2·min is the best cell; 2·min helps under BOTH overlap forms;
+  saturation census γ-blind ≤8c, binds 16/32c) AND refines γ — the entanglement best-fit gives
+  **γ*≈0.70–0.78** and the unsaturated-subset valley (n=13, cv~0.8%) is steep below 0.6, flat 0.6–0.8,
+  **min ~0.7** → the central value is ~**0.70**, not 0.6 (bounded below at ~0.6; upper side flat). Use
+  0.70 as the central value pending the reps-heavy sweep. writes-serial: keep as a modeling choice (never hurts) but
+  the "**markedly better / on write-heavy shapes**" justification is REJECTED (0.2–0.3pt, one noisy
+  shape). Operand-min spill 2·min SURVIVES (~1.3pt), but the "spill hurts under old form" ENTANGLEMENT
+  rationale is REJECTED — 2·min helps under BOTH forms; the true entanglement is **peak↔overlap-form**.
+- **Cat 4:** the layout DIRECTION is SOLID (11 byte-identical matched quads, def/best **2.17–3.34×**,
+  median 3.13, ~100σ; single-operand swap only 1.5–1.7×, both operands → full ~3×). But **~215 µs/GMAC
+  is REJECTED as a flat rate** — it holds only at split m4n8 & B≥4 (B=2→108 anomaly); across splits the
+  rate spans 215→2118. The rate must be split-keyed, and the "real bmm = 215-rate" leg rests on
+  singletons (93/107 bmm_wd reps=None). HYP. **IR-CONFIRMED (2026-07-24)** from the REAL bmm_layout IR
+  (haoyang_logs/ir/bmm_layout_B4_1024x2048x1024_*.txt, NOT stubs): all 4 layout combos have **copies=0**
+  (no inserted restickify/clone) and **byte-identical io_hbm=41.9MB** → the delta is PURE dataflow, not
+  a copy artifact. Times: A012/B012=1847µs (slow default), A012/B102=1293, A102/B012=1062, A102/B102=556
+  (fast) → def/best=**3.32×**; swapping ONLY A→1.74×, only B→1.43×, so the full ~3.3× needs BOTH operands
+  on [1,0,2]. Direction fully closed; only the split-keyed RATE (for the shipped term) still needs
+  repeat-backed bmm_wd data.
+- **Cat 5:** −91% under-count is SOLID; cores=1 is **CORRECT (by design** — harness sets sencores=1),
+  NOT an "extractor bug" → the defect was a missing **BW(cores)** term in the COST MODEL. **PARTIALLY
+  SHIPPED (2026-07-24):** a mechanistic `g(cores)` reduction-bandwidth derate (`red_bw_cores_g` +
+  `_reduction_bw_cores_factor`, cost_model.py) now scales `reduction_read_bw` below 32 cores
+  (g={1:.11,2:.22,4:.43,8:.54,16:.54,32:1}; sub-linear/saturating, g(1)=0.11 not 1/32; falsifies the
+  proportional law). Fixes the 20 low-core PLAIN reductions (read/amax/sumrow/mean): mean|err|
+  **289%→5.7%**, reduction category RMS **32→4.5**, OVERALL 48.0→47.4. **Gold PROVABLY untouched**
+  (g(32)=1 exact; cores=32 reductions + softmax_unrolled + all other categories byte-identical,
+  max|delta|=0.0000; verified in the real repo, not just the agent sandbox). §5 report + coeff table
+  updated. **softmax_unrolled ITSELF is NOT fixed** (len=5 fused → else branch, structurally excluded)
+  — its −90% is a SEPARATE, larger io_hbm effect (LX-resident intermediate over-credited by the byte
+  count; a bandwidth derate can't fix it) → deferred to **cat-6** (io_hbm re-crediting for coarse
+  fused reductions). Forcing g onto the fused branch FAILS (t1 +51% overshoot, sign-flips across tiles)
+  — confirming it's a numerator/byte effect, not bandwidth. Caveat: low-core anchors are single-shot;
+  the c8/c16 plateau + shape-generality need `run_reduction_cores_sweep.sh` (WRITTEN, reps=7, both
+  aspect ratios). "cores=1 confirmed in IR" → the REAL softmax_unrolled IR (haoyang_logs/ir/
+  softmax_unrolled_*.txt, NOT the ircap stubs) confirms cores=1 + CoarseTileInfo loop_count=[tiles].
+- **Cat 6:** the cited IR dumps are STUBS. io_hbm-constant holds ONLY for matmul_row (mm_nested &
+  matmul_k io_hbm RISE → different sub-problem); and matmul_row time is **U-shaped** (falls then rises),
+  not monotonic. mm_nested outer loop_count is 2/4/8 **shape-derived** (a known extractor bug to FIX
+  first, not "stuck at 2"). c_fill is NOT grounded (the equivalent c_loop·L term was explicitly removed
+  as unvalidated). "Same physics as cat 3" → the supported link is an rpc/tile-height **throughput
+  derate (underfill_eff)**, NOT an additive per-tile term. Whole additive-c_fill mechanism → HYP.
+  **softmax_unrolled sub-problem CHARACTERIZED (2026-07-24, HYP — not shipped, thin data):** a FUSED
+  coarse reduction (softmax) runs at a reduction-like bw that (a) scales with cores (same shared-bus
+  effect as the shipped plain-reduction g(cores)) and (b) has a TILED fill/drain penalty. Evidence from
+  the real IR+data: softmax_unrolled @ cores=1 — UNTILED (tiles=1) bw **≈24.8** (very consistent, 5
+  shapes 24.6–24.9); TILED (tiles≥4) bw **≈11** (tiled/untiled ≈0.44, matches softmax_row_tiling c1=11);
+  softmax_row_tiling tiled bw scales **11/20/37/60/75/124** at c1/2/4/8/16/32. The model charges bw_peak
+  =150 on the fused (len>1) branch → the −90% miss. NOT shipped because: (i) all the softmax cores-sweep
+  points are SINGLETONS (reps=None); (ii) a fused-reduction bw term TOUCHES cores=32 softmax too (the
+  "softmax" category, 34.6%), so it is NOT gold-safe like the plain-reduction fix — a category-wide
+  change on singletons is exactly the curve-fit-on-thin-data hazard. Deciding experiment WRITTEN:
+  `run_coarse_reduction_sweep.sh` (softmax_row_tiling cores×tiles + softmax_unrolled tiles, reps=7 + IR).
+  Ship a `(cores-scale × tiled-derate)` fused-reduction bw term only after it confirms under reps AND
+  leaves cores=32 within tolerance. **OPPOSITE-SIGN clue (2026-07-24):** the coarse-tiling path
+  OVER-predicts softmax_row_tiling by **+21%** (e.g. 16384×4096 t8 c32: meas 2862.9, pred 3454.8 — model
+  bw ~116 vs measured 141) while it UNDER-predicts the coarse MATMULS (matmul_row −15%, mm_nested −33%).
+  Same coarse path, opposite sign for reductions vs matmuls → a single coarse-tiling fix must reconcile
+  BOTH; fitting softmax_row_tiling alone (making it faster) would half-fit and likely worsen matmul_row.
+  Confirms cat-6 needs the joint treatment on the REAL coarse-matmul IR, not a per-op patch.
+- **Cat 7:** "product 256 > 32 caused the failures" is **REFUTED** — over-subscription is silently
+  skipped (not an error); the DOMINANT failure is a ~600s **COMPILE TIMEOUT** (15/18), which the
+  diagnosis omitted. Divisibility is ONE verified mode (2/18). run_flash_resweep.sh's log is a MOCK
+  (kernel_us=1.0) — it proves nothing compiled; and the guard enforces only product≤32, NOT
+  divisibility (satisfied only by the hard-coded ht=4). **FIXED (2026-07-24):** run_flash_resweep.sh
+  now carries the corrected diagnosis, adds a per-tile divisibility guard (necessary-condition),
+  logs TIMEOUT distinctly from FAILED (rc=124/137), and raises FLASH_TIMEOUT default to 900s.
+  **IR-CONFIRMED (2026-07-24)** from the 35 REAL flash IR files (haoyang_logs/ir/flash_*.txt): **10 of
+  the product-256 `H4-Lq8-Lk8` (>32-core) configs COMPILED** (have op_it_space_splits) → over-subscription
+  is silently absorbed, NOT a compile error (diagnosis correction validated); only **2** carry the
+  divisibility InductorError (the minority mode); the rest have no IR + no error = the compile TIMEOUTs.
+  So the corrected diagnosis (timeout-dominant, product>32 harmless, divisibility minority) is confirmed.
+
 - **Cat 3 (matmul compute/HBM OVERLAP) — RE-SCOPED BY USER (2026-07-24):** the real ask is NOT the
   cores drift and NOT finding another γ-form. **A scalar γ is naive and wrong; the §10 figure shows
   many outliers.** The overlap of HBM-I/O and compute depends on the actual WORKFLOW / ACCESS PATTERN
@@ -182,15 +305,18 @@ constant-vs-variable-γ debate was noise), and cat-6 c_fill residuals swing 641/
 config. Contended single measurements dominate. So the mechanisms are all FOUND + reviewed, but the
 final fit needs clean, repeated data. **Four calibration sweeps are WRITTEN + dry-run-verified**
 (all use the BENCH_REPS=7 noise protocol), ready for the user to run:
-1. `run_transport_iso_sweep.sh` — cat 2 (ALREADY RAN, folded; transport done at 5.5%).
-2. **`run_matmul_family_sweep.sh`** — cats 3+4+5+6 in ONE run (~133 runs): MMISO_CORE (forced
-   1/2/4/8/16/32-core matmul = clean γ / low-core rate), MMISO_SPLIT, MMISO_BATCH (bmm), CTFILL
-   (coarse per-tile fill/drain), BWCORES (BW-vs-cores for reductions/softmax). This is the ONE sweep
-   to run for the whole matmul-family Part III rework. (Supersedes the earlier separate
-   run_matmul_overlap_iso_sweep.sh + run_coarse_bwcores_sweep.sh, now merged.)
-3. `run_flash_resweep.sh` — cat 7 (fixed flash configs + IR).
-Run #2 → then the coordinated Part III rework (cats 3+4+6) + cat-5 BW(cores) can be fit + shipped on
-clean data. Report-ready prose for the Part III rewrite is pre-drafted in `notes/part_iii_rewrite_draft.md`.
+**★ ONE overnight launcher: `run_overnight_v2.sh`** — runs all three stages in sequence (single
+preflight, each stage independent): (1) `run_matmul_family_sweep.sh` [~175 runs, cats 3/4/5/6 timing:
+MMISO_CORE forced 1/2/4/8/16/32-core matmul, MMISO_SPLIT, MMISO_BATCH, **BMMLAY** (matched
+[0,1,2]²-vs-[1,0,2]² bmm at reps=7 — the clean cat-4 layout-rate source), CTFILL coarse per-tile
+fill/drain, BWCORES]; (2) `run_flash_resweep.sh` [cat 7]; (3) IRCAP [25 lower-level IR dumps via
+SPYRE_DUMP_IR=1 → CoarseTileInfo/loop_count/op_it_space_splits/device_layout for cats 6/5/4/3 —
+adversarially reviewed: configs all run, IR contains the needed structure]. `run_transport_iso_sweep.sh`
+(cat 2) already ran + folded. ⚠️ **All these scripts are UNTRACKED (working tree only — user manages
+git); COPY them to the run machine (rsync/scp), do NOT rely on git pull, or a stale
+`run_matmul_family_sweep.sh` silently drops BMMLAY.** After it folds via `parse_sweep_logs.py`: the
+coordinated Part III rework (cats 3+4+6) fits on clean data. Report-ready prose pre-drafted in
+`notes/part_iii_rewrite_draft.md`; the validated cat-3 model form + spec are above.
 
 ### Data + how to score (do this on resume)
 
