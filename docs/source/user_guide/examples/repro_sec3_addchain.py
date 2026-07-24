@@ -12,128 +12,157 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Reproduce the §3 chained-adds result directly ON THE SPYRE DEVICE.
+"""Reproduce the §3 add3 bar chart (fig3) directly ON THE SPYRE DEVICE.
 
-Self-contained: it runs the add-chain workloads on Spyre, profiles the on-device kernel time,
-and computes the excess-cost metric itself -- it does NOT read the recorded sweep data and does
-NOT import profile_ops.py. Run it on the machine with the Spyre accelerator:
+Self-contained: it runs each workload on Spyre, prints the FULL torch profiler table for it, and
+finally prints a summary of each op's kernel time. It does NOT read the recorded sweep data and
+does NOT import profile_ops.py.
 
-    python3 docs/source/user_guide/examples/repro_sec3_addchain.py
+    python3 docs/source/user_guide/examples/repro_sec3_addchain.py     # on the Spyre machine
 
-Knobs (env): ROWS (default 2048), COLS_LIST ("1024,4096,16384"), WARMUP (5), REPS (7).
+Knobs (env): ROWS (default 2048), COLS (4096), WARMUP (5), REPS (7).
 
-The §3 result it reproduces: an n-input sum ``a + b + c + …`` compiles to a chain of dependent
-binary adds. The FUSED chain (``add_n``, one kernel) and the SEPARATE control (``add_n_sep``, each
-``+`` its own kernel, same read-after-write dependency, no fusion) cost the same at every chain
-length EXCEPT add4, where they diverge by ~+0.31 single-``add``s. The metric is
+THE OPS (each is an explicit Python program below; all on ROWS x COLS float16 tensors):
 
-    excess(add_n) = mean over shapes of [ t(add_n) / t(add) - (n - 1) ]
-
-("extra single-adds of time beyond the pure byte count"). Scratchpad planning is forced OFF
-(``LX_PLANNING=0``) so every intermediate round-trips HBM -- the regime the §3 figure analyses.
+  add        = a + b                 -- the UNIT (2R:1W). The byte-count baseline is 2 x this.
+  add_indep2 = (a+b, c+d)            -- two INDEPENDENT adds: same 4R:2W bytes as add3, NO
+                                        read-after-write dependency  -> lands ON the baseline.
+  add3_sep   = add(add(a,b), c)      -- the add3 chain as SEPARATE kernels (each `+` its own
+                                        compiled kernel; the intermediate a+b round-trips HBM)
+                                        -> ~+7% (the dependency cost).
+  add3       = (a+b)+c  [FUSED]       -- the whole chain in ONE compiled kernel, scratchpad OFF
+                                        -> ~+7% (== add3_sep, so fusion itself is FREE).
+  add3 LX-on = (a+b)+c  [FUSED]       -- same fused chain, scratchpad ON: the intermediate stays
+                                        on-chip, the HBM round-trip is gone -> ~-34%.
 """
 import os
 import statistics
 
-# Set BEFORE importing torch/torch_spyre: force a real compile and the scratchpad-OFF regime.
-os.environ.setdefault("LX_PLANNING", "0")  # intermediates spill to HBM (the fig3b regime)
-os.environ.setdefault("TORCHINDUCTOR_FORCE_DISABLE_CACHES", "1")
+os.environ.setdefault("TORCHINDUCTOR_FORCE_DISABLE_CACHES", "1")  # force a real compile each time
 
 import torch  # noqa: E402
 import torch_spyre  # noqa: E402,F401  -- importing registers the "spyre" PrivateUse1 device
+import torch_spyre._inductor.config as spyre_config  # noqa: E402  -- toggles scratchpad planning
 from torch.profiler import ProfilerActivity, profile  # noqa: E402
 
 DEVICE = torch.device("spyre")
 ROWS = int(os.environ.get("ROWS", "2048"))
-COLS_LIST = [int(c) for c in os.environ.get("COLS_LIST", "1024,4096,16384").split(",")]
+COLS = int(os.environ.get("COLS", "4096"))
 WARMUP = int(os.environ.get("WARMUP", "5"))
 REPS = max(1, int(os.environ.get("REPS", "7")))
 torch.manual_seed(0xAFFE)
 
 
-def _rand(rows, cols):
-    return torch.rand(rows, cols, dtype=torch.float16).to(DEVICE)
+def inputs(n):
+    """`n` fresh random ROWS x COLS float16 tensors placed on the Spyre device."""
+    return tuple(torch.rand(ROWS, COLS, dtype=torch.float16).to(DEVICE) for _ in range(n))
 
 
-def _sync(out):  # move result(s) to host so the device actually finishes the work
+# ============================================================================
+# THE PROGRAMS -- exactly what each op computes. Plain Python of device tensors;
+# `torch.compile` turns each into Spyre kernel(s).
+# ============================================================================
+def add(a, b):
+    """The UNIT: one binary add (2 reads + 1 write). The baseline is 2x this."""
+    return a + b
+
+
+def add_indep2(a, b, c, d):
+    """NO-DEPENDENCY control: two INDEPENDENT adds. Same 4R:2W bytes as add3, but neither add
+    reads the other's output -> isolates the pure byte count from the dependency."""
+    return a + b, c + d
+
+
+def add3_fused(a, b, c):
+    """add3 FUSED: the dependent chain ((a+b)+c) in ONE compiled graph -> a single kernel."""
+    return (a + b) + c
+
+
+def make_add3_separate():
+    """add3 as SEPARATE kernels. Each `+` is its OWN compiled kernel (this outer function is
+    NOT torch.compiled), so the intermediate (a+b) is written to HBM by kernel 1 and read back
+    by kernel 2 -- the same read-after-write dependency as the fused add3, but no fusion."""
+    compiled_add = torch.compile(add)  # one compiled binary add, launched twice
+
+    def add3_sep(a, b, c):
+        return compiled_add(compiled_add(a, b), c)
+
+    return add3_sep
+
+
+# ============================================================================
+# HOW EACH IS RUN: compile under the chosen scratchpad setting, warm it, then take
+# ONE profiled trace whose FULL table we print, plus the median kernel time.
+# ============================================================================
+def sync(out):  # move result(s) to host so the device actually finishes the work
     for t in out if isinstance(out, (tuple, list)) else (out,):
         t.cpu()
 
 
-def measure_us(fn, args):
-    """Median on-device kernel time (µs) over REPS profiled traces. Kernel = the fused compute
-    event(s); Memset/Memcpy are excluded -- exactly the classification profile_ops.py uses. For a
-    separate-kernel chain the profiler sums ALL its sub-kernels, so this is the whole chain's time."""
-    for _ in range(WARMUP):  # compile + warm the kernel(s)
-        _sync(fn(*args))
-    kernels = []
-    for _ in range(REPS):
+def kernel_us(prof):
+    """Sum the compute-event device time in a trace (Memset/Memcpy excluded -- the same
+    classification profile_ops.py uses). For a separate-kernel chain this sums all sub-kernels."""
+    total = 0.0
+    for ev in prof.key_averages():
+        us = getattr(ev, "self_device_time_total", 0) or 0
+        name = ev.key or ""
+        if us > 0 and "Memset" not in name and "Memcpy" not in name:
+            total += us
+    return total
+
+
+def profile_op(name, build, n_inputs, lx):
+    """Compile the op under scratchpad planning = `lx`, warm it, run REPS profiled traces, PRINT
+    the full profiler table for the first trace, and return the median kernel time (us)."""
+    spyre_config.lx_planning = lx  # read at compile time in torch_spyre/_inductor/passes.py
+    torch._dynamo.reset()  # force a fresh compile under this lx setting
+    fn = build()
+    args = inputs(n_inputs)
+    for _ in range(WARMUP):
+        sync(fn(*args))
+    reps, first = [], None
+    for i in range(REPS):
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
-            _sync(fn(*args))
-        k = 0.0
-        for ev in prof.key_averages():
-            us = getattr(ev, "self_device_time_total", 0) or 0
-            key = ev.key or ""
-            if us and us > 0 and "Memset" not in key and "Memcpy" not in key:
-                k += us
+            sync(fn(*args))
+        if i == 0:
+            first = prof
+        k = kernel_us(prof)
         if k > 0:
-            kernels.append(k)
-    return statistics.median(kernels) if kernels else float("nan")
+            reps.append(k)
+    med = statistics.median(reps) if reps else float("nan")
 
-
-# ---- the workloads, built here (NOT imported from profile_ops.py) ----
-def _fused_sum(*ts):  # add_n: one compiled graph -> the chain fuses into a single kernel
-    acc = ts[0]
-    for t in ts[1:]:
-        acc = acc + t
-    return acc
-
-
-_add = torch.compile(lambda a, b: a + b)  # one reusable compiled binary add
-
-
-def _separate_chain(*ts):  # add_n_sep: same left-assoc chain, each '+' its OWN kernel launch
-    acc = _add(ts[0], ts[1])  # (plain Python orchestration -> no fusion across the adds)
-    for t in ts[2:]:
-        acc = _add(acc, t)
-    return acc
-
-
-def run_shape(rows, cols):
-    """{op -> kernel_us} for `add` (baseline) and add3..add6 fused + add3_sep..add6_sep."""
-    out = {"add": measure_us(_add, (_rand(rows, cols), _rand(rows, cols)))}
-    for n in (3, 4, 5, 6):
-        fused = torch.compile(_fused_sum)  # fresh graph per arity (mirrors a per-op run)
-        out[f"add{n}"] = measure_us(fused, tuple(_rand(rows, cols) for _ in range(n)))
-        out[f"add{n}_sep"] = measure_us(
-            _separate_chain, tuple(_rand(rows, cols) for _ in range(n))
-        )
-    return out
+    print("\n" + "=" * 78)
+    print(f"OP: {name}   (lx_planning={lx}, ROWS={ROWS}, COLS={COLS})")
+    print("=" * 78)
+    print(first.key_averages().table(sort_by="cuda_time_total", row_limit=100).replace("CUDA", "AIU"))
+    print(f"--> compute kernel time (median over {REPS} reps, Memset/Memcpy excluded): {med:.1f} us")
+    return med
 
 
 def main():
-    per_shape = {c: run_shape(ROWS, c) for c in COLS_LIST}
+    results = [
+        ("add (single)", profile_op("add (single)", lambda: torch.compile(add), 2, False)),
+        ("add_indep2 (no dep)", profile_op("add_indep2 (no dep)", lambda: torch.compile(add_indep2), 4, False)),
+        ("add3_sep (dep, separate)", profile_op("add3_sep (dep, separate)", make_add3_separate, 3, False)),
+        ("add3 (dep, fused)", profile_op("add3 (dep, fused)", lambda: torch.compile(add3_fused), 3, False)),
+        ("add3, LX on (buf on-chip)", profile_op("add3, LX on (buf on-chip)", lambda: torch.compile(add3_fused), 3, True)),
+    ]
 
-    print("\n§3 chained adds on Spyre — excess = t(add_n)/t(add) − (n−1)")
-    print(f"ROWS={ROWS}  LX_PLANNING=0  COLS={COLS_LIST}  (warmup={WARMUP}, reps={REPS})\n")
-    print("raw median kernel µs:")
-    for c in COLS_LIST:
-        s = per_shape[c]
-        print(
-            f"  COLS={c:>6}: "
-            + "  ".join(f"{op}={s[op]:.0f}" for op in ["add", "add3", "add3_sep", "add4", "add4_sep"])
-        )
-    print(f"\n{'reads':>5} {'op':>6} | {'fused':>7} | {'separate':>8} | {'gap':>7}")
-    print("-" * 42)
-    for n in (3, 4, 5, 6):
-        fe = statistics.mean(per_shape[c][f"add{n}"] / per_shape[c]["add"] - (n - 1) for c in COLS_LIST)
-        se = statistics.mean(
-            per_shape[c][f"add{n}_sep"] / per_shape[c]["add"] - (n - 1) for c in COLS_LIST
-        )
-        gap = fe - se
-        flag = "  <-- the add4 divergence" if abs(gap) > 0.1 else ""
-        print(f"{n - 2:>5} {'add' + str(n):>6} | {fe:>+7.3f} | {se:>+8.3f} | {gap:>+7.3f}{flag}")
-    print("\nExpected: gap ~0 at add3/add5/add6, and ~+0.3 at add4 (fused ≫ separate).")
+    single = results[0][1]
+    baseline = 2 * single  # byte count of a 2-add chain (fig3's dashed baseline)
+    print("\n" + "#" * 78)
+    print(f"# SUMMARY -- kernel time per op  (ROWS={ROWS}, COLS={COLS}, reps={REPS})")
+    print(f"# byte-count baseline = 2 x add(single) = 2 x {single:.0f} = {baseline:.0f} us")
+    print("#" * 78)
+    print(f"{'op':>28} | {'kernel us':>10} | {'vs 2x add baseline':>18}")
+    print("-" * 64)
+    for name, us in results:
+        vs = "-- (this is 1x add)" if name.startswith("add (single)") else f"{100 * (us / baseline - 1):>+16.0f}%"
+        print(f"{name:>28} | {us:>10.1f} | {vs:>18}")
+    print(
+        "\nExpected: add_indep2 ~0%, add3_sep ~+7%, add3 ~+7% (== separate -> the dependency is\n"
+        "the margin, fusion is free), add3 LX-on ~-34% (the HBM round-trip is gone)."
+    )
 
 
 if __name__ == "__main__":
