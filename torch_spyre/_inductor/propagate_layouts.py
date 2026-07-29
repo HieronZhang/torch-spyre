@@ -646,10 +646,19 @@ def _matches_with_folded_stick_var(
     if second not in nonstick_vars:
         return False
 
-    second_pos = nonstick_vars.index(second)
-    return set(nonstick_vars[:second_pos]) == set(
-        preferred_order.batch_vars
-    ) and nonstick_vars[second_pos:] == [second]
+    second_coord_pos = next(
+        i for i, coord in enumerate(coords[:-1]) if coord.free_symbols == {second}
+    )
+    if second_coord_pos == 0 or coords[second_coord_pos - 1] != sympy.S.Zero:
+        return False
+
+    before_second = _nonstick_device_order_vars(coords[:second_coord_pos])
+    after_second = _nonstick_device_order_vars(coords[second_coord_pos + 1 : -1])
+    return (
+        before_second is not None
+        and set(before_second) == set(preferred_order.batch_vars)
+        and after_second == []
+    )
 
 
 def _matches_preferred_matmul_device_order(

@@ -388,6 +388,78 @@ class TestMatmulPreferredLayout(TestCase):
             )
         )
 
+    def test_preferred_order_rejects_lhs_row_before_folded_stick_outer(self):
+        b, m, k = sympy.symbols("b m k", integer=True, nonnegative=True)
+        cases = [
+            ((1, 8, 128), 128 * m + k, [m, k // 64, 0, k % 64], frozenset()),
+            ((2, 8, 64), 512 * b + 64 * m + k, [m, 0, b, k], frozenset({b})),
+        ]
+
+        for size, index, expected_coords, batch_vars in cases:
+            stride = [size[1] * size[2], size[2], 1]
+            dep = MemoryDep("x", index, (b, m, k), size)
+            stl = SpyreTensorLayout(list(size), stride, torch.float16, [0, 1, 2])
+
+            self.assertEqual(device_coordinates(stl, dep, None), expected_coords)
+            self.assertFalse(
+                _matches_preferred_matmul_device_order(
+                    stl, dep, MatmulPreferredOrder(batch_vars, k, m)
+                )
+            )
+
+    def test_preferred_order_allows_lhs_with_single_folded_dim(self):
+        b, m, k = sympy.symbols("b m k", integer=True, nonnegative=True)
+        cases = [
+            ((1, 8, 128), 128 * m + k, [0, k // 64, m, k % 64], frozenset()),
+            ((2, 8, 64), 512 * b + 64 * m + k, [b, 0, m, k], frozenset({b})),
+        ]
+
+        for size, index, expected_coords, batch_vars in cases:
+            stride = [size[1] * size[2], size[2], 1]
+            dep = MemoryDep("x", index, (b, m, k), size)
+            stl = SpyreTensorLayout(list(size), stride, torch.float16, [1, 0, 2])
+
+            self.assertEqual(device_coordinates(stl, dep, None), expected_coords)
+            self.assertTrue(
+                _matches_preferred_matmul_device_order(
+                    stl, dep, MatmulPreferredOrder(batch_vars, k, m)
+                )
+            )
+
+    def test_preferred_order_rejects_folded_lhs_stick_outer_after_row(self):
+        b, m, k = sympy.symbols("b m k", integer=True, nonnegative=True)
+        dep = MemoryDep("x", 64 * m + k, (b, m, k), (1, 8, 64))
+        stl = SpyreTensorLayout([1, 8, 64], [512, 64, 1], torch.float16, [0, 1, 2])
+
+        self.assertEqual(device_coordinates(stl, dep, None), [m, 0, 0, k])
+        self.assertFalse(
+            _matches_preferred_matmul_device_order(
+                stl, dep, MatmulPreferredOrder(frozenset(), k, m)
+            )
+        )
+
+    def test_find_stick_compatible_input_layout_prefers_folded_lhs_with_batch_one(self):
+        b, m, k = sympy.symbols("b m k", integer=True, nonnegative=True)
+        dep = MemoryDep("x", 64 * m + k, (b, m, k), (1, 8, 64))
+        first_valid = SpyreTensorLayout(
+            [1, 8, 64], [512, 64, 1], torch.float16, [0, 1, 2]
+        )
+        preferred = SpyreTensorLayout(
+            [1, 8, 64], [512, 64, 1], torch.float16, [1, 0, 2]
+        )
+        arg = PropArg(dep, None, [first_valid, preferred])
+
+        result = find_stick_compatible_input_layout(
+            arg,
+            k,
+            "batchmatmul",
+            "x",
+            MatmulPreferredOrder(frozenset(), k, m),
+        )
+
+        self.assertEqual(device_coordinates(preferred, dep, None), [0, 0, m, k])
+        self.assertEqual(result, preferred)
+
     def test_preferred_order_allows_folded_rhs_stick_outer_dim(self):
         b, k, n = sympy.symbols("b k n", integer=True, nonnegative=True)
         dep = MemoryDep("y", 8192 * b + 64 * k + n, (b, k, n), (2, 128, 64))
@@ -397,6 +469,18 @@ class TestMatmulPreferredLayout(TestCase):
         self.assertTrue(
             _matches_preferred_matmul_device_order(
                 stl, dep, MatmulPreferredOrder(frozenset({b}), n, k)
+            )
+        )
+
+    def test_preferred_order_rejects_folded_rhs_stick_outer_after_reduction(self):
+        b, k, n = sympy.symbols("b k n", integer=True, nonnegative=True)
+        dep = MemoryDep("y", 64 * k + n, (b, k, n), (1, 128, 64))
+        stl = SpyreTensorLayout([1, 128, 64], [8192, 64, 1], torch.float16, [0, 1, 2])
+
+        self.assertEqual(device_coordinates(stl, dep, None), [k, 0, 0, n])
+        self.assertFalse(
+            _matches_preferred_matmul_device_order(
+                stl, dep, MatmulPreferredOrder(frozenset(), n, k)
             )
         )
 
@@ -426,7 +510,10 @@ class TestMatmulPreferredLayout(TestCase):
         b, m, n = sympy.symbols("b m n", integer=True, nonnegative=True)
         cases = [
             ((2, 1, 128), 128 * b + n, [b, n // 64, 0, n % 64]),
+            ((1, 8, 64), 64 * m + n, [0, 0, m, n]),
             ((1, 8, 128), 128 * m + n, [0, n // 64, m, n % 64]),
+            ((2, 8, 64), 512 * b + 64 * m + n, [b, 0, m, n]),
+            ((2, 8, 128), 1024 * b + 128 * m + n, [b, n // 64, m, n % 64]),
             ((2, 8, 1), 8 * b + m, [b, 0, m, 0]),
             ((1, 1, 128), n, [0, n // 64, 0, n % 64]),
             ((2, 1, 1), b, [b, 0, 0, 0]),
