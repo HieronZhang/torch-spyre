@@ -622,14 +622,7 @@ def _dev_coord_for_var(dev_coords, arg_host_coords, var):
     return None
 
 
-def _device_order_vars(
-    stl: SpyreTensorLayout,
-    dep: MemoryDep,
-) -> list[sympy.Symbol] | None:
-    coords = try_device_coordinates(stl, dep, None)
-    if coords is None:
-        return None
-
+def _nonstick_device_order_vars(coords: list[sympy.Expr]) -> list[sympy.Symbol] | None:
     result = []
     for coord in coords[:-1]:
         free_symbols = coord.free_symbols
@@ -641,6 +634,24 @@ def _device_order_vars(
     return result
 
 
+def _matches_with_folded_stick_var(
+    coords: list[sympy.Expr],
+    nonstick_vars: list[sympy.Symbol],
+    preferred_order: MatmulPreferredOrder,
+) -> bool:
+    first = preferred_order.first_matmul_var
+    second = preferred_order.second_matmul_var
+    if first in nonstick_vars or first not in coords[-1].free_symbols:
+        return False
+    if second not in nonstick_vars:
+        return False
+
+    second_pos = nonstick_vars.index(second)
+    return set(nonstick_vars[:second_pos]) == set(
+        preferred_order.batch_vars
+    ) and nonstick_vars[second_pos:] == [second]
+
+
 def _matches_preferred_matmul_device_order(
     stl: SpyreTensorLayout,
     dep: MemoryDep,
@@ -649,8 +660,18 @@ def _matches_preferred_matmul_device_order(
     if preferred_order is None:
         return False
 
-    actual_vars = _device_order_vars(stl, dep)
-    if actual_vars is None or len(actual_vars) < 2:
+    coords = try_device_coordinates(stl, dep, None)
+    if coords is None:
+        return False
+
+    actual_vars = _nonstick_device_order_vars(coords)
+    if actual_vars is None:
+        return False
+
+    if _matches_with_folded_stick_var(coords, actual_vars, preferred_order):
+        return True
+
+    if len(actual_vars) < 2:
         return False
 
     actual_batch_vars = actual_vars[:-2]
@@ -674,6 +695,7 @@ def _matmul_preferred_layout_mode() -> str:
 
 
 def _preferred_matmul_output_dim_order(out_dims: int, out_stick_dim: int) -> list[int]:
+    """Return host dim_order that produces device order [batch..., stick, row]."""
     out_row_dim = out_dims - 2 if out_stick_dim == out_dims - 1 else out_dims - 1
     out_batch_dims = [
         dim for dim in range(out_dims) if dim not in (out_row_dim, out_stick_dim)

@@ -376,10 +376,51 @@ class TestMatmulPreferredLayout(TestCase):
             )
         )
 
+    def test_preferred_order_allows_folded_lhs_stick_outer_dim(self):
+        b, m, k = sympy.symbols("b m k", integer=True, nonnegative=True)
+        dep = MemoryDep("x", 512 * b + 64 * m + k, (b, m, k), (2, 8, 64))
+        stl = SpyreTensorLayout([2, 8, 64], [512, 64, 1], torch.float16, [1, 0, 2])
+
+        self.assertEqual(device_coordinates(stl, dep, None), [b, 0, m, k])
+        self.assertTrue(
+            _matches_preferred_matmul_device_order(
+                stl, dep, MatmulPreferredOrder(frozenset({b}), k, m)
+            )
+        )
+
+    def test_preferred_order_allows_folded_rhs_stick_outer_dim(self):
+        b, k, n = sympy.symbols("b k n", integer=True, nonnegative=True)
+        dep = MemoryDep("y", 8192 * b + 64 * k + n, (b, k, n), (2, 128, 64))
+        stl = SpyreTensorLayout([2, 128, 64], [8192, 64, 1], torch.float16, [1, 0, 2])
+
+        self.assertEqual(device_coordinates(stl, dep, None), [b, 0, k, n])
+        self.assertTrue(
+            _matches_preferred_matmul_device_order(
+                stl, dep, MatmulPreferredOrder(frozenset({b}), n, k)
+            )
+        )
+
     def test_preferred_matmul_output_dim_order(self):
         self.assertEqual(_preferred_matmul_output_dim_order(3, 2), [1, 0, 2])
         self.assertEqual(_preferred_matmul_output_dim_order(4, 3), [2, 0, 1, 3])
         self.assertEqual(_preferred_matmul_output_dim_order(4, 2), [3, 0, 1, 2])
+
+    def test_preferred_output_dim_order_produces_batch_stick_row_device_order(self):
+        b, m, n = sympy.symbols("b m n", integer=True, nonnegative=True)
+        dep = MemoryDep("out", 512 * b + 64 * m + n, (b, m, n), (2, 8, 64))
+        stl = SpyreTensorLayout(
+            [2, 8, 64],
+            [512, 64, 1],
+            torch.float16,
+            _preferred_matmul_output_dim_order(3, 2),
+        )
+
+        self.assertEqual(device_coordinates(stl, dep, None), [b, 0, m, n])
+        self.assertTrue(
+            _matches_preferred_matmul_device_order(
+                stl, dep, MatmulPreferredOrder(frozenset({b}), n, m)
+            )
+        )
 
     def test_preferred_matmul_output_layout_with_size_one_dims(self):
         b, m, n = sympy.symbols("b m n", integer=True, nonnegative=True)
