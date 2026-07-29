@@ -87,6 +87,14 @@ def _preserve_shared_weight_unit_bmm_dim(
     args: Sequence[TensorArg],
     op_info: dict[str, Any],
 ) -> dict[sympy.Symbol, tuple[sympy.Expr, int]]:
+    """Keep a size-one shared-weight BMM batch dim visible to SDSC.
+
+    Plain BMMs with B=1 can lose their batch axis because unit dimensions fold
+    to constant-zero device coordinates. Replacing that axis with a synthetic
+    loop symbol preserves the logical rank. When reordering the physical axes,
+    keep the outer-stick axis before the row axis so SDSC's reverse walk reports
+    [row, outer-stick, batch] for preferred explicit layouts.
+    """
     # TensorArg layout is normalized in-place below to match the surrounding
     # OpSpec construction helpers.
     if SHARED_WEIGHT_UNIT_BMM_INFO_KEY not in op_info:
