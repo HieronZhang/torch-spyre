@@ -1,0 +1,2 @@
+SUMMARY op=matmul_row_tiling rows=2048 cols=2048 tiles=16 cores=32 layoutA= kernel_us=1.0
+op_it_space_splits: {d0: 1, d1: 32}

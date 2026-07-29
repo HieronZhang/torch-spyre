@@ -158,6 +158,11 @@ if has 2; then
   manual_cfg "manual-fused bh4  bq128 bk256"  manual-fused  4  128  256
   manual_cfg "manual-sep   bh4  bq256 bk512"  manual-sep    4  256  512
   manual_cfg "manual-sep   bh4  bq128 bk256"  manual-sep    4  128  256
+  # --no-mask: removes the slice of the mask's LAST (stick) dim -- tests whether that slice
+  # is what triggers "buf9 (Pointwise): no mechanism to resolve stick incompatibility".
+  manual_cfg "manual-fused bh4 bq256 bk512 NO-MASK" manual-fused 4 256 512 --no-mask
+  manual_cfg "manual-fused bh4 bq512 bk1024 NO-MASK" manual-fused 4 512 1024 --no-mask
+  manual_cfg "manual-sep   bh4 bq256 bk512 NO-MASK" manual-sep   4 256  512 --no-mask
 fi
 
 # ------------------------------------------------- 3: LX allocation, same program

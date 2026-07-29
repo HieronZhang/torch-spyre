@@ -202,9 +202,14 @@ def build_and_run(a):
              spyre_hint(work_div=wd):
             keys_t = (keys * scale).transpose(-1, -2)
             scores = torch.matmul(queries * scale, keys_t) + mask
-            m = torch.amax(scores, dim=-1, keepdim=True)
-            e = torch.exp(scores - m)
-            return torch.matmul(e / e.sum(dim=-1, keepdim=True), values)
+            # NOTE: reduce WITHOUT keepdim, then unsqueeze -- the same idiom the shipped
+            # flash_attn_example uses. `keepdim=True` leaves a degenerate size-1 dim and the
+            # backend then cannot tell which dim is the stick:
+            #   _resize_device_layout: cannot uniquely identify the stick host dim
+            m = torch.amax(scores, dim=-1)
+            e = torch.exp(scores - m.unsqueeze(-1))
+            denom = e.sum(dim=-1)
+            return torch.matmul(e / denom.unsqueeze(-1), values)
 
     def flash(queries, keys, values, mask):
         pnd.name_tensor_dims(queries, ["B", "H", "Lq", "D"])

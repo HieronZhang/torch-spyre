@@ -1,0 +1,1 @@
+SUMMARY op=transpose_outer rows=512 cols=2048 cores=32 TO_MID=64 kernel_us=1.0

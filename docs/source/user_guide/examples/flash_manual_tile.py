@@ -91,6 +91,10 @@ def parse_args():
     p.add_argument("--no-lx", action="store_true", help="LX_PLANNING=0")
     p.add_argument("--reps", type=int, default=3)
     p.add_argument("--warmup", type=int, default=2)
+    p.add_argument("--no-mask", action="store_true",
+                   help="drop the additive mask entirely (it is all-zeros in this benchmark). "
+                        "Also removes the slice of the mask's LAST dim, which is the stick dim "
+                        "-- a prime suspect for 'no mechanism to resolve stick incompatibility'.")
     p.add_argument("--no-check", action="store_true", help="skip the correctness check")
     p.add_argument("--plan-only", action="store_true",
                    help="print the blocking plan + LX working set and exit (allocates nothing)")
@@ -134,7 +138,9 @@ SCALE = A.d ** -0.25  # applied to BOTH q and k, as in flash_attn_example -> net
 # ===========================================================================
 def reference(q, k, v, mask):
     """Plain attention, used only to validate the blocked variants."""
-    s = torch.matmul(q * SCALE, (k * SCALE).transpose(-1, -2)) + mask
+    s = torch.matmul(q * SCALE, (k * SCALE).transpose(-1, -2))
+    if mask is not None:
+        s = s + mask
     return torch.matmul(torch.softmax(s.float(), dim=-1).to(v.dtype), v)
 
 
@@ -143,7 +149,9 @@ def block_step(q_i, k_j, v_j, mask_ij, m, ell, acc):
 
     Live tensors here are only [.., Bq, Bk] (`s`, `p`) and [.., Bq, D] (`acc`) -- this is
     the whole point: the working set is set by Bq/Bk, not by Lq/Lk."""
-    s = torch.matmul(q_i * SCALE, (k_j * SCALE).transpose(-1, -2)) + mask_ij  # [B,H,Bq,Bk]
+    s = torch.matmul(q_i * SCALE, (k_j * SCALE).transpose(-1, -2))            # [B,H,Bq,Bk]
+    if mask_ij is not None:
+        s = s + mask_ij
     m_new = torch.maximum(m, s.amax(dim=-1))                                   # [B,H,Bq]
     p = torch.exp(s - m_new.unsqueeze(-1))
     alpha = torch.exp(m - m_new)
@@ -172,7 +180,7 @@ def manual_flash(q, k, v, mask, step):
                 j1 = min(j0 + A.bk, Lk)
                 m, ell, acc = step(
                     q_i, k[:, h0:h1, j0:j1, :], v[:, h0:h1, j0:j1, :],
-                    mask[:, :, i0:i1, j0:j1], m, ell, acc,
+                    None if mask is None else mask[:, :, i0:i1, j0:j1], m, ell, acc,
                 )
             row.append(acc / ell.unsqueeze(-1))
         outs.append(torch.cat(row, dim=2))
@@ -274,9 +282,9 @@ def main():
     q = torch.rand(B, H, Lq, D, dtype=DT)
     k = torch.rand(B, H, Lk, D, dtype=DT)
     v = torch.rand(B, H, Lk, D, dtype=DT)
-    mask = torch.zeros(1, 1, Lq, Lk, dtype=DT)  # broadcast mask, as in flash_attn_example
+    mask = None if A.no_mask else torch.zeros(1, 1, Lq, Lk, dtype=DT)  # broadcast, as in the example
     ref = reference(q, k, v, mask) if not A.no_check else None
-    args = tuple(t.to(DEV) for t in (q, k, v, mask))
+    args = tuple(None if t is None else t.to(DEV) for t in (q, k, v, mask))
 
     fn, prep = build(*args)
     out = fn(*args)
