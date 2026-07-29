@@ -1435,7 +1435,6 @@ is thin, non-current, and partly non-monotonic, so it is **flagged, not modeled*
 take `pt_eff = 1`; a clean tile-count sweep is queued). It is the −15 % `matmul_row` row in the
 table below.
 
-
 ### Part IV data — every coarse-tiling run
 
 All coarse ops we have measured, scored on the current model (rows averaged over repeat `runs`; `err = (pred − meas)/meas`). The K-tiling and looped-softmax paths are modeled to a few percent; the remaining large residuals are **flagged, not yet modeled** — some are known code defects (noted in the status column), which we take up next.

@@ -179,6 +179,22 @@ quantitative story rests on that one noisy cohort.
   divisibility (satisfied only by the hard-coded ht=4). **FIXED (2026-07-24):** run_flash_resweep.sh
   now carries the corrected diagnosis, adds a per-tile divisibility guard (necessary-condition),
   logs TIMEOUT distinctly from FAILED (rc=124/137), and raises FLASH_TIMEOUT default to 900s.
+  **⚠️ CORRECTION (2026-07-29): that "fix" addressed the MINORITY cause.** The user's recollection —
+  the flash timeouts were **LX scratchpad exhaustion** — is confirmed by arithmetic. The fused flash
+  region holds per-tile `scores`/`exp_scores`, each `[B_t,H_t,Lq_t,Lk_t]` fp16, against only
+  ~512 KB/core (`lx_spill_cap_bytes`). Auditing `run_flash_resweep.sh`'s OWN matrix: **10 of 12
+  section-A configs and both section-B configs overflow LX even spread over all 32 cores** — e.g.
+  the old default `Lq=Lk=4096, ht=8,qt=4,kt=1` needs **2048 KB/core (4× over)**; `ht=1` needs
+  16384 KB/core. So the resweep would still have hung. Over-subscription feeds this: a work_div with
+  product>32 is silently SKIPPED, so the tile is never divided across cores → per-core set stays huge.
+  **Only more coarse tiles shrink the tile; work_div only redistributes it.** Runnable frontier (live
+  ≥ 2·tile·2 B, /32 cores): Lq=Lk=4096 needs ht=32,qt=16,kt=8 (16 KB/core) or ht=8,qt=8,kt=2 (512);
+  Lq=Lk=2048 → ht=8,qt=8,kt=2 (128 KB); Lq=Lk=1024 → ht≥2 ok. NEW TOOLS (supersede the resweep for
+  the "which configs run" question): `flash_probe.py` (pure-arithmetic validator — catches BOTH the
+  divisibility error and the LX overflow with no device — plus a single-config compile+time runner)
+  and `run_flash_probe.sh` (pre-validates the matrix, then runs each survivor in its OWN timeout'd
+  process, since an LX-exhausted run can hang even in teardown). Also: the 45-byte "failed" flash
+  captures were MOCK runs (`kernel_us=1.0`), never real failures.
   **IR-CONFIRMED (2026-07-24)** from the 35 REAL flash IR files (haoyang_logs/ir/flash_*.txt): **10 of
   the product-256 `H4-Lq8-Lk8` (>32-core) configs COMPILED** (have op_it_space_splits) → over-subscription
   is silently absorbed, NOT a compile error (diagnosis correction validated); only **2** carry the
