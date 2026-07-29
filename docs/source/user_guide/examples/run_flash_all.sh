@@ -31,6 +31,14 @@
 # pre-validated (pure arithmetic, no device) so a known-invalid work_div never costs a
 # compile. Nothing here can hang the whole script.
 #
+# DEFAULT SECTIONS = "4 2 3": the two ways of REWRITING THE TEST PROGRAM (+ the LX knobs).
+# Section 1 (the original 'online' hint sweep) is OFF by default: every one of its configs
+# hits a hard compiler limit that no hint choice can avoid --
+#   spyre_fuse_nodes: node references 7 non-intermediate tensors but the bundle limit is 5
+# A coarse-tiled loop (CountedLoopSchedulerNode) is ATOMIC (fusion.py:112-125), and the
+# example's flash body touches 7 external tensors: q,k,v,mask + the pre-allocated
+# output/real_max/denominator it mutates with .copy_(). Add it back with SECTIONS="0 1 ...".
+#
 #   bash docs/source/user_guide/examples/run_flash_all.sh              # the full set
 #   DRY=1 bash .../run_flash_all.sh                                    # print the plan only
 #   SHAPE=2048 CFG_TIMEOUT=600 bash .../run_flash_all.sh               # smaller/looser
@@ -52,9 +60,11 @@ CFG_TIMEOUT="${CFG_TIMEOUT:-900}"     # per-config wall clock; a stuck compile c
 SHAPE="${SHAPE:-4096}"                # Lq = Lk
 H="${H:-32}"; D="${D:-128}"
 DRY="${DRY:-0}"
-SECTIONS="${SECTIONS:-0 1 2 3}"
+SECTIONS="${SECTIONS:-4 2 3}"
 RESULTS="$(mktemp)"                    # "label<TAB>status<TAB>kernel_us<TAB>secs"
 trap 'rm -f "$RESULTS"' EXIT
+OUTDIR="${LOG%.log}_out"; mkdir -p "$OUTDIR"   # full per-config stdout+stderr lives here
+_n=0
 has() { [[ " $SECTIONS " == *" $1 "* ]]; }
 
 echo "==== FLASH ALL $(date) ====" | tee "$LOG"
@@ -69,6 +79,9 @@ run_cfg() {  # run_cfg <label> <cmd...>
   local t0=$SECONDS out rc
   out=$(timeout -k 30 "$CFG_TIMEOUT" "$@" 2>&1); rc=$?
   local dt=$((SECONDS-t0))
+  _n=$((_n+1))
+  local cfgout; cfgout="$OUTDIR/$(printf '%02d' $_n)_$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_').txt"
+  printf '%s\n' "$out" > "$cfgout"
   local line; line=$(printf '%s\n' "$out" | grep -E '^RESULT:' | tail -1)
   if (( rc == 124 || rc == 137 )); then
     echo "   TIMEOUT after ${dt}s" | tee -a "$LOG"; record "$label" TIMEOUT - "$dt"
@@ -79,17 +92,22 @@ run_cfg() {  # run_cfg <label> <cmd...>
     echo "   ${line}" | tee -a "$LOG"
     record "$label" "$(printf '%s' "$line" | awk '{print $2}')" - "$dt"
   else
-    echo "   ERROR rc=$rc (${dt}s)" | tee -a "$LOG"
-    printf '%s\n' "$out" | grep -iE 'error|Traceback' | head -2 | sed 's/^/      /' | tee -a "$LOG"
+    echo "   ERROR rc=$rc (${dt}s)  [full output: $cfgout]" | tee -a "$LOG"
+    # the real message: the last exception-looking line, plus any Spyre/Inductor error text
+    printf '%s\n' "$out" | grep -E '^[A-Za-z_.]*(Error|Exception|RuntimeError|Unsupported)' | tail -2 \
+      | cut -c1-300 | sed 's/^/      /' | tee -a "$LOG"
+    printf '%s\n' "$out" | grep -oE 'spyre_fuse_nodes:[^"]{0,160}|work_division_hint:[^"]{0,120}' | tail -1 \
+      | sed 's/^/      /' | tee -a "$LOG"
     record "$label" ERROR - "$dt"
   fi
   # LX/correctness context lines are useful in the log
   printf '%s\n' "$out" | grep -E '^  (LX|blocks|correctness|hint|WARN)' | sed 's/^/      /' | tee -a "$LOG"
 }
 
-hint_cfg() {  # hint_cfg <label> <ht> <qt> <kt> <wd>
-  run_cfg "$1" "$PY" "$PROBE" --h "$H" --lq "$SHAPE" --lk "$SHAPE" --d "$D" \
-    --h-tiles "$2" --lq-tiles "$3" --lk-tiles "$4" --wd "$5"
+hint_cfg() {  # hint_cfg <label> <ht> <qt> <kt> <wd> [extra...]
+  local label="$1" ht="$2" qt="$3" kt="$4" wd="$5"; shift 5
+  run_cfg "$label" "$PY" "$PROBE" --h "$H" --lq "$SHAPE" --lk "$SHAPE" --d "$D" \
+    --h-tiles "$ht" --lq-tiles "$qt" --lk-tiles "$kt" --wd "$wd" "$@"
 }
 manual_cfg() {  # manual_cfg <label> <mode> <bh> <bq> <bk> [extra...]
   local label="$1" mode="$2" bh="$3" bq="$4" bk="$5"; shift 5
@@ -101,6 +119,21 @@ manual_cfg() {  # manual_cfg <label> <mode> <bh> <bq> <bk> [extra...]
 if has 0; then
   echo "## 0. ANCHOR -- the shipped flash_attn_example.py configuration (known to run)" | tee -a "$LOG"
   hint_cfg "hint/example-default(h8,q4,k1,wd H:4,Lq:8,Lk:8)" 8 4 1 "H:4,Lq:8,Lk:8"
+fi
+
+# ------------- 4: the bundle-limit fix -- same math, fewer non-intermediate tensors
+# The 'online' form (the example's) pre-allocates output/real_max/denominator and mutates
+# them with .copy_(), so the ATOMIC coarse-tiled loop node references 7 non-intermediate
+# tensors against a bundle limit of 5 -> hard RuntimeError from spyre_fuse_nodes, for EVERY
+# tile/work_div choice. The 'functional' form drops those accumulators (legitimate: Lk is
+# not coarse-tiled, so the online-softmax carry is vestigial) -> q,k,v,mask,out = 5.
+if has 4; then
+  echo "## 4. BUNDLE-LIMIT FIX -- functional flash (5 non-intermediate tensors, not 7)" | tee -a "$LOG"
+  hint_cfg "functional/example tiling h8,q4,k1"  8  4 1 "H:4,Lq:8,Lk:8" --variant functional
+  hint_cfg "functional/h8,q4,k1  wd none"        8  4 1 "Lq:1"          --variant functional
+  hint_cfg "functional/h8,q8,k1  wd H:2,Lq:4"    8  8 1 "H:2,Lq:4"      --variant functional
+  hint_cfg "functional/h16,q8,k1 wd H:2,Lq:4"   16  8 1 "H:2,Lq:4"      --variant functional
+  hint_cfg "online/h8,q4,k1 (control: expect bundle-limit error)" 8 4 1 "Lq:1"
 fi
 
 # ------------------------------------------------- 1: direction 1, the hint sweep

@@ -77,6 +77,13 @@ def parse_args():
     p.add_argument("--wd", default=os.environ.get("FA_WD", "H:4,Lq:8,Lk:8"))
     p.add_argument("--lx-per-core", type=float, default=float(os.environ.get("LX_PER_CORE", str(int((2 << 20) * 0.8)))),
                    help="LX budget/core = 2MB*(1-DXP_LX_FRAC_AVAIL); default 1638 KB")
+    p.add_argument("--variant", choices=["online", "functional"], default="online",
+                   help="online = the example's form (pre-allocated output/real_max/denominator "
+                        "mutated with .copy_() -> 7 non-intermediate tensors, EXCEEDS the "
+                        "5-tensor SDSC bundle limit for an atomic coarse-tiled loop). "
+                        "functional = the same math with no pre-allocated accumulators "
+                        "(q,k,v,mask,out = 5) -- valid because Lk is not coarse-tiled, so the "
+                        "online-softmax carry is vestigial.")
     p.add_argument("--validate-only", action="store_true", help="no device needed")
     p.add_argument("--reps", type=int, default=int(os.environ.get("REPS", "3")))
     p.add_argument("--warmup", type=int, default=int(os.environ.get("WARMUP", "2")))
@@ -182,6 +189,23 @@ def build_and_run(a):
 
     declare()
 
+    def flash_functional(queries, keys, values, mask):
+        """Same result, but NO pre-allocated output/real_max/denominator and no .copy_():
+        only q,k,v,mask + the returned output are non-intermediate -> 5 tensors, which fits
+        the atomic coarse-tiled bundle budget that the 'online' form blows."""
+        pnd.name_tensor_dims(queries, ["B", "H", "Lq", "D"])
+        pnd.name_tensor_dims(keys, ["B", "H", "Lk", "D"])
+        pnd.name_tensor_dims(values, ["B", "H", "Lk", "D"])
+        pnd.name_tensor_dims(mask, ["B", "H", "Lq", "Lk"])
+        with spyre_hint(tiles={"B": a.b_tiles}), spyre_hint(tiles={"H": a.h_tiles}), \
+             spyre_hint(tiles={"Lq": a.lq_tiles}), spyre_hint(tiles={"Lk": a.lk_tiles}), \
+             spyre_hint(work_div=wd):
+            keys_t = (keys * scale).transpose(-1, -2)
+            scores = torch.matmul(queries * scale, keys_t) + mask
+            m = torch.amax(scores, dim=-1, keepdim=True)
+            e = torch.exp(scores - m)
+            return torch.matmul(e / e.sum(dim=-1, keepdim=True), values)
+
     def flash(queries, keys, values, mask):
         pnd.name_tensor_dims(queries, ["B", "H", "Lq", "D"])
         pnd.name_tensor_dims(keys, ["B", "H", "Lk", "D"])
@@ -210,7 +234,7 @@ def build_and_run(a):
     k = torch.rand(B, H, Lk, D, dtype=torch.float16).to(dev)
     v = torch.rand(B, H, Lk, D, dtype=torch.float16).to(dev)
     m = torch.zeros(1, 1, Lq, Lk, dtype=torch.float16).to(dev)  # broadcast mask, as in the example
-    compiled = torch.compile(flash)
+    compiled = torch.compile(flash_functional if a.variant == 'functional' else flash)
 
     for _ in range(a.warmup):  # first call compiles -> this is where an InductorError fires
         declare()
@@ -234,7 +258,7 @@ def build_and_run(a):
 def main():
     a = parse_args()
     tag = (f"H{a.h}_Lq{a.lq}_Lk{a.lk}_D{a.d}_h{a.h_tiles}q{a.lq_tiles}k{a.lk_tiles}"
-           f"_wd[{a.wd}]")
+           f"_wd[{a.wd}]_{a.variant}")
     ok, problems, warns, info = validate(a)
 
     print(f"CONFIG  {tag}")
