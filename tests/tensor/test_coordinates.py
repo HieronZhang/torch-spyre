@@ -430,7 +430,18 @@ class TestMatmulPreferredLayout(TestCase):
         stl = _default_matmul_input_layout(arg, k)
 
         self.assertIsNotNone(stl)
-        self.assertEqual(device_coordinates(stl, dep, None), [0, k // 64, b, k % 64])
+        device_coords = device_coordinates(stl, dep, None)
+        sdsc_arg = TensorArg(
+            True,
+            0,
+            DataFormats.SEN169_FP16,
+            list(stl.device_size),
+            device_coords,
+            {"hbm": 0},
+        )
+
+        self.assertEqual(device_coords, [0, k // 64, b, k % 64])
+        self.assertEqual(_get_device_dim_order(sdsc_arg, {})[0], [b, k])
 
     def test_preserve_shared_weight_unit_bmm_keeps_outer_stick_before_row(self):
         m, k, n = sympy.symbols("m k n", integer=True, nonnegative=True)
