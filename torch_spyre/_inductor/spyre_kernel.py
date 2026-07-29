@@ -142,7 +142,23 @@ def _preserve_shared_weight_unit_bmm_dim(
     for arg, unit_idx in rewrite_targets:
         arg.device_coordinates[unit_idx] = unit_sym
         nonstick = list(range(len(arg.device_size) - 1))
-        order = [unit_idx] + [i for i in reversed(nonstick) if i != unit_idx]
+        stick_symbols = arg.device_coordinates[-1].free_symbols
+        outer_stick_idx = next(
+            (
+                i
+                for i in nonstick
+                if i != unit_idx
+                and bool(arg.device_coordinates[i].free_symbols & stick_symbols)
+            ),
+            None,
+        )
+        if outer_stick_idx is None:
+            order = [unit_idx] + [i for i in reversed(nonstick) if i != unit_idx]
+        else:
+            order = [unit_idx, outer_stick_idx]
+            order += [
+                i for i in reversed(nonstick) if i not in (unit_idx, outer_stick_idx)
+            ]
         order.append(len(arg.device_size) - 1)
         arg.device_size[:] = [arg.device_size[i] for i in order]
         arg.device_coordinates[:] = [arg.device_coordinates[i] for i in order]

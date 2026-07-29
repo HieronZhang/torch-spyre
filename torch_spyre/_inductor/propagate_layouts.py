@@ -703,13 +703,55 @@ def _matmul_preferred_layout_mode() -> str:
     return mode
 
 
-def _preferred_matmul_output_dim_order(out_dims: int, out_stick_dim: int) -> list[int]:
+def _default_matmul_output_dim_order(out_dims: int, out_stick_dim: int) -> list[int]:
+    dim_order = list(range(out_dims - 2))
+    if out_stick_dim == out_dims - 1:
+        return dim_order + [out_dims - 2, out_dims - 1]
+    return dim_order + [out_dims - 1, out_dims - 2]
+
+
+def _preferred_matmul_output_dim_order(
+    out_dims: int, out_stick_dim: int, out_size: list | None = None
+) -> list[int]:
     """Return host dim_order for preferred matmul output device order."""
     out_row_dim = out_dims - 2 if out_stick_dim == out_dims - 1 else out_dims - 1
     out_batch_dims = [
         dim for dim in range(out_dims) if dim not in (out_row_dim, out_stick_dim)
     ]
+    if out_size is not None and any(
+        concretize_expr(out_size[dim]) == 1 for dim in [out_row_dim] + out_batch_dims
+    ):
+        return _default_matmul_output_dim_order(out_dims, out_stick_dim)
     return [out_row_dim] + out_batch_dims + [out_stick_dim]
+
+
+def _default_matmul_input_layout(
+    arg: PropArg,
+    stick_var: sympy.Symbol,
+) -> SpyreTensorLayout | None:
+    if arg.layout is None:
+        return None
+
+    arg_host_coords = host_coordinates(arg.layout, arg.dep, None)
+    stick_dim = None
+    for coord in arg_host_coords:
+        if stick_var not in coord.free_symbols:
+            continue
+        stick_dim = matching_dim(arg_host_coords, coord)
+        if stick_dim is not None:
+            break
+    if stick_dim is None:
+        return None
+
+    dim_order = [dim for dim in range(len(arg.layout.size)) if dim != stick_dim]
+    dim_order.append(stick_dim)
+    c_size = [concretize_expr(s) for s in arg.layout.size]
+    c_stride = [concretize_expr(s) for s in arg.layout.stride]
+    stl = SpyreTensorLayout(c_size, c_stride, arg.layout.dtype, dim_order)
+    coords = try_device_coordinates(stl, arg.dep, None)
+    if coords is not None and stick_var in coords[-1].free_symbols:
+        return stl
+    return None
 
 
 def _matmul_preferred_input_orders(
@@ -862,9 +904,13 @@ def _matmul_layouts(
                 generated_var,
             )
 
-    x_req_stl = find_stick_compatible_input_layout(
-        x, reduction_var, data.reduction_type, "x", x_preferred_order
-    )
+    x_req_stl = None
+    if preferred_mode == "on" and x_preferred_order is None:
+        x_req_stl = _default_matmul_input_layout(x, reduction_var)
+    if x_req_stl is None:
+        x_req_stl = find_stick_compatible_input_layout(
+            x, reduction_var, data.reduction_type, "x", x_preferred_order
+        )
     y_req_stl = find_stick_compatible_input_layout(
         y, generated_var, data.reduction_type, "y", y_preferred_order
     )
@@ -880,13 +926,11 @@ def _matmul_layouts(
 
     out_dims = len(output.size)
     if preferred_mode in ("on", "output"):
-        out_dim_order = _preferred_matmul_output_dim_order(out_dims, out_stick_dim)
+        out_dim_order = _preferred_matmul_output_dim_order(
+            out_dims, out_stick_dim, output.size
+        )
     else:
-        out_dim_order = list(range(out_dims - 2))
-        if out_stick_dim == out_dims - 1:
-            out_dim_order = out_dim_order + [out_dims - 2, out_dims - 1]
-        else:
-            out_dim_order = out_dim_order + [out_dims - 1, out_dims - 2]
+        out_dim_order = _default_matmul_output_dim_order(out_dims, out_stick_dim)
     # Concretize for C++ SpyreTensorLayout constructor.
     c_size = [concretize_expr(s) for s in output.size]
     c_stride = [concretize_expr(s) for s in output.stride]

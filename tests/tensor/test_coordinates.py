@@ -17,8 +17,11 @@ import sympy
 import torch
 from torch.testing._internal.common_utils import run_tests, TestCase
 from torch._inductor.dependencies import MemoryDep
-from torch_spyre._C import SpyreTensorLayout
+from torch._inductor.ir import FixedLayout
+from torch_spyre._C import DataFormats, SpyreTensorLayout
+from torch_spyre._inductor.codegen.superdsc import _get_device_dim_order
 from torch_spyre._inductor.errors import Unsupported
+from torch_spyre._inductor.op_spec import TensorArg
 from torch_spyre._inductor.pass_utils import (
     device_coordinates,
     try_device_coordinates,
@@ -27,11 +30,13 @@ from torch_spyre._inductor.propagate_layouts import (
     MatmulPreferredOrder,
     PropArg,
     _check_supported_input_sticks,
+    _default_matmul_input_layout,
     _matches_preferred_matmul_device_order,
     _matmul_preferred_input_orders,
     _preferred_matmul_output_dim_order,
     find_stick_compatible_input_layout,
 )
+from torch_spyre._inductor.spyre_kernel import _preserve_shared_weight_unit_bmm_dim
 from torch_spyre._inductor.views import compute_coordinates, tiling_expr_to_device_expr
 from torch.utils._sympy.functions import ModularIndexing
 
@@ -378,6 +383,63 @@ class TestMatmulPreferredLayout(TestCase):
         self.assertIsNone(x_order)
         self.assertEqual(y_order, MatmulPreferredOrder(frozenset(), n, k))
 
+    def test_default_matmul_input_layout_keeps_batch_before_stick_for_folded_row(self):
+        b, m, k = sympy.symbols("b m k", integer=True, nonnegative=True)
+        layout = FixedLayout(
+            torch.device("spyre"),
+            torch.float16,
+            [4, 1, 128],
+            [128, 128, 1],
+        )
+        dep = MemoryDep("x", 128 * b + k, (b, m, k), (4, 1, 128))
+        arg = PropArg(dep, layout, [])
+
+        stl = _default_matmul_input_layout(arg, k)
+
+        self.assertIsNotNone(stl)
+        self.assertEqual(device_coordinates(stl, dep, None), [0, k // 64, b, k % 64])
+
+    def test_preserve_shared_weight_unit_bmm_keeps_outer_stick_before_row(self):
+        m, k, n = sympy.symbols("m k n", integer=True, nonnegative=True)
+        x_arg = TensorArg(
+            True,
+            0,
+            DataFormats.SEN169_FP16,
+            [1, 64, 512, 64],
+            [sympy.S.Zero, k // 64, m, k % 64],
+            {"hbm": 0},
+        )
+        y_arg = TensorArg(
+            True,
+            1,
+            DataFormats.SEN169_FP16,
+            [64, 4096, 64],
+            [n // 64, k, n % 64],
+            {"hbm": 1},
+        )
+        out_arg = TensorArg(
+            False,
+            2,
+            DataFormats.SEN169_FP16,
+            [1, 64, 512, 64],
+            [sympy.S.Zero, n // 64, m, n % 64],
+            {"hbm": 2},
+        )
+
+        _preserve_shared_weight_unit_bmm_dim(
+            "batchmatmul",
+            {m: (512, 1), n: (4096, 1), k: (4096, 1)},
+            [x_arg, y_arg, out_arg],
+            {"shared_weight_unit_bmm": {"batch_dim": 0}},
+        )
+
+        unit = x_arg.device_coordinates[0]
+        self.assertEqual(str(unit), "_spyre_bmm_unit")
+        self.assertEqual(x_arg.device_coordinates, [unit, k // 64, m, k % 64])
+        self.assertEqual(out_arg.device_coordinates, [unit, n // 64, m, n % 64])
+        self.assertEqual(_get_device_dim_order(x_arg, {})[0], [m, k, unit])
+        self.assertEqual(_get_device_dim_order(out_arg, {})[0], [m, n, unit])
+
     def test_preferred_order_allows_folded_batch_dim(self):
         b, m, k = sympy.symbols("b m k", integer=True, nonnegative=True)
         dep = MemoryDep("x", 128 * m + k, (b, m, k), (1, 8, 128))
@@ -536,6 +598,15 @@ class TestMatmulPreferredLayout(TestCase):
     def test_preferred_matmul_output_dim_order(self):
         self.assertEqual(_preferred_matmul_output_dim_order(2, 1), [0, 1])
         self.assertEqual(_preferred_matmul_output_dim_order(3, 2), [1, 0, 2])
+        self.assertEqual(
+            _preferred_matmul_output_dim_order(3, 2, [1, 8, 128]), [0, 1, 2]
+        )
+        self.assertEqual(
+            _preferred_matmul_output_dim_order(3, 2, [2, 1, 128]), [0, 1, 2]
+        )
+        self.assertEqual(
+            _preferred_matmul_output_dim_order(3, 2, [2, 8, 128]), [1, 0, 2]
+        )
         self.assertEqual(_preferred_matmul_output_dim_order(4, 3), [2, 0, 1, 3])
         self.assertEqual(_preferred_matmul_output_dim_order(4, 2), [3, 0, 1, 2])
 
@@ -563,7 +634,7 @@ class TestMatmulPreferredLayout(TestCase):
             [2, 8, 64],
             [512, 64, 1],
             torch.float16,
-            _preferred_matmul_output_dim_order(3, 2),
+            _preferred_matmul_output_dim_order(3, 2, [2, 8, 64]),
         )
 
         self.assertEqual(device_coordinates(stl, dep, None), [b, 0, m, n])
@@ -576,14 +647,14 @@ class TestMatmulPreferredLayout(TestCase):
     def test_preferred_matmul_output_layout_with_size_one_dims(self):
         b, m, n = sympy.symbols("b m n", integer=True, nonnegative=True)
         cases = [
-            ((2, 1, 128), 128 * b + n, [b, n // 64, 0, n % 64]),
-            ((1, 8, 64), 64 * m + n, [0, 0, m, n]),
-            ((1, 8, 128), 128 * m + n, [0, n // 64, m, n % 64]),
+            ((2, 1, 128), 128 * b + n, [0, n // 64, b, n % 64]),
+            ((1, 8, 64), 64 * m + n, [m, 0, 0, n]),
+            ((1, 8, 128), 128 * m + n, [m, n // 64, 0, n % 64]),
             ((2, 8, 64), 512 * b + 64 * m + n, [b, 0, m, n]),
             ((2, 8, 128), 1024 * b + 128 * m + n, [b, n // 64, m, n % 64]),
             ((2, 8, 1), 8 * b + m, [b, 0, m, 0]),
             ((1, 1, 128), n, [0, n // 64, 0, n % 64]),
-            ((2, 1, 1), b, [b, 0, 0, 0]),
+            ((2, 1, 1), b, [0, 0, b, 0]),
         ]
 
         for size, index, expected_coords in cases:
@@ -592,7 +663,7 @@ class TestMatmulPreferredLayout(TestCase):
                 list(size),
                 stride,
                 torch.float16,
-                _preferred_matmul_output_dim_order(3, 2),
+                _preferred_matmul_output_dim_order(3, 2, list(size)),
             )
             dep = MemoryDep("out", index, (b, m, n), size)
 
