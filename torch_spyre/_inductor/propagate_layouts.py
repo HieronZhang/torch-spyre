@@ -713,7 +713,16 @@ def _default_matmul_output_dim_order(out_dims: int, out_stick_dim: int) -> list[
 def _preferred_matmul_output_dim_order(
     out_dims: int, out_stick_dim: int, out_size: list | None = None
 ) -> list[int]:
-    """Return host dim_order for preferred matmul output device order."""
+    """Return host dim_order for the preferred matmul output layout.
+
+    For non-degenerate Nd outputs the desired SDSC order is
+    [row, outer-stick, batch...]. SDSC reports order from least significant to
+    most significant after size-one dimensions have folded to constant-zero
+    coordinates. Once a row or batch dimension folds away, its relative position
+    is not a meaningful preference signal; in those cases the preferred host
+    dim_order can make SDSC report outer-stick before the surviving row/batch
+    coordinate, so keep the default dim_order instead.
+    """
     out_row_dim = out_dims - 2 if out_stick_dim == out_dims - 1 else out_dims - 1
     out_batch_dims = [
         dim for dim in range(out_dims) if dim not in (out_row_dim, out_stick_dim)
@@ -729,6 +738,14 @@ def _default_matmul_input_layout(
     arg: PropArg,
     stick_var: sympy.Symbol,
 ) -> SpyreTensorLayout | None:
+    """Build the default input layout while preserving the required stick var.
+
+    This is used when preferred input ordering cannot be derived because the
+    logical row dimension folded to a constant. Choosing the first compatible
+    explicit layout can leave SDSC reporting [outer-stick, batch] for inputs;
+    rebuilding from the host layout keeps the default batch/row placement while
+    still requiring the matmul stick dimension.
+    """
     if arg.layout is None:
         return None
 
@@ -761,9 +778,30 @@ def _matmul_preferred_input_orders(
     out_stick_dim: int,
     reduction_var: sympy.Symbol,
     generated_var: sympy.Symbol,
+    x_host_coords: list[sympy.Expr] | None = None,
+    y_host_coords: list[sympy.Expr] | None = None,
 ) -> tuple[MatmulPreferredOrder | None, MatmulPreferredOrder]:
+    """Derive preferred device orders for the two matmul inputs.
+
+    x is [batch..., row, reduction] and must stick on reduction_var, while y is
+    [batch..., reduction, generated] and must stick on generated_var. The
+    preferred order object stores the expected non-stick device order as
+    [batch..., outer-stick, row-like-var], where the row-like var is row for x
+    and reduction for y. Folded batch dimensions, such as B=1, are ignored by
+    this match: their SDSC position is a don't-care because they no longer carry
+    a symbolic coordinate. If x's row folded to a constant, return None so the
+    caller can use the default input layout fallback.
+    """
     x_syms = x_dep.index.free_symbols
     y_syms = y_dep.index.free_symbols
+
+    def active_dependency_vars(
+        coords: list[sympy.Expr], syms: set[sympy.Symbol]
+    ) -> frozenset[sympy.Symbol]:
+        return frozenset(
+            sym for coord in coords for sym in sympy.sympify(coord).free_symbols & syms
+        )
+
     out_row_dim = (
         len(out_coords) - 2
         if out_stick_dim == len(out_coords) - 1
@@ -776,17 +814,23 @@ def _matmul_preferred_input_orders(
         for sym in sympy.sympify(coord).free_symbols
     )
 
-    row_vars = sympy.sympify(out_coords[out_row_dim]).free_symbols & x_syms
+    if x_host_coords is not None and len(x_host_coords) >= 2:
+        x_batch_vars = active_dependency_vars(x_host_coords[:-2], x_syms)
+        row_vars = active_dependency_vars([x_host_coords[-2]], x_syms)
+    else:
+        x_batch_vars = out_batch_vars & x_syms
+        row_vars = sympy.sympify(out_coords[out_row_dim]).free_symbols & x_syms
+
     x_preferred_order = None
     if len(row_vars) == 1:
         row_var = next(iter(row_vars))
-        x_preferred_order = MatmulPreferredOrder(
-            out_batch_vars & x_syms, reduction_var, row_var
-        )
+        x_preferred_order = MatmulPreferredOrder(x_batch_vars, reduction_var, row_var)
 
-    y_preferred_order = MatmulPreferredOrder(
-        out_batch_vars & y_syms, generated_var, reduction_var
-    )
+    if y_host_coords is not None and len(y_host_coords) >= 2:
+        y_batch_vars = active_dependency_vars(y_host_coords[:-2], y_syms)
+    else:
+        y_batch_vars = out_batch_vars & y_syms
+    y_preferred_order = MatmulPreferredOrder(y_batch_vars, generated_var, reduction_var)
     return x_preferred_order, y_preferred_order
 
 
@@ -895,6 +939,8 @@ def _matmul_layouts(
             None,
         )
         if out_stick_dim is not None:
+            x_host_coords = host_coordinates(x.layout, x.dep, None)
+            y_host_coords = host_coordinates(y.layout, y.dep, None)
             x_preferred_order, y_preferred_order = _matmul_preferred_input_orders(
                 x.dep,
                 y.dep,
@@ -902,6 +948,8 @@ def _matmul_layouts(
                 out_stick_dim,
                 reduction_var,
                 generated_var,
+                x_host_coords,
+                y_host_coords,
             )
 
     x_req_stl = None
