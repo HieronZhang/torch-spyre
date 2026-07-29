@@ -1,0 +1,83 @@
+==== FLASH ALL Wed Jul 29 07:00:55 UTC 2026 ====
+shape H=32 Lq=Lk=4096 D=128 | per-config timeout 900s | sections: 0 1 2 3
+## 0. ANCHOR -- the shipped flash_attn_example.py configuration (known to run)
+-- hint/example-default(h8,q4,k1,wd H:4,Lq:8,Lk:8)
+   ERROR rc=3 (25s)
+      W0729 07:01:19.622000 396297 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmp88ec4t32
+      RESULT: ERROR  H32_Lq4096_Lk4096_D128_h8q4k1_wd[H:4,Lq:8,Lk:8]  (InductorError: RuntimeError: spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOSE=1 for t)
+        LX working set : ~2048 KB/core at 32 cores, ~65536 KB/core if only the hint divides (live tile 65536 KB)   [available ~1638 KB]
+        WARN  work_div product = 256 > 32 cores -- the pass SILENTLY SKIPS splits it cannot place, so the tile may NOT be divided across cores (this is what blows up the per-core LX working set below)
+        WARN  HIGH LX PRESSURE: even spread over all 32 cores the tile needs ~2048 KB/core > 1638 KB budget -> expect SPILL to HBM (slower), not a failure. For scale, the shipped flash_attn_example.py runs at ~2048 KB/core by this same estimate.
+## 1. DIRECTION 1 -- hint sweep (tile counts, then work_div at a fixed tiling)
+-- hint/tiles h8,q4,k1  (=example)  wd none
+   ERROR rc=3 (16s)
+      W0729 07:01:35.662000 396475 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmpfefbxg8j
+      RESULT: ERROR  H32_Lq4096_Lk4096_D128_h8q4k1_wd[Lq:1]  (InductorError: RuntimeError: spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOSE=1 for t)
+        LX working set : ~2048 KB/core at 32 cores, ~65536 KB/core if only the hint divides (live tile 65536 KB)   [available ~1638 KB]
+        WARN  HIGH LX PRESSURE: even spread over all 32 cores the tile needs ~2048 KB/core > 1638 KB budget -> expect SPILL to HBM (slower), not a failure. For scale, the shipped flash_attn_example.py runs at ~2048 KB/core by this same estimate.
+-- hint/tiles h8,q8,k2               wd none
+   ERROR rc=3 (14s)
+      W0729 07:01:49.521000 396649 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmpyttheemz
+      RESULT: ERROR  H32_Lq4096_Lk4096_D128_h8q8k2_wd[Lq:1]  (InductorError: RuntimeError: spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOSE=1 for t)
+        LX working set : ~512 KB/core at 32 cores, ~16384 KB/core if only the hint divides (live tile 16384 KB)   [available ~1638 KB]
+        WARN  LX pressure depends on placement: 16384 KB/core if only the hint divides the tile, 512 KB/core if it spreads over 32. Prefer a work_div with product <= 32 that divides the per-tile dims, so the division is guaranteed.
+-- hint/tiles h16,q8,k4              wd none
+   ERROR rc=3 (14s)
+      W0729 07:02:02.929000 396823 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmp58gb_0ee
+      RESULT: ERROR  H32_Lq4096_Lk4096_D128_h16q8k4_wd[Lq:1]  (InductorError: RuntimeError: spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOSE=1 for t)
+        LX working set : ~128 KB/core at 32 cores, ~4096 KB/core if only the hint divides (live tile 4096 KB)   [available ~1638 KB]
+        WARN  LX pressure depends on placement: 4096 KB/core if only the hint divides the tile, 128 KB/core if it spreads over 32. Prefer a work_div with product <= 32 that divides the per-tile dims, so the division is guaranteed.
+-- hint/tiles h32,q16,k8             wd none
+   ERROR rc=3 (17s)
+      W0729 07:02:20.747000 396999 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmpoh8mt26d
+      RESULT: ERROR  H32_Lq4096_Lk4096_D128_h32q16k8_wd[Lq:1]  (InductorError: RuntimeError: _resize_device_layout: cannot uniquely identify the stick host dim by elimination in SpyreTensorLayout(device_size=[4096, 1, 1, 1, 64], stride_map =[1, -1, -1, -1, -1], device_dtype=Data)
+        LX working set : ~16 KB/core at 32 cores, ~512 KB/core if only the hint divides (live tile 512 KB)   [available ~1638 KB]
+-- hint/wd H:2  @h8,q8,k2
+   ERROR rc=3 (13s)
+      W0729 07:02:33.637000 397173 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmp08xu76p4
+      RESULT: ERROR  H32_Lq4096_Lk4096_D128_h8q8k2_wd[H:2]  (InductorError: RuntimeError: spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOSE=1 for t)
+        LX working set : ~512 KB/core at 32 cores, ~8192 KB/core if only the hint divides (live tile 16384 KB)   [available ~1638 KB]
+        WARN  LX pressure depends on placement: 8192 KB/core if only the hint divides the tile, 512 KB/core if it spreads over 32. Prefer a work_div with product <= 32 that divides the per-tile dims, so the division is guaranteed.
+-- hint/wd H:4  @h8,q8,k2
+   ERROR rc=3 (13s)
+      W0729 07:02:47.064000 397347 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmpbu82vtt7
+      RESULT: ERROR  H32_Lq4096_Lk4096_D128_h8q8k2_wd[H:4]  (InductorError: RuntimeError: spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOSE=1 for t)
+        LX working set : ~512 KB/core at 32 cores, ~4096 KB/core if only the hint divides (live tile 16384 KB)   [available ~1638 KB]
+        WARN  LX pressure depends on placement: 4096 KB/core if only the hint divides the tile, 512 KB/core if it spreads over 32. Prefer a work_div with product <= 32 that divides the per-tile dims, so the division is guaranteed.
+-- hint/wd Lq:4  @h8,q8,k2
+   ERROR rc=3 (14s)
+      W0729 07:03:00.114000 397521 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmpk2fti20l
+      RESULT: ERROR  H32_Lq4096_Lk4096_D128_h8q8k2_wd[Lq:4]  (InductorError: RuntimeError: spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOSE=1 for t)
+        LX working set : ~512 KB/core at 32 cores, ~4096 KB/core if only the hint divides (live tile 16384 KB)   [available ~1638 KB]
+        WARN  LX pressure depends on placement: 4096 KB/core if only the hint divides the tile, 512 KB/core if it spreads over 32. Prefer a work_div with product <= 32 that divides the per-tile dims, so the division is guaranteed.
+-- hint/wd H:2,Lq:4  @h8,q8,k2
+   ERROR rc=3 (13s)
+      W0729 07:03:13.574000 397695 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmpf0j_86q5
+      RESULT: ERROR  H32_Lq4096_Lk4096_D128_h8q8k2_wd[H:2,Lq:4]  (InductorError: RuntimeError: spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOSE=1 for t)
+        LX working set : ~512 KB/core at 32 cores, ~2048 KB/core if only the hint divides (live tile 16384 KB)   [available ~1638 KB]
+        WARN  LX pressure depends on placement: 2048 KB/core if only the hint divides the tile, 512 KB/core if it spreads over 32. Prefer a work_div with product <= 32 that divides the per-tile dims, so the division is guaranteed.
+-- hint/wd H:4,Lq:8  @h8,q8,k2
+   ERROR rc=3 (22s)
+      W0729 07:03:35.725000 397869 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmpyrsr0a08
+      RESULT: ERROR  H32_Lq4096_Lk4096_D128_h8q8k2_wd[H:4,Lq:8]  (InductorError: RuntimeError: spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOSE=1 for t)
+        LX working set : ~512 KB/core at 32 cores, ~512 KB/core if only the hint divides (live tile 16384 KB)   [available ~1638 KB]
+## 2. DIRECTION 2 -- hand-blocked flash (block sizes set the live working set)
+-- manual-fused bh4  bq512 bk1024
+   ERROR rc=1 (56s)
+      W0729 07:04:30.110000 398047 torch/_inductor/utils.py:1403] [0/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmpjv861jie
+      Traceback (most recent call last):
+        blocks: bh=4 bq=512 bk=1024  -> 256 block steps, live score block ~8192 KB (this is what must fit in LX)
+        LX: frac_avail=0.2 (budget ~1638 KB/core), all_ops=False boundary_clones=False solver=greedy planning=on
+-- manual-fused bh4  bq256 bk512
+   ERROR rc=1 (198s)
+      W0729 07:07:42.472000 398267 torch/_inductor/utils.py:1403] [0/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmp0isfzexh
+      Traceback (most recent call last):
+        blocks: bh=4 bq=256 bk=512  -> 1024 block steps, live score block ~2048 KB (this is what must fit in LX)
+        LX: frac_avail=0.2 (budget ~1638 KB/core), all_ops=False boundary_clones=False solver=greedy planning=on
+-- manual-fused bh8  bq256 bk512
+   ERROR rc=1 (109s)
+      W0729 07:09:34.619000 398547 torch/_inductor/utils.py:1403] [0/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmpzxeugwke
+      Traceback (most recent call last):
+        blocks: bh=8 bq=256 bk=512  -> 512 block steps, live score block ~4096 KB (this is what must fit in LX)
+        LX: frac_avail=0.2 (budget ~1638 KB/core), all_ops=False boundary_clones=False solver=greedy planning=on
+-- manual-fused bh4  bq128 bk256
