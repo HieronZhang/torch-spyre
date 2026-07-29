@@ -704,7 +704,7 @@ def _matmul_preferred_layout_mode() -> str:
 
 
 def _preferred_matmul_output_dim_order(out_dims: int, out_stick_dim: int) -> list[int]:
-    """Return host dim_order that produces device order [batch..., stick, row]."""
+    """Return host dim_order for preferred matmul output device order."""
     out_row_dim = out_dims - 2 if out_stick_dim == out_dims - 1 else out_dims - 1
     out_batch_dims = [
         dim for dim in range(out_dims) if dim not in (out_row_dim, out_stick_dim)
