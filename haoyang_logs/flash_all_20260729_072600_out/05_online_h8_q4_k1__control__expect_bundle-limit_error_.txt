@@ -1,0 +1,16 @@
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+[WARNING] [spyre.inductor.propagate_named_dims] buf1: loop var d0 has no named dim mapping -- using _untracked_32
+[WARNING] [spyre.inductor.propagate_named_dims] buf1: loop var d1 has no named dim mapping -- using _untracked_4096
+[WARNING] [spyre.inductor.propagate_named_dims] buf1: loop var d2 has no named dim mapping -- using _untracked_128
+[WARNING] [spyre.inductor.propagate_named_dims] buf3: loop var d0 has no named dim mapping -- using _untracked_32
+[WARNING] [spyre.inductor.propagate_named_dims] buf3: loop var d1 has no named dim mapping -- using _untracked_4096
+[WARNING] [spyre.inductor.propagate_named_dims] buf3: loop var d2 has no named dim mapping -- using _untracked_64
+[WARNING] [spyre.inductor.propagate_named_dims] _consume_names: no prefix of ['B', 'H', 'Lq', 'Lk'] multiplies to 4096
+W0729 07:27:41.048000 399990 torch/_inductor/utils.py:1403] [6/0] on error, temporary cache dir kept at /tmp/torchinductor_haoyang/tmp47vr01mr
+CONFIG  H32_Lq4096_Lk4096_D128_h8q4k1_wd[Lq:1]_online
+  per-tile sizes: {'B': 1, 'H': 4, 'Lq': 1024, 'Lk': 4096}   work_div={'Lq': 1} (product 1)
+  scores/mask    : 1.074 GB each  ([B,H,Lq,Lk] fp16)
+  LX working set : ~2048 KB/core at 32 cores, ~65536 KB/core if only the hint divides (live tile 65536 KB)   [available ~1638 KB]
+  WARN  HIGH LX PRESSURE: even spread over all 32 cores the tile needs ~2048 KB/core > 1638 KB budget -> expect SPILL to HBM (slower), not a failure. For scale, the shipped flash_attn_example.py runs at ~2048 KB/core by this same estimate.
+RESULT: ERROR  H32_Lq4096_Lk4096_D128_h8q4k1_wd[Lq:1]_online  (InductorError: RuntimeError: spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOSE=1 for t)

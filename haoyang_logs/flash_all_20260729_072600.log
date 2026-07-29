@@ -1,0 +1,32 @@
+==== FLASH ALL Wed Jul 29 07:26:01 UTC 2026 ====
+shape H=32 Lq=Lk=4096 D=128 | per-config timeout 900s | sections: 4 2 3
+## 4. BUNDLE-LIMIT FIX -- functional flash (5 non-intermediate tensors, not 7)
+-- functional/example tiling h8,q4,k1
+   ERROR rc=3 (27s)  [full output: haoyang_logs/flash_all_20260729_072600_out/01_functional_example_tiling_h8_q4_k1.txt]
+        LX working set : ~2048 KB/core at 32 cores, ~65536 KB/core if only the hint divides (live tile 65536 KB)   [available ~1638 KB]
+        WARN  work_div product = 256 > 32 cores -- the pass SILENTLY SKIPS splits it cannot place, so the tile may NOT be divided across cores (this is what blows up the per-core LX working set below)
+        WARN  HIGH LX PRESSURE: even spread over all 32 cores the tile needs ~2048 KB/core > 1638 KB budget -> expect SPILL to HBM (slower), not a failure. For scale, the shipped flash_attn_example.py runs at ~2048 KB/core by this same estimate.
+-- functional/h8,q4,k1  wd none
+   ERROR rc=3 (17s)  [full output: haoyang_logs/flash_all_20260729_072600_out/02_functional_h8_q4_k1__wd_none.txt]
+        LX working set : ~2048 KB/core at 32 cores, ~65536 KB/core if only the hint divides (live tile 65536 KB)   [available ~1638 KB]
+        WARN  HIGH LX PRESSURE: even spread over all 32 cores the tile needs ~2048 KB/core > 1638 KB budget -> expect SPILL to HBM (slower), not a failure. For scale, the shipped flash_attn_example.py runs at ~2048 KB/core by this same estimate.
+-- functional/h8,q8,k1  wd H:2,Lq:4
+   ERROR rc=3 (17s)  [full output: haoyang_logs/flash_all_20260729_072600_out/03_functional_h8_q8_k1__wd_H_2_Lq_4.txt]
+        LX working set : ~1024 KB/core at 32 cores, ~4096 KB/core if only the hint divides (live tile 32768 KB)   [available ~1638 KB]
+        WARN  LX pressure depends on placement: 4096 KB/core if only the hint divides the tile, 1024 KB/core if it spreads over 32. Prefer a work_div with product <= 32 that divides the per-tile dims, so the division is guaranteed.
+-- functional/h16,q8,k1 wd H:2,Lq:4
+   ERROR rc=3 (20s)  [full output: haoyang_logs/flash_all_20260729_072600_out/04_functional_h16_q8_k1_wd_H_2_Lq_4.txt]
+        LX working set : ~512 KB/core at 32 cores, ~2048 KB/core if only the hint divides (live tile 16384 KB)   [available ~1638 KB]
+        WARN  LX pressure depends on placement: 2048 KB/core if only the hint divides the tile, 512 KB/core if it spreads over 32. Prefer a work_div with product <= 32 that divides the per-tile dims, so the division is guaranteed.
+-- online/h8,q4,k1 (control: expect bundle-limit error)
+   ERROR rc=3 (20s)  [full output: haoyang_logs/flash_all_20260729_072600_out/05_online_h8_q4_k1__control__expect_bundle-limit_error_.txt]
+      spyre_fuse_nodes: node 'op5_op6_op20_op7_op8_op9_op10_op11_op12_op13_op14_op15_op16_op17' references 7 non-intermediate tensors but the bundle limit is 5  Set TORCHDYNAMO_VERBOS
+        LX working set : ~2048 KB/core at 32 cores, ~65536 KB/core if only the hint divides (live tile 65536 KB)   [available ~1638 KB]
+        WARN  HIGH LX PRESSURE: even spread over all 32 cores the tile needs ~2048 KB/core > 1638 KB budget -> expect SPILL to HBM (slower), not a failure. For scale, the shipped flash_attn_example.py runs at ~2048 KB/core by this same estimate.
+## 2. DIRECTION 2 -- hand-blocked flash (block sizes set the live working set)
+-- manual-fused bh4  bq512 bk1024
+   ERROR rc=1 (57s)  [full output: haoyang_logs/flash_all_20260729_072600_out/06_manual-fused_bh4__bq512_bk1024.txt]
+      torch._inductor.exc.InductorError: NotImplementedError: buf9 (Pointwise): no mechanism to resolve stick incompatibility
+        blocks: bh=4 bq=512 bk=1024  -> 256 block steps, live score block ~8192 KB (this is what must fit in LX)
+        LX: frac_avail=0.2 (budget ~1638 KB/core), all_ops=False boundary_clones=False solver=greedy planning=on
+-- manual-fused bh4  bq256 bk512
