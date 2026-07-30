@@ -718,18 +718,17 @@ def _preferred_matmul_output_dim_order(
     For non-degenerate Nd outputs the desired SDSC order is
     [row, outer-stick, batch...]. SDSC reports order from least significant to
     most significant after size-one dimensions have folded to constant-zero
-    coordinates. Once a row or batch dimension folds away, its relative position
-    is not a meaningful preference signal; in those cases the preferred host
+    coordinates. Once the row dimension folds away, its relative position is
+    not a meaningful preference signal; in that case the preferred host
     dim_order can make SDSC report outer-stick before the surviving row/batch
-    coordinate, so keep the default dim_order instead.
+    coordinate, so keep the default dim_order instead. Folded batch dimensions
+    do not affect the preference among the remaining active batch dimensions.
     """
     out_row_dim = out_dims - 2 if out_stick_dim == out_dims - 1 else out_dims - 1
     out_batch_dims = [
         dim for dim in range(out_dims) if dim not in (out_row_dim, out_stick_dim)
     ]
-    if out_size is not None and any(
-        concretize_expr(out_size[dim]) == 1 for dim in [out_row_dim] + out_batch_dims
-    ):
+    if out_size is not None and concretize_expr(out_size[out_row_dim]) == 1:
         return _default_matmul_output_dim_order(out_dims, out_stick_dim)
     return [out_row_dim] + out_batch_dims + [out_stick_dim]
 

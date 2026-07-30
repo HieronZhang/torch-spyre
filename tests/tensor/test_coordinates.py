@@ -677,7 +677,7 @@ class TestMatmulPreferredLayout(TestCase):
         self.assertEqual(_preferred_matmul_output_dim_order(2, 1), [0, 1])
         self.assertEqual(_preferred_matmul_output_dim_order(3, 2), [1, 0, 2])
         self.assertEqual(
-            _preferred_matmul_output_dim_order(3, 2, [1, 8, 128]), [0, 1, 2]
+            _preferred_matmul_output_dim_order(3, 2, [1, 8, 128]), [1, 0, 2]
         )
         self.assertEqual(
             _preferred_matmul_output_dim_order(3, 2, [2, 1, 128]), [0, 1, 2]
@@ -687,6 +687,10 @@ class TestMatmulPreferredLayout(TestCase):
         )
         self.assertEqual(_preferred_matmul_output_dim_order(4, 3), [2, 0, 1, 3])
         self.assertEqual(_preferred_matmul_output_dim_order(4, 2), [3, 0, 1, 2])
+        self.assertEqual(
+            _preferred_matmul_output_dim_order(4, 3, [1, 4, 8, 128]),
+            [2, 0, 1, 3],
+        )
 
     def test_preferred_output_dim_order_produces_2d_stick_row_device_order(self):
         m, n = sympy.symbols("m n", integer=True, nonnegative=True)
@@ -726,8 +730,8 @@ class TestMatmulPreferredLayout(TestCase):
         b, m, n = sympy.symbols("b m n", integer=True, nonnegative=True)
         cases = [
             ((2, 1, 128), 128 * b + n, [0, n // 64, b, n % 64]),
-            ((1, 8, 64), 64 * m + n, [m, 0, 0, n]),
-            ((1, 8, 128), 128 * m + n, [m, n // 64, 0, n % 64]),
+            ((1, 8, 64), 64 * m + n, [0, 0, m, n]),
+            ((1, 8, 128), 128 * m + n, [0, n // 64, m, n % 64]),
             ((2, 8, 64), 512 * b + 64 * m + n, [b, 0, m, n]),
             ((2, 8, 128), 1024 * b + 128 * m + n, [b, n // 64, m, n % 64]),
             ((2, 8, 1), 8 * b + m, [b, 0, m, 0]),
