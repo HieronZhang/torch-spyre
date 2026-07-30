@@ -122,6 +122,21 @@ def make_params(overrides):
     return p
 
 
+def _shape(v):
+    """Parse a stored shape ('[1024, 512]' or a list) into list[int]; [] when absent."""
+    if isinstance(v, (list, tuple)):
+        return [int(x) for x in v]
+    if isinstance(v, str) and v.strip().startswith("["):
+        body = v.strip()[1:-1].strip()
+        if not body:
+            return []
+        try:
+            return [int(x) for x in body.split(",")]
+        except ValueError:
+            return []
+    return []
+
+
 def reconstruct_from_io(rec):
     """Best-effort OpFeatures for an old row from its stored device-I/O block. Returns a
     list[OpFeatures] or None if unsupported (matmul / no I/O). SELF-VALIDATED by the
@@ -152,6 +167,12 @@ def reconstruct_from_io(rec):
                     elems=elems,
                     broadcast="broadcast" in (t.get("flags") or ""),
                     loop_factor=1,
+                    # The I/O block records both shapes; carry them through. Without them the
+                    # access-pattern paths that key on shape (`_transport_kind`, the bmm layout
+                    # classifier) silently fall through to the default copy model, so a
+                    # feats-less row would be scored against the WRONG model.
+                    logical=_shape(t.get("logical")),
+                    dims=_shape(t.get("device")),
                 )
             )
             if t["role"] == "output":

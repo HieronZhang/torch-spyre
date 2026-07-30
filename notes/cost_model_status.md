@@ -57,6 +57,592 @@ is reviewing the revisions.
   was crushed by the 0–4000µs range + a mean-merge annotation, not filtered). Prose now agrees with the
   §11–§12 work-div table (2×16 measured ~399µs).
 
+### ✅ SESSION 3 (2026-07-29) — outlier close-out on EXISTING data: 3 shipped, 3 refused
+
+Scored the live model over **normal** inputs (cores=32, non-lopsided split, min(M,N)≥512): 465 pts
+>10 %, of which **164 are the chained adds** (§3's documented program-level effect, out of scope by
+user decision) → **301 in scope**. Worked only what existing repeat-backed data can settle.
+
+**SHIPPED (each gold-safe, verified by me — max|Δ| = 0.000000 outside its target set):**
+
+1. **Cat 4 — bmm layout penalties are ADDITIVE PER OPERAND** (the mechanism, not just a rate).
+   Across all **11 matched quads** (byte-identical, copy-free, every cell reps=7),
+   `(A-slow + B-slow)/(both-slow + both-fast)` = **0.983** → the reciprocal rates add:
+   `1/peak = 1/650 + [A default]/368 + [B default]/517`. Three params reproduce ALL FOUR combos to a
+   few percent where the previous single constant could only reproduce the both-default *sum* —
+   which is why the *mixed* layouts had been the worst-predicted points in the model. Per-combo
+   mean|err|: def/def 74→**1.5**, def/fast 64→**2.5**, fast/def 58→**2.5**, fast/fast 24→**4.4** %.
+   46-shape clean table mean|err| **4.1 %**. Gold-safe over 1612 non-target records. Code:
+   `_bmm_layout_pair` (ordered pair; A/B order verified against recorded layout_a/layout_b 54/54),
+   `_matmul_mac_peak`, params `bmm_layout_peak_{fast,a_default,b_default}_ns`.
+
+   **Corrections after adversarial review (all verified by me):**
+   - The additivity ratio is **not** "1.0 within noise" as first written. The run-to-run floor is
+     ~0.225 %; 8 of 11 quads exceed 3σ, 9 of 11 sit **below** 1, and the residual tracks output width
+     (`r(log2 N) = −0.77`). There is a real **~1.7 % super-additivity** the form knowingly drops. The
+     range `[0.953, 1.015]` also held only under the most favourable rep aggregation; medians/means
+     give `[0.9547, 1.0179]`.
+   - **The "74 → 1.5 %" comparison is against the pre-cat-4 model with no bmm term, not against what
+     was actually replaced.** Every bmm the compiler emits today is **both-default** — all 99 real
+     in-gate rows — so df/fd/ff exist only in the synthetic `bmm_layout` experiment. Measured against
+     the 160 constant this term replaced, production is **neutral**: mean|err| 24.98 → **25.01 %**
+     (0.03 pt, far below noise), and on the dd combo itself 5.51 → **5.49 %**. The constants were
+     therefore **re-fit in relative-TIME space with dd weighted** (was: uniform error in inverse-peak
+     space, which over-weights the fast combos), moving 635/375/524 → **650/368/517** and the implied
+     dd rate to **161.5** (measured 161.3, old constant 160). The term's value is pricing a layout
+     *change*, not scoring today's kernels — stated as such in code and report.
+   - The additive **form** survives every attack: multiplicative is off 26–57 %; four free per-combo
+     rates gain ≤0.9 %; leave-one-shape-out actually **favours** additive (4.52 vs 4.57 %) — so it is
+     not over-parameterised. Weakest point: `peak_fast` is anchored on the `ff` combo (worst
+     residuals, mean|e| 4.4 %) which **no real op produces**, yet supplies ~25 % of the dd rate.
+   - The review's **"unmodelled B trend inside dd"** (backed-out peak 158.9/161.6/165.1 at B=4/8/16)
+     **does NOT survive a confound check — I overturned it.** The shape MIX changes with B: B=16 is
+     measured only at `1024x2048x1024` and `512x2048x512`, and the latter alone implies ~170, which
+     drags the B=16 median up. Shape-matched, the batch effect is **inconsistent in sign and tiny**:
+     `1024x2048x1024` 161.3→162.2→162.7 (B=4/8/16, +0.9 % total), `1024x2048x2048` 158.2→160.9,
+     `2048x2048x1024` 158.1→158.0 (**flat**), `512x2048x512` 170.3→169.8 (**flat**) — 2 of 4 matched
+     pairs flat. Within-cell noise floor is 0.22, so the +0.9 % on the one shape spanning all three
+     batch sizes is real but negligible. **What is actually unmodelled is a SHAPE spread**: at fixed B
+     the implied rate runs 158.0…170.3 (**7.8 %**, ~8× the shape-matched batch effect), with
+     `512x2048x512` the fast outlier. **NEW, and a correction to my own first reading:** that shape
+     spread is worth only ~±4 % of prediction error and does **NOT** explain the §13 table's +41 %
+     row. At `512x2048x512`, cores=32, dd: the `bmm_layout` runs are **+4.6 %** (B=8) and **+4.3 %**
+     (B=16), while the plain `bmm_wd` run is **+40.7 %** (B=4) — *same* per-core tile (128 rows x
+     **64 cols = exactly ONE STICK**, the narrowest possible output tile), same cores, same combo,
+     ~10x the error. **CONFOUND NOW BROKEN with existing data — the op/harness explanation is
+     REFUTED.** Six other (shape,B) cells were measured BOTH ways (`bmm_wd` and `bmm_layout`, dd,
+     cores>=8) and the two agree to **+0.2 / +0.1 / -0.5 / +0.1 / -0.1 / +0.0 pp** — they are the same
+     measurement. So the +40.7 % is NOT a harness artifact; what remains is a **small-shape effect at
+     the smallest batch** (B=4 vs 8/16). Array underfill at a one-stick tile is the natural suspect
+     and matches the plain-matmul signature, but it rests on a **SINGLE record** (n=1), so it stays
+     flagged, NOT modelled. **Already covered by the widened sweep**: BMMFULL now runs `bmm_layout` at
+     B in {2,4,8} on `512x2048x512` with repeats, which confirms or kills it outright. So the queued ladder should vary **shape at
+     fixed B**, not B; a per-B term would fit a composition artifact.
+   - Bookkeeping: the joint diff had **2** regressions (not 1) and **41** records crossing >10 → ≤10
+     (not 35); and the gold-safety statement covers the two shipped terms **separately** — 6 of the
+     moved records belong to the `transpose_outer` term, not this one.
+2. **Cat 2 — `transpose_outer` M<8 penalty.** M is the output's contiguous stick-run length, so M<8
+   ⇒ sub-1 KB writes. Measured (all reps=7, cv<1 %): M=8 +3.7 %, M=4 −16.0 %, M=2 −26.8 % — monotone
+   in log2(M). Charged as **13 GB/s per halving below M=8**, applied AFTER the surface clamp (the
+   floor is calibrated at M=8). transpose_outer RMS **9.6→7.1 %**, >10 % 13→7, worst M<8
+   **29.4→8.9 %**. §6 transport category 7.0→**5.9 %**. M>8 deliberately NOT modelled (weaker,
+   R-dependent, confounded with a planner split-shape change).
+3. **Scoring-harness bug** — `eval_model.reconstruct_from_io` dropped `logical`/`dims`, so feats-less
+   rows silently missed `_transport_kind` and were scored on the WRONG model. Now carried through.
+
+**REFUSED / DROPPED after investigation (each recorded so it is not re-attempted):**
+
+- **γ re-centre REFUSED.** Implied γ≈0.58 on the repeat-backed cores-ladder tempted a change, and
+  γ 0.62–0.66 does improve the 104-pt clean cohort (8.71→6.97 % RMS). But it **regresses everything
+  else**: matmul_split 14.3→14.7, matmul_k 7.2→8.7, matmul_row 23.7→26.4, OVERALL 43.2→43.5. The
+  entanglement trap for the second time — **shipped γ=0.46/peak=1140 stays**.
+- **`copy`/`bcastcol` regime boundary DROPPED.** The proposed premise did not reproduce (claimed
+  `copy 512×4096` at −10.7 %; actual **+5 %**). The genuinely low-cv broadcast outliers are almost
+  all `write` (out of scope — its error sign flips in both R and C, a 2-D surface no power law
+  expresses); the remaining cbc outliers sit at **cv 3–13 %**, i.e. noise-dominated.
+- **`cat0` / `cat1` / `write`** — 3 cells / 1 sub-512 point / no mechanism respectively. Not fitted.
+
+**OVERLAP FORM re-derived from `max(compute, mem)` (user request) — shipped form SURVIVES.**
+Key identity: `compute + mem − γ·min(compute,mem)` **≡** `max(compute,mem) + (1−γ)·min(compute,mem)`,
+so the model already IS "max + xxx" with `xxx = 0.54·min`. The real question is the FORM of `xxx`,
+which is why re-scaling γ kept failing. Tested (components extracted exactly by solving the live
+model at two parameter settings, `write` from `write_bytes`), scored on three nested cohorts:
+
+| form | reps-backed (104) | ALL mm/mmwd (343) | ALL matmul-family (755) |
+|---|---:|---:|---:|
+| **F0 shipped `max + 0.54·min`** | 8.71 | **14.34** (mean **−0.09**) | **28.96** |
+| F1 pure `max` | 17.14 | 26.01 | 37.56 |
+| F3 `max(compute,read) + write` | 11.91 | 21.73 | 34.15 |
+| F3′ `+ 1.85·write` | 7.27 | 20.39 | 31.66 |
+| F4 `max + 0.40·min` (γ=0.60) | 7.22 | 14.94 | 30.12 |
+
+(1) **Perfect double-buffering is REFUTED** — pure `max` is far worse everywhere, so the
+non-overlapped component is real. (2) **No constant fill/drain** — the best-fit constant is c = 0.
+(3) **"Stores are serial" is REFUTED at its physical coefficient** (1.0 is worse than shipped
+everywhere); only an unphysical 1.85× fits the narrow cohort and it collapses globally (worst 97 %).
+(4) The narrow-cohort winners lose globally, and F0 is the only essentially **unbiased** form on the
+343-point set. **Implication: the remaining matmul residual is NOT in the overlap form** — it is in
+the terms feeding it (compute rate, spill knee, coarse tiling), i.e. exactly where the paused sweeps
+point. Do not re-litigate the overlap form without new data.
+
+### ✅ SESSION 5 (2026-07-30) — close-out sweep landed; cat-5 FUSED reduction SHIPPED
+
+**Data.** The full close-out sweep ran on HW (`closeout_20260729_074904.log` + its four companion
+logs: `reduction_cores`, `gamma_bind`, `coarse_reduction`, `coarse_mm_tile`). Folded with the
+script's own documented command — **306 new rows, 286 repeat-backed**, 2141 → **2447** records.
+NOTE: re-parsing *all* logs instead balloons the file to 4633; the 2141 baseline is a CURATED subset,
+so always fold the named new logs only.
+
+**CAT 5 FUSED REDUCTION — SHIPPED (the pause is resolved), but NOT with my first mechanism.**
+The pause reason was "every low-core `softmax_row_tiling` point is single-shot". The new sweep makes
+every core count repeat-backed (n=8/8/8/10/8 at cores 1/2/4/8/16, cv 0.05–1.7 %), and the error was a
+clean monotone function of cores: **−90.9 / −85.7 / −72.9 / −57.4 / −45.3 / −3.0 %** at cores
+1/2/4/8/16/32, with `softmax_unrolled` (cores=1 by design) at **−91.9 %**.
+
+**⚠️ MY FIRST ATTEMPT WAS REFUTED BY REVIEW — recorded so it is not retried.** I shipped a per-core
+BANDWIDTH derate (`softmax_bw_cores_g`, five fitted values), reasoning by analogy with the shipped
+plain-reduction term. The adversarial panel returned STANDS-WITH-FIXES on the *existence* of a
+cores term but refuted the mechanism, and I verified every load-bearing number myself:
+
+- **Arithmetic bug in my own calibration.** I fit `g = median(pred/meas)` over the WHOLE prediction,
+  but the code divided only `(r+w)/bw_peak` by `g` — the turnaround term (27–29 % of `mem`) was
+  undivided. Post-fix error on **my own calibration cells** was **−17.2 %** (−25.9/−22.6/−19.8/
+  −15.3/−12.3 at cores 1/2/4/8/16) where it should have been ~0. Reproduced exactly.
+- **The mechanism itself was wrong.** Three measurements separate throughput from bandwidth:
+  (1) the deficit scales as **~1/cores** (4780/1873/791/418/211 µs at cores 1/2/4/8/16 on one matched
+  shape) — a per-core rate, not an additive cost; (2) measured time is **FLAT across tiles**
+  (5376/5470/5375/4578 µs at tiles 1/4/8/16, cores=1) while the model's counted traffic falls **2.6×**
+  (67.1M → 25.2M elements) — so a term keyed on counted bytes cannot be right, and the "TILES
+  residual" I had flagged as physics is a **model byte-count artifact**; (3) at iso-working-set
+  (LX spill ∝ 1/(cores·tiles), so exact diagonals exist) time still halves with cores
+  (4578/2288/1154 µs at (1,16)/(2,8)/(4,4)) — which rules out LX spill.
+
+**SHIPPED INSTEAD: a per-core ELEMENT-THROUGHPUT floor**, one parameter.
+`T ≥ elems/(cores · 1.51 elem/ns/core)`, applied to the **final** memory time (applying it to raw
+`mem` inflates it by 1/(eff·spill_derate) — that cost me one iteration). The element count is the
+largest HBM operand, `== rows*cols` on **186/186** measured bundles.
+
+| | original | my BW table (5 params) | **throughput floor (1 param)** |
+|---|---:|---:|---:|
+| `softmax_unrolled` | 89.5 % RMS, −89.3 % | 45.1 %, −28.5 % | **14.6 %**, +12.1 % |
+| `softmax` | 46.8 %, −32.6 % | 27.9 %, −16.5 % | **21.8 %**, −9.3 % |
+| OVERALL | 42.5 % | 39.9 % | **39.2 %** |
+
+Independently verified: best rate **1.51** (matches review), mean error **+0.3 %** on the 97
+low-core records, and **leave-one-shape-out RMS(log) 24.7 % vs the table's 39.6 %** — 1.6× better
+out-of-sample with 1/5 the parameters. **Gold-safe: 1975 unchanged, 93 moved, 0 at cores≥32**; the
+floor never binds at cores=32 (0/89 records), so it cannot touch the gold path by construction.
+
+**FLAGGED, deliberately NOT modelled:** the floor leaves a systematic residual at **cores=8/16**
+(median −16.5 % / −41.4 %) where the throughput bound hands back to the memory term and that term is
+itself too optimistic — the true form is a roofline whose *other* side also saturates, which needs
+the bus term re-derived at the same time. Independently, the memory side still tracks **COLS** at
+cores=32 (−50.9 / −38.7 / −17.5 / +0.4 % at cols 128/256/512/2048), which no core-count term reaches.
+
+**Two of my documentation claims were also wrong and are corrected:** the gate does **not** catch the
+`ctsum`/`ctamax`/`ctamin` rows (18/18 are intercepted earlier by `hbm_pattern='reduce_outer'`), and
+the cores=32/cols=2048 error is **+0.4 %**, not the −5.1 % I wrote. Calibration/scoring also used
+different statistics (`kernel_us_min` vs `kernel_us`); the reported +12.1 % mean on
+`softmax_unrolled` is partly that.
+
+**THE THREE bmm CORNERS the plan had shelved as "too thin" — re-examined with the new data.**
+All gated bmm regimes are already good (`bmm_layout` +0.4 % n=71, `bmm_wd` +0.1 % n=16), so every
+remaining bmm error is in these three un-gated corners.
+
+1. **cores<8 — STILL NOT ACTIONABLE (verified, not assumed).** The sweep added only 6 low-core bmm
+   points, all one shape. `pt_eff` is **1.000** on all of them, so the existing array-underfill term
+   is NOT the cause. But the split geometry changes *with* cores (1x1 at c1 -> 1x2 at c2 -> 1x4 or
+   2x2 at c4), so the plan's original objection — cores confounded with per-core area and split
+   fanout — still stands at **n=2 per core count on one shape**. Implied per-core rate 410/242/185
+   at cores 1/2/4 saturating to 161.5 at >=8 (reproduces the plan's earlier 407/241/168). Do not fit.
+
+2. **B=2 — EFFECT CONFIRMED, MECHANISM NOT.** This is now a clean controlled comparison: at
+   `1024x2048x1024` the split is byte-identical across B=2/4/8/16 (4x8, rpc=256, cpc=128,
+   reduction_cores=1), so only B differs. Per-batch time is **flat for B>=4 and ~half at B=2**:
+
+   | combo | B=2 | B=4 | B=8 | B=16 | B2/B>=4 |
+   |---|---:|---:|---:|---:|---:|
+   | dd | **232.5** | 460.3 | 457.9 | 456.8 | 0.507 |
+   | df | **187.4** | 322.1 | 318.8 | 319.9 | 0.586 |
+   | fd | **150.9** | 265.3 | 272.2 | 266.3 | 0.567 |
+   | ff | **107.1** | 137.2 | 146.0 | 146.4 | 0.754 |
+
+   The **additive layout structure still holds** at B=2 with every rate scaled ~2x (implied dd 356,
+   df 466, fd 626, ff 1186 vs 161.5/235/288/650 at B>=4). n=19 repeat-backed, cv 0.2-1.0 %.
+
+   *Mechanism hypothesis (NOT confirmed).* Per-core weight footprint = `B*K*(N/n_split)*2` bytes vs
+   the 1638 KB LX budget: B=2 -> 1024 KB (fits), B=4 -> 2048 KB (spills), so weights would re-fetch
+   per batch above the threshold. The model's own `_lx_spill_bw_derate` is **1.0 with working_set
+   0.0 for every B**, i.e. it does not see the bmm weight footprint at all. **But the data cannot
+   confirm this**: there is exactly ONE shape whose B=2 footprint exceeds the budget
+   (`1024x2048x2048` fd, 2048 KB), and its ratio **0.629 sits INSIDE the spread of the shapes that
+   fit (0.507-0.754)**. One discriminating point does not separate the hypothesis, and `ff` at 0.754
+   already breaks the clean "2x" story among the fitting shapes. **Deciding experiment queued**
+   (`BMMLX` section): B=2 across shapes straddling the 1638 KB threshold at fixed split.
+
+3. **3d2d projection — THE PLAN'S BLOCKER IS RESOLVED; this is the most shippable of the three.**
+   The plan refused it because "a flat rate is refuted -- us/GMAC spans 2.7x with a K-dependence
+   whose **~178 us intercept implies a FIXED cost**, and B and fixed-cost/MACs are ALIASED". With the
+   new repeat-backed K x B data that intercept **does not exist**: regressing time on MACs over 13
+   repeat-backed records gives `t = -4.7 us + 72.7 us/GMAC` — **no meaningful fixed cost**, so the
+   aliasing objection is gone. What remains is a clean B-dependent RATE, tight within each B:
+
+   | B | n | us/GMAC | range | implied MAC/ns/core |
+   |---:|---:|---:|---|---:|
+   | 4 | 5 | **57.6** | 56.2-62.1 (4 distinct shapes) | ~542 |
+   | 8 | 6 | **80.1** | 75.7-80.2 (+ one 113.3 at K=512) | ~396 |
+
+   vs the plain **1140** the model currently uses for 3d2d and 161.5 for a full bmm.
+
+   **SHIPPED: a TWO-RATE step, `bmm_3d2d_mac_peak_lo_ns = 705` (B<=4) / `hi = 470` (B>8)**,
+   with a new `_bmm_3d2d_batch` detector (exactly ONE rank-3 operand). Detector fires on 48
+   records by leading op — **62 bundles** once every op in the bundle is considered — all
+   `bmm_wd_3d2d`/`bmm_3d2d_k_tiling`, and on no other op (0/573 plain 2D, 0/175 full bmm, 0 rank-4).
+
+   | cohort | before | flat 605 (first attempt) | **step 705/470** |
+   |---|---:|---:|---:|
+   | calibration (repeat-backed plain 3d2d, n=19) | 38.1 % RMS | 16.5 %, −2.2 % | **5.6 %, −0.2 %** |
+   | all plain 3d2d (n=43) | — | 24.1 % | **19.8 %** |
+   | OVERALL | 39.2 % | 38.9 % | **38.8 %** |
+
+   Gold-safe: **2006 unchanged, 62 moved, 0 without a 3d2d op**; exactly **one** repeat-backed
+   record anywhere regressed >2pp (see residual below).
+
+   **⚠️ MY FIRST VERSION WAS A FLAT RATE AND THE REVIEW REFUTED IT — recorded so it is not retried.**
+   I shipped flat 605 and justified skipping the B dependence as "confounded". **Three of the four
+   supporting facts were wrong**, and I verified every correction myself:
+
+   - *"Only two shapes have >1 B value"* — **FALSE, there are three**, and `1024x2048x1024` is a
+     fully repeat-backed FOUR-point ladder (B=2/4/8/16, all reps=7).
+   - *"B is confounded with shape family"* — **FALSE**. Within shape, at an identical 4x8 split,
+     per-GMAC cost normalised to B=4 replicates the same non-monotone curve three times:
+     1024x1024x1024 → 1.136/1.000/1.352/1.384 and 1024x2048x1024 → 1.145/1.000/1.425/1.415.
+   - *"The deciding experiment still needs running"* — **it was already in the database**, in the
+     HEAD `closeout_20260729_074904.log` section literally titled "3d2d rate": six reps=7 rows,
+     B∈{2,4,8} × 2 shapes. **I excluded them by filtering on `M/K/N`, which are unparsed (None) for
+     those rows — the shape is only in the label.** At flat 605 they show a monotone sign flip
+     **+6.7/+4.9 → +19.0/+15.6 → −17.5/−16.3**; under the step they sit at **−4.9 … +6.1 %**.
+   - Only *"not capacity-driven"* survived — and it argues FOR modelling B, since equal working
+     sets with different B give 57.6 vs 80.1 us/GMAC.
+
+   Leave-one-SHAPE-out (holding out a whole B ladder) confirms it: step **21.3 %** vs flat 25.1 %
+   on my cohort, and the reviewer's tighter cohort gives 9.2 % vs 18.0 %. **I under-fit.**
+
+   **THE STATED MECHANISM WAS ALSO WRONG and is now removed.** "The 2D operand loads once and is
+   reused" is already paid for: that operand is `broadcast=True`, `loop_factor=1`, so the byte
+   count charges it **once** — charging it again as a rate double-books. Two further contradictions:
+   all **43/43** measured rank-3 operands are in the SLOW default order, for which the layout term's
+   own additive rate is **235** vs the 605–705 actually sustained (two shipped mechanisms disagreeing
+   about one configuration); and amortisation should improve with more batches, whereas the rate
+   **steps down** above B=4. The term now ships as an **empirical rate with an open mechanism**.
+
+   **Other review fixes applied:** `bmm_3d2d_k_tiling` **excluded from calibration** (its
+   `matmul_macs` is per-tile, up to 16x under-counted, and fitting those rows alone gives 946 —
+   1.6x the plain-3d2d rate, itself evidence they measure something else); the record-count
+   ambiguity (48 by leading op vs 62 by bundle) spelled out; the **no-cores-gate decision**
+   documented (every measured row is already cores>=8, and the fallback below it would be the plain
+   1140, which the sibling's low-core data shows is 2.5-7x too fast).
+
+   **RESIDUAL, disclosed:** `512x2048x512` at B=4 (reps=7, cv 0.89 %) is the one repeat-backed
+   record this term makes worse, 4.3 → **10.4 %** — it wants ~965, so the small-shape corner is
+   priced by neither rate. The flat version left it at +21.9 %.
+
+**CAT 6 (`matmul_row` / `matmul_nested`) — INVESTIGATED; the `matmul_macs` bug is now fully
+characterised, is NOT fixable in the cost model, and is NOT the main cause of either residual.**
+
+*Correction to my own earlier reading.* I had classified the macs semantics from `feats[0]`. For
+`mm_nested_m_k` and `matmul_k_tiling` **`feats[0]` is a Pointwise, not the matmul** (`is_matmul=False`,
+`macs=0`); the matmul sits at index 1 of a 3–4 op bundle. Scanning every op in the bundle gives the
+exact rule, checked on **814 records with a decidable ground truth**:
+
+> `matmul_macs x loop_trip == TOTAL` for **every** coarse op **except `matmul_row_tiling`**, whose
+> macs is already TOTAL (ratio 1.000 at every tile count).
+
+There is also an inconsistency **inside a single op's own feature set**: `matmul_row_tiling` records
+macs as TOTAL while its own `matmul_a_bytes` and `matmul_rows_per_core` are PER-TILE
+(a_bytes/A_total = 0.500/0.250/0.125/0.062 at tiles 2/4/8/16).
+
+*Consequence, measured directly by patching macs offline:*
+
+| | current | `x loop_trip` on the per-tile ops | control: `x loop_trip` on ALL three |
+|---|---:|---:|---:|
+| `matmul_k_tiling` | 7.3 % RMS, −4.7 % | **4.7 %, −0.5 %** | 4.7 % |
+| `matmul_row_tiling` | 23.3 %, −15.0 % | 23.3 % (untouched) | **246 %, +183 %** |
+| `mm_nested_m_k` | 39.2 %, −31.6 % | 34.0 %, −27.1 % | 34.0 % |
+
+So the under-count is real — fixing it makes `matmul_k_tiling` essentially **unbiased** — and the
+control proves `matmul_row_tiling`'s macs is TOTAL beyond doubt (+183 % if treated otherwise).
+
+*Why it CANNOT be fixed in the cost model.* A feature-only discriminator does exist in principle
+(compare `matmul_macs` against the op's own `M_dev*N_dev*K` recovered from `a_bytes`; TOTAL iff the
+ratio ≈ `loop_trip`), and it reaches **97.7 %** (795/814). But **9 of the 19 misses are
+`matmul_row_tiling` rows classified as PER-TILE**, which is precisely the +183 % failure mode, and it
+breaks entirely on bmm ops (ratio 2048–8192, because `matmul_rows_per_core` aliases the BATCH there —
+the hazard the extractor's own docstring warns about). A 2.3 % error rate with a catastrophic failure
+mode is not shippable. **The fix belongs in the extractor**, which is what the queued `MACSIR` IR
+capture is for. Confirmed blocked — not deferred out of caution.
+
+*And the headline for cat 6:* **the macs bug does not explain either target.**
+`matmul_row_tiling`'s macs is already correct, so its **−15.0 %** (n=112, 68 repeat-backed) is a
+wholly separate defect; and correcting `mm_nested_m_k` moves it only 39.2 → 34.0 %, leaving **−27 %**
+unexplained. Both are genuine open modelling gaps, not accounting artifacts — and both now have good
+repeat-backed data. That is the next target.
+
+**`matmul_row_tiling` (-15.0 %, n=112 / 68 repeat-backed) — MECHANISM FOUND, FIX BLOCKED by the
+same feature-semantics defect. Not fitted.**
+
+The residual is **zero at tiles=1** (median −0.2 %, RMS 3.9 %) and grows monotonically with the tile
+count (−8.6 / −10.9 / −19.9 / −64.4 % at tiles 2/4/8/16), worst at small per-core row counts
+(`rows_per_core` 32 → −45.3 %, 64 → −18.8 %, >=128 → −1…−8 %). On the 2-D (tiles x rows_per_core)
+grid **both** variables move it, and it is U-shaped in `rows_per_core` (best near 128) — which is
+exactly what the `pt_eff = 1.0` comment predicted would be "too weak to fit". It is still U-shaped
+with the new data.
+
+**The controlled ladder identifies the mechanism.** Holding `rows_per_core = 256`, K = N = 2048 and
+growing M with the tile count:
+
+| M | tiles | measured µs | µs/tile | model µs | model µs/tile |
+|---:|---:|---:|---:|---:|---:|
+| 2048 | 1 | 384 | **384** | 393 | 393 |
+| 4096 | 2 | 774 | **387** | 713 | 357 |
+| 8192 | 4 | 1533 | **383** | 1366 | 342 |
+| 16384 | 8 | 3045 | **381** | 2672 | 334 |
+
+**Measured time per tile is exactly flat; the model's falls.** The model counts the weight operand
+**once for the whole loop** (R+W goes 12.58M → 71.3M elements = A + output scaling with the weight
+held fixed), so it amortises across tiles something the hardware re-reads every tile. Note
+`a_bytes`/`b_bytes` stay pinned at 8,388,608 while M grows 8x — they are PER-TILE while `matmul_macs`
+is TOTAL, the same internal inconsistency documented above.
+
+**Why it is not shippable.** Charging the weight once per tile fixes the ladder (−7.8 → −1.5,
+−11.9 → −5.1, −12.2 → −4.9 %) but **over-corrects globally**: `matmul_row_tiling` 23.3 → **41.7 %**
+RMS, mean −15.0 → **+25.9 %**. So the weight is re-read on some configs and stays resident on others
+— a residency/spill question. The model HAS a spill term for exactly this, but it cannot be applied
+here because its byte inputs are per-tile while the MAC count is total, so the two disagree about
+what "one iteration" means. **This is the same root cause as the `matmul_macs` blocker, and it now
+blocks a second target — which raises the priority of the queued `MACSIR` extractor fix from
+"nice to have" to "the gate on all of cat 6".**
+
+**`mm_nested_m_k` (-27 % after macs correction) — SAME ROOT CAUSE, third manifestation. Cat 6 is
+now blocked at ONE defect class, not three separate ones.**
+
+Controlled test at a **fixed** `2048x2048x2048` shape — identical total MACs, only the tiling changes:
+
+| tiles | loop_trip | measured | model | counted HBM elems |
+|---:|---:|---:|---:|---:|
+| 1 | 1 | 383 us | 393 | 12,582,912 |
+| 2 | 4 | **1096** | 761 | **25,165,888** |
+| 4 | 8 | **1705** | 1143 | **25,165,888** |
+
+Two facts settle it. First, **tiling the same matmul makes it 2.9x / 4.5x slower** — a large real
+effect, not an artifact. Second, **the counted traffic is byte-IDENTICAL at tiles=2 and tiles=4**
+while the measurement differs 1.56x, so the model is *structurally blind* to the difference.
+
+The cause is visible in the bundle: nested tiling produces a 4-op bundle (init Pointwise -> mm ->
+accumulate Pointwise -> writeback Pointwise) in which the accumulator **round-trips HBM** (op[2] reads
+two 2.10M-element operands and writes 2.10M). Every arg carries **`loop_factor = 1`** while
+`loop_trip` is 2/4/8 — so that per-iteration round trip is charged **once per loop**. This is the §3
+read-after-write effect at coarse-tile granularity, uncounted.
+
+**UNIFIED DIAGNOSIS — cat 6 is one defect, seen three ways.** The extractor does not consistently
+express "per iteration" vs "per loop":
+
+1. **`matmul_macs`** — TOTAL for `matmul_row_tiling`, PER-TILE for every other coarse op
+   (814 records; +183 % control). Blocks calibration of every coarse rate.
+2. **`matmul_a_bytes`/`b_bytes`/`rows_per_core`** — PER-TILE while `macs` is TOTAL *in the same op*.
+   Blocks `matmul_row_tiling`'s weight-residency term (charging the weight per tile fixes the
+   controlled ladder but over-corrects globally, 23.3 -> 41.7 % RMS).
+3. **`loop_factor`** — pinned at 1 while `loop_trip` > 1. Blocks `mm_nested_m_k`, and is the same
+   defect behind the fused-softmax "TILES effect" (counted traffic falls 2.6x across tiles while
+   measured time is flat).
+
+All three are the SAME question — what does one iteration cost, and what is charged per loop — and
+none is fixable in the cost model: a feature-only discriminator for (1) reaches 97.7 % with a +183 %
+failure mode. **The queued `MACSIR` IR capture is the single gate on all of cat 6** (121 points
+>10 %), which is why its scope has been widened to record `loop_factor` and the per-arg traffic, not
+just the MAC count.
+
+**GAMMA re-tested after the bmm fixes — STILL BLOCKED, now by direct test rather than inference.**
+Session 4 left γ open, with the note that the bmm and coarse cohorts pulled it the wrong way "for
+reasons unrelated to γ". Having since shipped the layout and 3d2d terms (`bmm_3d2d` 42.7 → 30.3 %,
+`bmm_split` 45.0 → 40.3 %), the profile was re-run:
+
+| γ | plain mm | bmm | coarse | ALL family |
+|---|---:|---:|---:|---:|
+| 0.30 | 15.43 | **38.51** | **23.28** | **27.65** |
+| 0.46 shipped | 13.95 | 39.01 | 24.68 | 27.80 |
+| 0.60 | **13.25** | 39.84 | 26.63 | 28.43 |
+
+argmin: plain **0.60**, bmm **0.30**, coarse **0.30**, all-family **0.30** — **identical to session 4**.
+So a material improvement in bmm accuracy moved its γ preference not at all, which means that pull
+was never about the terms I fixed. The residual bmm error is concentrated in `bmm_k_tiling` /
+`bmm_nested_b_k` — coarse ops, blocked on the same extractor defect as the rest of cat 6. **γ is
+therefore downstream of the `MACSIR` capture too**, and `γ = 0.46` stays as the compromise it is.
+
+**Still open after this sweep** (now with data, next in line): `bmm_split` 45.0 % (n=162),
+`matmul_nested` 39.3 %, `bmm_nested` 56.9 %, `matmul_row` 23.5 %, `bmm_3d2d` 24.2 % (the K×B sweep
+landed), and the γ question — which the coarse/bmm fixes must precede, per session 4.
+
+### 📋 CLOSE-OUT LEDGER (2026-07-29) — every remaining >10 % point has a disposition
+
+Scored the **live** model over all 1782 records: **625 points > 10 %**. The headline number is
+misleading on its own, so it is decomposed by *whether the point is even distinguishable from noise*
+(standing rule 2) and by whether its category is open:
+
+| bucket | >10 % | repeat-backed | cv < 2 % | status |
+|---|---:|---:|---:|---|
+| add-chain (§3) | 173 | 0 | 0 | OUT OF SCOPE by user decision |
+| coarse matmul/bmm (cat 6) | 121 | 39 | 39 | PAUSED — need HW |
+| bmm (cat 4) | 101 | 25 | 25 | PARTLY PAUSED — 3d2d / B=2 / low-core |
+| plain matmul (cat 3) | 84 | 15 | 15 | open |
+| coarse softmax (cat 5) | 77 | 45 | 45 | PAUSED — fused bw(cores) |
+| broadcast/transport (cat 1/2) | 44 | 35 | 24 | open |
+| other pointwise/reduction | 24 | 0 | 0 | open |
+| flash_attn | 1 | 1 | 1 | OUT OF SCOPE — multi-op program, rank-4 |
+
+**465 of the 625 have no repeat structure at all** and cannot be separated from noise. Filtering to
+*open category + repeat-backed + cv < 2 %* leaves **39 truly actionable points**, and every one has a
+recorded disposition — **zero unresolved**:
+
+| op | n | worst | disposition |
+|---|---:|---:|---|
+| `mmwd` | 15 | +35.8 % | **BLOCKED on the queued sweep.** cat-3 split/spill; γ cannot arbitrate until the coarse `matmul_macs` defect (MACSIR) and the MMSPILL column ladders land |
+| `transpose_outer` | 7 | −22.2 % | **DO NOT TOUCH (plan).** VERIFIED: all seven are M ≥ 8 (M = 8,8,8,32,64,8,32), i.e. the shipped M<8 term covers its own regime and these are exactly the M>8 side left unmodelled — it is self-contradicting across (R,C) and confounded with a planner split-shape change |
+| `write` | 5 | −27.8 % | **DO NOT TOUCH (plan).** Error sign flips in *both* R and C; no power law expresses that surface |
+| `copy` | 4 | −62.8 % | **DROPPED by user** ("leave good data in our database and drop it for now") |
+| `bcastcol` | 3 | +18.4 % | **DROPPED by user** (same instruction) |
+| `cat1` | 2 | −19.8 % | **DO NOT TOUCH (plan).** VERIFIED per point: the −19.8 % cell is R = 256 < 512, outside the normal band; the other is +10.1 % at R = C = 1024 — a single marginal cell, and a refit on one cell is curve-fitting |
+| `mulbcast` / `bcast` | 2 | +13.2 % | **DROPPED by user** (same instruction) |
+| `cat0` | 1 | +13.8 % | **DO NOT TOUCH (plan).** Only 3 cells at C ≤ 1024 |
+
+**Conclusion: all non-blocked, non-dropped work is complete.** What remains is either explicitly out
+of scope, explicitly dropped by the user, explicitly "do not touch" in the approved plan with a stated
+reason, or blocked on `run_outlier_closeout.sh`. Note `copy` at −62.8 % (cv 0.20) is the largest
+noise-controlled error left in the model and is dropped only by user instruction — worth re-raising if
+that instruction is revisited.
+
+### ✅ SESSION 4 (2026-07-29) — "xxx may be more complex" (user): the overlap term is SATURATED
+
+Follow-up to the above, on the user's note that the leftover may need a richer form than
+`(1−γ)·min`. Harness: `notes/explore_overlap_forms.py`. Four independent lines, same answer.
+
+**1. Six *structurally different* families, not just rescalings of `min`** — softened roofline
+`(c^s+m^s)^(1/s)`; **shared-port** `max(c,m,(c+m)/k)` (compute and DMA contend so the *sum* is
+rate-limited, and an unbalanced kernel pays **nothing**, unlike F0); geometric blend
+`max + a·lo^p·hi^(1−p)`; balance-dependent `max + lo·(a+b·ρ)`; shared-port + residual; and
+`max + lo·(a+b/cores)`. Fitted on the repeat-backed cohort, scored on ALL mm/mmwd: they span
+**14.24–15.02 RMS %** — narrower than the repeat-to-repeat spread of some configs. Fitted
+**in-sample** at cores ≥ 8 (an upper bound on each): **15.51–16.01**. Nothing separates.
+
+**2. ORACLE BOUND — the decisive number.** Best `(peak, γ)` over `[900,1400] × [0.10,0.90]` chosen by
+hindsight on ALL mm/mmwd: **14.34 → 14.26 = 0.08 RMS points.** At cores ≥ 8 (267 of 343 points) the
+oracle gain is **0.15 / 0.42 / 0.70** points for cores 8/16/32. At cores 1/2/4 it gains 5.4/2.1/2.1 —
+but the argmins are **mutually contradictory** ((1050,0.75) vs (1250,0.30) vs (1350,0.30) vs
+(900,0.70)), so that gain is the constants absorbing a different effect, not overlap physics.
+
+**3. Sequential identification (the method the earlier γ attempts lacked) — still refused.**
+γ/peak are entangled, so peak was identified **only** on cores=1/2 (compute share 0.86–0.97 ⇒ γ nearly
+inert), then γ on cores ≥ 8 → (1090, 0.64). Clear win on repeat-backed mm/mmwd (RMS 8.71 → **6.92**,
+>10 % 15 → 10, per-core medians flattened −6.7 → −3.2 and +9.5 → +3.3) but **loses globally**
+(14.34 → 15.02, >10 % 84 → 112), the loss **entirely at cores=32**. The cohort conflict is
+**COVERAGE, not noise**: repeat-backed has cores median 8 (31.7 % at cores 1–2), single-shot has cores
+median 32 (0.4 %). **Peak alone is also refused** (1140→1090 at shipped γ: rb 8.71 → 10.13).
+
+**4. γ(cores) with peak pre-identified** = 0.20/0.60/0.84/0.60/0.56/0.52 for cores 1→32 —
+**non-monotone**, and at cores=1 barely identifiable (RMS spans only 1.6→3.7 over γ ∈ [0.2,0.8]).
+This **retires the report's standing promise** that a core-count-dependent γ was the natural
+refinement: the sweep has now been run and does not support it. §10 rewritten accordingly.
+
+**Two false leads I chased and killed myself** (both lesson-1 back-out traps, recorded so they are not
+re-attempted): (a) *"the leftover fraction rises with balance ρ"* — real on clean data (0.356 → 0.392
+→ 0.462, noise floor 0.003) but the 2-D (K × ρ) grid shows it is carried **entirely by K ≤ 1024** and
+**absent at K = 2048** (largest cell, n=28); (b) *"there is a small-K compute-rate shortfall"* —
+implied compute scale 1.14/1.11 at K=512/1024 vs 1.00 at K ≥ 2048, but that back-out fixed `a = 0.36`
+when the shipped value is **0.54**, so it was absorbing the wrong leftover; against the **shipped**
+model the K=512 row is fine (−6.0…+7.8 %). Self-refuted.
+
+**WHERE THE ERROR ACTUALLY IS.** Above 8 cores the residual (~14 % RMS) is **diffuse** — no
+work-division variable exceeds |r| = 0.34 (kernel size −0.335, per-core area −0.282, per-core columns
+−0.258, lopsidedness −0.224). One structure survives a repeat control: **few per-core columns**.
+Repeat-backed only, RMS **18.5 %** at N/n ≤ 128 (n=11) vs **8.3 %** at 129–512 (n=36) and **7.8 %** at
+513–1024 (n=6). N/n = 64 is exactly ONE 64-element stick — the narrowest possible output tile — so
+array/stick underfill is the natural reading. **CAVEAT I had to apply to myself:** the apparent
+*other* arm of a U-shape (RMS 25.9 % above 1024 columns on all data) has **ZERO repeat-backed points**
+— it is single-shot only and is NOT counted. Existing coverage is also thin at the left arm: N/n = 64
+has 19 records but only **2** repeat-backed. Hence two new one-variable ladders were added to
+`run_outlier_closeout.sh` MMSPILL (+10 runs, ~6 min): **Ladder A** varies per-core columns 64→1024
+with per-core rows pinned at 512; **Ladder B** varies per-core rows 128→2048 with columns pinned at
+256. If the effect is columns/stick, B stays flat; if it is per-core area, B bends. Same signature as
+`matmul_row_tiling`.
+
+**⚠️ CONCLUSION CORRECTED AFTER ADVERSARIAL REVIEW — the "SATURATED" claim was WRONG.**
+The review returned **REFUTED** on the parameter half of the claim, and I verified every load-bearing
+number myself. Three findings, all reproduced:
+
+1. **Two real bugs in my own harness** (`notes/explore_overlap_forms.py`, now fixed + self-checking):
+   (a) `decompose()` passed `split_fixed_ns`/`split_per_core_ns`/`split_lopsided_ns`, **none of which
+   exist on `CostParams`** — it is a non-frozen, non-slots dataclass, so `setattr` silently created
+   dead attributes and `split` was **identically 0** for every record, folded into `mem`. Harmless for
+   the shipped form but NOT for the challengers (p-norm computes `(c^s+(m+sp)^s)^(1/s)`), so every
+   alternative was scored on a distorted input. (b) `mac_peak_per_core_ns=1e12` does **not** zero
+   compute when the bmm-layout gate fires — that path returns the layout rates and ignores the plain
+   peak — silently dropping **170/170 bmm records**, i.e. my "755-record family" cohort was really 585
+   and excluded the entire bmm population. Fixing both: reconstruction goes from **174/755 failing,
+   worst 29 %** to **0/755 at 0.0000 %**. A `verify_decomposition()` self-check now runs first and
+   aborts the script if it ever regresses.
+2. **My "oracle bound" was not an oracle.** It varied only `(peak, γ)` with every other coefficient
+   frozen. γ is entangled with the **spill** terms, so re-fitting it alone *structurally cannot*
+   reveal a gain. Verified by 5-fold CV × 3 seeds on the 343: γ alone **−0.01/+0.04/−0.09**;
+   spill alone with γ frozen **−0.07/+0.09/−0.11**; **JOINT γ+spill +0.62/+0.53/+0.57** out-of-fold,
+   with γ landing at **0.58–0.70 in every fold**. Joint ≫ sum of marginals = the absorption signature.
+   The γ profile is **not flat** (14.25 at 0.46 → 13.56 at 0.60). So **γ=0.46 is NOT pinned by the
+   data** and must not be described as settled or saturated.
+3. **But the review's direction (γ→0.66) fails the SAME global test that refuted every earlier
+   candidate**, which I checked and the reviewer also conceded. Profile with spill re-optimised per
+   cohort — **the cohorts want OPPOSITE directions**:
+
+   | γ | plain mm | bmm | coarse | ALL family |
+   |---|---:|---:|---:|---:|
+   | 0.30 | 15.65 | **40.81** | **23.54** | **28.57** |
+   | 0.46 shipped | 14.25 | 41.88 | 24.73 | 28.93 |
+   | 0.60 | **13.56** | 43.12 | 26.51 | 29.67 |
+   | 0.70 | **13.56** | 44.15 | 28.07 | 30.43 |
+
+   argmin: plain **0.60**, bmm **0.30**, coarse **0.30**, all-family **0.30**. Monotone opposite ways.
+
+**CORRECTED POSITION (what to write and act on).** γ=0.46 is a **compromise between sub-populations
+pulling in opposite directions**, not a saturated optimum and not a settled constant. The *functional
+family* conclusion still stands (held-out on the 239 single-shot points, no family beats the shipped
+live model: P 16.20, SR 16.42, F0-refit 16.96 vs shipped **16.19**) — but the *parameter* conclusion
+does not. **Do NOT re-fit γ yet**: the two dissenting cohorts are exactly the two with known
+unmodelled defects (bmm at 42 % from a separate cause; coarse with the confirmed `matmul_macs`
+per-tile-vs-total bug), so they are poor arbiters of a term worth a fraction of a point.
+**DECIDING EXPERIMENT:** fix the coarse `matmul_macs` semantics + land the bmm B-ladder, then re-run
+this joint γ×spill profile. Gold-safety is not the obstacle — γ/spill move only 1 non-matmul record
+(a flash_attn bundle, 0.19 %).
+
+**Also corrected:** the row labelled "F0 shipped" in my family table was fit at a=0.42 (**γ=0.58**),
+so the shipped model was never actually in that comparison; on the 343 the shipped model scores
+**14.34**, better than that row's 14.70.
+
+**VERIFIED, act only with new data:**
+
+- **The cat-4 term never fires on flash-attention**: flash's matmuls are **rank-4**
+  (`[1,4,2048,128]`) and the classifier requires rank-3. Extending it would extrapolate rank-3 rates
+  into a regime with zero measurements — documented in §13 instead.
+- **`matmul_macs` semantics are INCONSISTENT across coarse ops — RULE NOW PINNED EXACTLY**
+  (session 4, measured over every coarse record using TOTAL = `B*M*K*N` from the run label):
+
+  | op | `tiles_output_dim` | TOTAL / recorded macs | n | verdict |
+  |---|---|---|---:|---|
+  | `matmul_row_tiling` | **True** | **1.0** at loop_trip 2/4/8/16 | 60 | **TOTAL** |
+  | `mm_nested_m_k` | True | == loop_trip | 20 | per-tile |
+  | `bmm_nested_b_k` | True | == loop_trip | 6 | per-tile |
+  | `matmul_k_tiling` | False | == loop_trip | 30 | per-tile |
+  | `bmm_k_tiling` | False | == loop_trip | 18 | per-tile |
+  | `bmm_3d2d_k_tiling` | False | == loop_trip | 14 | per-tile |
+
+  `matmul_row_tiling` is the **only** op whose macs already covers all tiles, and the model
+  multiplies nothing by `loop_trip` (`compute += matmul_macs / cores / (mac_peak*pt_eff)`), so every
+  per-tile op **under-counts compute by `loop_trip`** — the leading suspect for `mm_nested_m_k`'s
+  −31 % signed error. **NOT FIXABLE OFFLINE, verified three ways:** (a) `tiles_output_dim` does NOT
+  discriminate (row_tiling=True is TOTAL, nested=True is per-tile); (b) deriving TOTAL from
+  `M_dev*N_dev*(a_bytes/(dtype*M_dev))` matches on only **298 of 738** rows, because for bmm
+  `matmul_rows_per_core` picks up the BATCH, a hazard the extractor's own docstring calls out;
+  (c) the existing IR dumps for these two ops are **1–2 line stubs** (`SPYRE_DUMP_IR` never fired;
+  a real dump is ~1032 lines). **DECIDING EXPERIMENT written and queued:**
+  `docs/source/user_guide/examples/run_coarse_macs_ir.sh` (6 runs, ~2 min, wired into the close-out
+  sweep as section `MACSIR`) captures real IR for both ops at tiles 1/4/8 so the layout size and
+  `reduction_ranges` can be compared directly — that says whether to fix the extractor or add a
+  feature. This is on the **critical path for γ**: the coarse cohort is one of the two pulling γ the
+  wrong way and cannot arbitrate while its multiply count is wrong.
+- **(superseded note)** — per-tile for `matmul_k_tiling`
+  (macs=total/tiles, loop_trip=tiles) and `mm_nested_m_k` (total/4 at tiles=2), but **already total**
+  for `matmul_row_tiling`. A blanket `×loop_trip` would fix the first two and break the third by
+  `tiles×`, and **no feature distinguishes them** (`tiles_output_dim=True` for both). This is an
+  EXTRACTOR bug that must be fixed at the source — and it independently confirms **cat 6 must stay
+  paused**: its compute feature is not trustworthy.
+
 ### ✅ SESSION 2 (2026-07-24 pm) RESULTS — clean reps=7 mm_family data folded, cats 3–6 resolved
 
 The clean forced-core sweep (`mm_family_20260724_082545.log`) is folded. Outcomes (all

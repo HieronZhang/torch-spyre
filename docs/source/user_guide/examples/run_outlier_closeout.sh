@@ -33,7 +33,7 @@
 # SECTIONS (default: all, cheapest-and-highest-value first so an early cut-off still lands
 # the most useful data):
 #   TAILS    cats 1-2  transport + broadcast/write tails            ~42 runs   ~0.2 h
-#   BMMFULL  cat 4     layout quads x B, 3d2d, low-core, thin       ~63 runs   ~0.7 h
+#   BMMFULL  cat 4     layout quads x B x SHAPE, 3d2d, low-core      ~87 runs   ~1.0 h
 #   MMSPILL  cat 3     split-shape x per-core area (spill/split)    ~30 runs   ~0.3 h
 #   REDCORES cat 5     plain-reduction g(cores) confirmation        ~48 runs   ~0.2 h   [existing script]
 #   GAMMA    cat 3     gamma identifiability (unsaturated)          ~11 runs   ~0.1 h   [existing script]
@@ -41,8 +41,9 @@
 #   COARSEBMM cat 6b   bmm_k_tiling / bmm_nested_b_k tile ladders   ~16 runs   ~0.5 h
 #   COARSEMM cat 6a    coarse matmul tile ladder + fixed-rpc rows   ~67 runs   ~2.1 h   [existing script]
 #   ADDIR    §3        add-chain IR structure (bundle counts)        ~8 runs   ~0.1 h   [existing script]
+#   MACSIR   cat 6     coarse matmul_macs semantics (IR only)        ~6 runs   ~0.1 h   [new script]
 #
-# ESTIMATED TOTAL ~4.5 h. That is computed from MEASURED per-run wall-clock in the existing
+# ESTIMATED TOTAL ~5.0 h. That is computed from MEASURED per-run wall-clock in the existing
 # logs, not guessed: mmwd 37 s, bmm_layout 50 s, bmm_wd 24 s, matmul_row_tiling 106 s,
 # mm_nested_m_k 114 s, matmul_k_tiling 127 s, bmm_k_tiling 108 s, pointwise/reduction 14-18 s,
 # softmax_row_tiling 14 s. The coarse-matmul sections dominate (~100-130 s/run compiles).
@@ -60,12 +61,19 @@ ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCR
 PROFILE_OPS="$SCRIPT_DIR/profile_ops.py"
 cd "$ROOT" || exit 1
 mkdir -p haoyang_logs
-LOG="haoyang_logs/closeout_$(date +%Y%m%d_%H%M%S).log"
+
 export BENCH_REPS="${BENCH_REPS:-7}"
 export TORCHINDUCTOR_FORCE_DISABLE_CACHES=1
-SECTIONS="${SECTIONS:-TAILS BMMFULL MMSPILL REDCORES GAMMA COARSERED COARSEBMM COARSEMM ADDIR}"
+SECTIONS="${SECTIONS:-TAILS BMMFULL MMSPILL REDCORES GAMMA COARSERED COARSEBMM COARSEMM ADDIR MACSIR}"
 MAX_SECONDS="${MAX_SECONDS:-0}"     # 0 = unlimited
 DRY="${DRY:-0}"
+# DRY runs must NOT land in haoyang_logs/closeout_*.log -- that glob is the documented fold
+# command, and a plan-only log dated today reads like a completed sweep. Give it its own name.
+if [[ "${DRY:-0}" == "1" ]]; then
+  LOG="haoyang_logs/dryrun_closeout_$(date +%Y%m%d_%H%M%S).log"
+else
+  LOG="haoyang_logs/closeout_$(date +%Y%m%d_%H%M%S).log"
+fi
 _START=$SECONDS
 NRUN=0
 echo "==== OUTLIER CLOSE-OUT $(date)  reps=$BENCH_REPS  sections: $SECTIONS ====" | tee "$LOG"
@@ -140,8 +148,15 @@ fi
 # All at MATCHED shape/MACs so the layout/batch/cores effect is isolated one at a time.
 if has BMMFULL; then
   sect BMMFULL "cat 4: layout quads x B, 3d2d rate, B=2 corner, bmm vs cores"
+  # SHAPE axis widened after the session-4 confound check. The review's "B trend inside dd"
+  # turned out to be a COMPOSITION artifact -- B=16 happened to be measured only on shapes with
+  # a fast implied rate. Shape-matched, the batch effect is +0.9 % on the one shape spanning all
+  # three B (and FLAT on two others), whereas the spread ACROSS shapes at fixed B is 158.0..170.3
+  # = 7.8 %, ~8x larger. So the real unmodelled variable is SHAPE, and the two shapes carrying it
+  # must be in the grid: 512x2048x512 (fast outlier, ~170, the §13 table's +41 % row) and
+  # 1024x1024x1024 (thin K, the weakest fast/fast corner at -14 %). +24 runs, ~20 min.
   for B in 2 4 8; do
-    for sh in "1024 2048 1024" "2048 2048 1024" "1024 2048 2048"; do
+    for sh in "1024 2048 1024" "2048 2048 1024" "1024 2048 2048" "512 2048 512" "1024 1024 1024"; do
       set -- $sh
       for lay in "0,1,2 0,1,2" "1,0,2 1,0,2" "0,1,2 1,0,2" "1,0,2 0,1,2"; do
         set -- $sh $lay
@@ -162,6 +177,24 @@ if has BMMFULL; then
     set -- $c
     run "bmm_wd cores=$(( $1*$2*$3 )) 1024x2048x1024" BENCH_OP=bmm_wd BENCH_B=4 \
       BENCH_ROWS=1024 BENCH_COLS=2048 BENCH_N=1024 WD_B=1 WD_M="$1" WD_N="$2" WD_K="$3" SENCORES=32 || break
+  done
+  # BMMLX: the deciding experiment for the B=2 step (session 5). At a FIXED split (4x8) the
+  # per-core weight footprint is B*K*(N/n)*2 bytes; the LX budget is 1638 KB/core. The
+  # hypothesis is that B=2 is ~2x faster per batch only while that footprint FITS, and that
+  # the speedup vanishes once it spills. Current data cannot test this: exactly ONE measured
+  # shape has a B=2 footprint over the budget, and its ratio (0.629) sits inside the spread of
+  # the shapes that fit (0.507-0.754). These rows straddle the threshold at B=2 AND B=4 so the
+  # ratio can be computed on each side of it. Footprint at B=2, n=8: N=512 -> 512 KB (fits),
+  # N=1024 -> 1024 KB (fits), N=2048 -> 2048 KB (spills), N=4096 -> 4096 KB (spills hard).
+  for B in 2 4; do
+    for N in 512 1024 2048 4096; do
+      for lay in "0,1,2 0,1,2" "1,0,2 1,0,2"; do
+        set -- $lay
+        run "bmmlx B=$B 1024x2048x$N A=$1 B=$2" BENCH_OP=bmm_layout BENCH_B="$B" \
+          BENCH_ROWS=1024 BENCH_COLS=2048 BENCH_N="$N" WD_B=1 WD_M=4 WD_N=8 WD_K=1 \
+          WD_LAYOUT_A="$1" WD_LAYOUT_B="$2" SENCORES=32 || break 3
+      done
+    done
   done
   esect BMMFULL
 fi
@@ -185,6 +218,33 @@ if has MMSPILL; then
       run "mmwd $1x$2x$3 split $4x$5" BENCH_OP=mmwd BENCH_ROWS="$1" BENCH_COLS="$2" BENCH_N="$3" \
         WD_M="$4" WD_N="$5" WD_K=1 SENCORES=32 || break 2
     done
+  done
+
+  # --- ONE-VARIABLE ladders for the per-core COLUMN U-shape (added after the session-4
+  # overlap analysis).  Scoring the shipped model at cores>=8 leaves a residual that is
+  # U-shaped in per-core columns N/n: RMS 19.9% at N/n<=128, 7.5% at ~256, 18.5% above 1024,
+  # while NO work-division variable correlates above |r|=0.34.  Two arms, two mechanisms:
+  # the LEFT arm should be systolic-array/stick underfill (N/n=64 is exactly ONE 64-element
+  # stick per core, the narrowest possible output tile) and the RIGHT arm should be on-chip
+  # capacity spill.  The block above cannot separate them because area and columns move
+  # together.  These two ladders each vary ONE of them with the other pinned.
+  # NOISE COVERAGE, precisely: only the LEFT arm currently survives a repeat control
+  # (repeat-backed RMS 18.5% at N/n<=128 with n=11, vs 8.3% at 129-512 with n=36).  N/n=64
+  # itself has 19 records but only 2 repeat-backed, and N/n>=2048 has ZERO -- so the right
+  # arm is single-shot only and is deliberately NOT claimed until these runs land.
+  #
+  # Ladder A: per-core COLUMNS vary 64..1024, per-core ROWS pinned at 512 (M=2048, m=4).
+  for n in 512 1024 2048 4096 8192; do
+    run "mmwd colladder 2048x2048x$n split 4x8 (N/n=$((n/8)))" \
+      BENCH_OP=mmwd BENCH_ROWS=2048 BENCH_COLS=2048 BENCH_N="$n" \
+      WD_M=4 WD_N=8 WD_K=1 SENCORES=32 || break
+  done
+  # Ladder B: per-core ROWS vary 128..2048, per-core COLUMNS pinned at 256 (N=2048, n=8).
+  # If the U is a column/stick effect this ladder stays flat; if it is per-core AREA, it bends.
+  for m in 512 1024 2048 4096 8192; do
+    run "mmwd rowladder ${m}x2048x2048 split 4x8 (M/m=$((m/4)))" \
+      BENCH_OP=mmwd BENCH_ROWS="$m" BENCH_COLS=2048 BENCH_N=2048 \
+      WD_M=4 WD_N=8 WD_K=1 SENCORES=32 || break
   done
   esect MMSPILL
 fi
@@ -216,6 +276,14 @@ if has COARSEMM; then sect COARSEMM "cat 6a: coarse matmul tile ladder + fixed-r
   [[ "$DRY" == "1" ]] || bash "$SCRIPT_DIR/run_coarse_matmul_tile_sweep.sh"; esect COARSEMM; fi
 if has ADDIR;    then sect ADDIR    "§3: add-chain IR structure (bundle counts)"
   [[ "$DRY" == "1" ]] || bash "$SCRIPT_DIR/run_add_chain_ir.sh"; esect ADDIR; fi
+# MACSIR: 6 IR dumps that settle the `matmul_macs` per-tile-vs-total inconsistency.
+# matmul_row_tiling records TOTAL macs at loop_trip>1 (n=60, ratio exactly 1.0) while every
+# other coarse op records PER-TILE (ratio == loop_trip), and NO recorded feature separates
+# them -- so the model under-counts compute by loop_trip on the per-tile ops. This is on the
+# critical path for the gamma question: the coarse cohort is one of the two that pulls gamma
+# the wrong way, and it cannot arbitrate while its multiply count is wrong. ~2 min.
+if has MACSIR;   then sect MACSIR   "cat 6: coarse matmul_macs semantics (IR capture)"
+  [[ "$DRY" == "1" ]] || bash "$SCRIPT_DIR/run_coarse_macs_ir.sh"; esect MACSIR; fi
 
 echo "==== CLOSE-OUT DONE in $((SECONDS-_START))s ($(date)) -- $NRUN runs from this script ====" | tee -a "$LOG"
 echo "Fold: python3 notes/parse_sweep_logs.py haoyang_logs/closeout_*.log \\" | tee -a "$LOG"

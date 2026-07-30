@@ -48,7 +48,7 @@ T   = compute + mem − γ·min(compute, mem) + split      mem = HBM / (eff · s
 | `spill` | `(A_bytes+B_bytes)·f(area)`, `area=(M/m)·(N/n)`, `f=min(1.5, max(0, 0.45·log₂(area/65536)))` — matmul operand **re-read** when the per-core output tile overflows on-chip capacity | §11 |
 | `split` | `max(0,area−a₀)·[c_L·max(0,log₂(fan_long/8)) + c_S·max(0,log₂(fan_short/16))]`, `area=(M/m)·(N/n)`, `a₀=131072`, `c_L=2.6e−3`, `c_S=2.9e−3 µs/elem` — extra matmul operand re-read when a **large** per-core tile is **also** split many ways; two-sided (splitting the longer output dim bites sooner than the shorter); 0 for balanced or small tiles | §12 |
 | `write_extra` | `min(2.0e-9·ROWS^1.75·COLS^2.6, 2.4·out_bytes)` (÷BW) — `write` outer-product, empirical + capped | §4.5 |
-| `compute` | `MACs / cores / (peak · pt_eff)`, `peak = 1140 MAC/ns/core` (→ **160** for a default-`[0,1,2]`-layout bmm, B≥4, cores≥8); 0 for non-matmul | §9, §13 |
+| `compute` | `MACs / cores / (peak · pt_eff)`, `peak = 1140 MAC/ns/core`; for a batched matmul (B≥4, cores≥8) the operands' device tile orders set it additively — `1/peak = 1/650 + [A default]/368 + [B default]/517` (→ 162 both-default … 650 both-fast); 0 for non-matmul | §9, §13 |
 | `pt_eff` (derates **compute**) | systolic-array fill: `min(1,(rows/64)^0.35)` (`rows` = per-core rows); a coarse-tiled matmul's extra per-tile underfill is flagged, not modeled (`pt_eff=1`) | §9, §16 |
 | `eff` (derates **memory**) | `min(0.95, (h/13)^0.68)`, `h = per-core tile height = ROWS/(cores·tiles)` — streaming-pipeline fill, coarse memory-bound | §16 |
 | `s_lx` (derates **memory**) | `min(1, (512KB/ws)^0.15)` for `ws > 512KB` (coarse-tiled), `ws = 2·(rows/core)·COLS·2B` — per-core working set overflows LX; spilled traffic runs slower | §15 |
@@ -703,25 +703,30 @@ with the per-row block count and, weakly, with the operand length — differing 
 3-D operand `[R, M, C] → [M, R, C]`. Sweeping the middle axis `M` at fixed shape uncovers a
 **peak in effective bandwidth near M ≈ 8**, dropping off on both sides (at 2048×2048: 70 GB/s at
 M=2, 100 at M=8, 72 at M=64) — each core reassembles `M` blocks per transpose tile, so too few
-wastes the setup and too many overflows the on-chip buffer. The model is calibrated at M=8 (the
-common and best case); other `M` is a **flagged residual** — the model applies the M=8 rate, so it
-mis-predicts by the amount the effective bandwidth differs from its M=8 peak:
+wastes the setup and too many overflows the on-chip buffer. The model is calibrated at M = 8 (the common and best case), and now carries an explicit
+penalty **below** it: M is the output's contiguous stick-run length on device, so `M < 8` means
+sub-1 KB writes and the rate falls a further ~13 GB/s per halving. That takes the M < 8 points from
+a mean **−19.6 %** to **+0.1 %** (worst 29.4 % → 8.9 %) and the whole op from RMS 9.6 % to 7.1 %.
+**Above** M = 8 the decline is real but is left unmodelled: it is weaker and *not separable from R*
+(at R = 512 the M = 16/64 points are within a few percent, at R = 2048 they reach −22 %), and it is
+confounded with a planner split-shape change at large sizes — so it stays a flagged residual until
+the M-ladder sweep fills the missing cells.
 
 | R×C | M | measured µs | predicted µs | err % |
 |---|---:|---:|---:|---:|
-| 2048×2048 | 2 | 479.1 | 361.6 | -24.5 |
-| 2048×2048 | 4 | 816.7 | 723.2 | -11.5 |
-| 2048×2048 | 8 | 1337.0 | 1446.3 | +8.2 |
-| 2048×2048 | 16 | 3207.0 | 2892.6 | -9.8 |
-| 2048×2048 | 32 | 6587.7 | 5785.2 | -12.2 |
-| 2048×2048 | 64 | 14997.0 | 11570.5 | -22.8 |
-| 2048×8192 | 2 | 2306.2 | 1617.1 | -29.9 |
-| 2048×8192 | 4 | 4229.1 | 3234.2 | -23.5 |
-| 2048×8192 | 8 | 5937.1 | 6468.3 | +8.9 |
-| 2048×8192 | 16 | 13155.7 | 12936.6 | -1.7 |
-| 2048×8192 | 32 | 28474.3 | 25873.3 | -9.1 |
+| 2048×2048 | 2 | 477.1 | 502.3 | +5.3 |
+| 2048×2048 | 4 | 804.0 | 841.0 | +4.6 |
+| 2048×2048 | 8 | 1325.0 | 1446.3 | +9.2 |
+| 2048×2048 | 16 | 3185.9 | 2892.6 | -9.2 |
+| 2048×2048 | 32 | 6499.5 | 5785.2 | -11.0 |
+| 2048×2048 | 64 | 14875.2 | 11570.5 | -22.2 |
+| 2048×8192 | 2 | 2289.1 | 2354.7 | +2.9 |
+| 2048×8192 | 4 | 4208.0 | 3834.8 | -8.9 |
+| 2048×8192 | 8 | 5917.9 | 6468.3 | +9.3 |
+| 2048×8192 | 16 | 13036.3 | 12936.6 | -0.8 |
+| 2048×8192 | 32 | 28340.5 | 25873.3 | -8.7 |
 
-**§6 accuracy.** RMS **5.5 %**, mean +0.7 %, over 100 shapes. `transpose` is exact (±2 %); the
+**§6 accuracy.** RMS **5.9 %**, mean +0.9 %, over 176 measurements. `transpose` is exact (±2 %); the
 shape-dependent copies mostly land within ~8 %, the residual confined to the extreme corners —
 the smallest operands (a 512×512 `cat0` reads +18 % and a 256-row `cat1` −22 %, their bandwidth
 already near the flat peak) and the largest `transpose_outer` (where the work is divided
@@ -954,11 +959,102 @@ T = compute + memory − γ·min(compute, memory)
 ```
 
 `γ=0` is serial; `γ=1` is a fully pipelined array (`T = max(compute, memory)`). The fit lands
-`γ ≈ 0.46` — about half the shorter phase hidden. Why only half? Pipeline **fill and drain** can't
-overlap (the first load has nothing to compute against, the last compute nothing to stream), and
-that overhead grows as each core's pipeline shortens: for `2048×2048×2048` the hidden fraction
-falls `0.64 → 0.49 → 0.35` as cores go `4 → 8 → 32`. A single `γ` is a compromise across core
-counts; an `L`-dependent γ is the natural refinement (a queued core-count sweep, see the appendix).
+`γ ≈ 0.46` — about half the shorter phase hidden.
+
+**Why this form, and not `max` plus something else?** The expression above is exactly
+
+```text
+T = max(compute, memory) + (1 − γ)·min(compute, memory)
+```
+
+so the model already *is* "the slower stream, plus a leftover" — the ideal `max` plus a term for
+what fails to overlap. That invites the obvious question of whether the leftover has a better shape,
+so we measured the alternatives directly (fitting each one's constants, then scoring on the
+repeat-backed runs, on all plain matmuls, and on the whole matmul family):
+
+- **Perfect overlap is refuted.** Plain `max` alone is far worse (RMS 17 % / 26 % / 38 % on the three
+  sets) — the non-overlapped remainder is large and real.
+- **It is not a fixed start-up cost.** Allowing a constant `+ c` fits `c = 0`: the leftover scales
+  with the work, so it is not a per-kernel fill/drain.
+- **It is not simply "stores are serial".** Charging `max(compute, reads) + writes` — the natural
+  reading, since a store cannot overlap the compute that produces its values — is *worse* than the
+  form above on every set. It only becomes competitive if writes are charged ~1.85×, which no
+  mechanism supports and which then fails badly elsewhere (worst point 97 %).
+- **Nor one tile's traffic** (`+ memory/tiles`), which is also worse.
+
+Those are all still "some fraction of the shorter stream", so we went further and tried leftovers
+built on genuinely different pictures of the hardware: a softened roofline that blends the two
+phases smoothly instead of switching at the crossover; a **shared-port** bound where compute and
+transfer contend for one resource, so their *sum* is rate-limited too and an unbalanced kernel pays
+nothing; a leftover whose size depends on how *balanced* the two phases are; and one that depends on
+the core count. None of them separates from the others: each was given its own best constants on the
+repeat-measured runs and then scored across all plain matmuls, and the seven land between **14.2 and
+15.2 %** — with the shipped model, at 14.3 %, inside that band rather than at either end. The
+sharper test is a genuine hold-out: fit on the repeat-measured runs, score only on the 239 runs never
+used for fitting. There **no** alternative beats the shipped model (16.19 %); the closest is the
+softened roofline at 16.20 %, and the rest trail to 17.6 %. Whatever else is wrong, it is not the
+shape of this term.
+
+Re-tuning the two overlap constants alone, over a wide grid and choosing the best pair by hindsight,
+improves all 343 plain matmuls by only **0.08 percentage points**. That is a much weaker statement
+than it first appears, though, and it is worth being precise about why: it holds *every other
+coefficient fixed*. The overlap fraction is entangled with the on-chip-spill term — both act on the
+same large, memory-heavy matmuls — so an error in one can be silently absorbed by the other, and
+re-fitting either alone is structurally unable to reveal it.
+
+Freeing them **together** does reveal it. Under repeated five-fold cross-validation on the 343 plain
+matmuls, freeing the overlap fraction alone gains nothing (−0.01 / +0.04 / −0.09 points out of
+sample); freeing the spill coefficients alone with the overlap fixed also gains nothing
+(−0.07 / +0.09 / −0.11); freeing **both** gains **+0.62 / +0.53 / +0.57**, roughly ten times the
+apparent ceiling, with the overlap fraction landing at 0.58–0.70 in every fold. The joint gain far
+exceeds the sum of the two separate gains, which is the signature of exactly that absorption. So the
+overlap fraction is *not* pinned by these data at 0.46, and this report should not claim it is.
+
+What stops us changing it is that the sub-populations disagree, and they disagree in opposite
+directions. Re-optimising the spill coefficients at each candidate overlap fraction:
+
+| overlap fraction | plain matmul | batched matmul | coarse-tiled | all matmuls |
+|---|---:|---:|---:|---:|
+| 0.30 | 15.65 | **40.81** | **23.54** | **28.57** |
+| **0.46 (shipped)** | 14.25 | 41.88 | 24.73 | 28.93 |
+| 0.60 | **13.56** | 43.12 | 26.51 | 29.67 |
+| 0.70 | **13.56** | 44.15 | 28.07 | 30.43 |
+
+Plain matmuls want a *larger* hidden fraction; batched and coarse-tiled matmuls want a *smaller* one,
+monotonically, and they outnumber the plain ones. The shipped 0.46 is therefore best described as a
+**compromise between populations pulling opposite ways** — not a settled physical constant, and not a
+saturated optimum. Moving it to satisfy the plain matmuls would cost the other two groups more than
+it gains.
+
+That reframes what to do next. The two dissenting groups are exactly the two we already know carry
+their own unmodelled effects — the batched rows sit at 42 % error from a separate cause, and the
+coarse-tiled path has a known bookkeeping defect in how its multiply count is recorded. A cohort that
+is 42 % wrong for another reason is a poor arbiter of a term worth a fraction of a point. The right
+order is to fix those first and then re-run this joint profile, rather than to tune the overlap
+fraction against them now.
+
+Meanwhile the residual above eight cores is diffuse — no work-division variable explains more than
+about a tenth of it — with one exception that survives a noise check: the error is clearly worse when
+each core is given **few output columns**. Restricted to repeat-measured runs, the error is 18.5 %
+below 128 columns per core against 8.3 % between 128 and 512. Sixty-four columns is exactly one
+64-element stick, the narrowest output tile a core can be handed, so array-underfill is the natural
+reading. The unmeasured half of that picture is the opposite end: above 1024 columns per core the
+error looks worse again, but **every** run in that range is single-shot, so we do not count it. The
+queued sweep now carries two one-variable ladders — columns varied with rows pinned, and the reverse —
+that settle both ends and separate a column effect from a per-core-area effect.
+
+Why only half? Pipeline **fill and drain** can't overlap — the first load has nothing to compute
+against, the last compute nothing to stream — and that overhead grows as each core's pipeline
+shortens. That predicts a hidden fraction that falls as cores rise, which an early reading of
+`2048×2048×2048` seemed to show (`0.64 → 0.49 → 0.35` from 4 to 32 cores), and it was the reason to
+expect a core-count-dependent γ. **The core-count sweep has since been run, and it does not hold
+up.** The catch is that γ and the compute rate trade off against each other, so neither can be read
+off alone. Pinning the compute rate first on the one- and two-core runs — where the kernel is 86–97 %
+compute and γ barely moves the prediction — and only then fitting γ at each core count gives
+`0.20, 0.60, 0.84, 0.60, 0.56, 0.52` for 1 to 32 cores: not a trend, and the value at one core is
+barely determined at all. Fill-and-drain remains the plausible reading of *why* the fraction is
+about a half, but the data does not support making it depend on core count, and doing so would gain
+at most 0.7 points where the error actually is. A single γ stands.
 
 ![§10 prediction error vs memory fraction for every 32-core matmul run (k=1, power-of-2 shapes), colored by regime. Two markers per run: the additive model (γ=0, open) over-predicts more as the memory fraction grows; the overlap term (γ=0.46, filled) lowers every prediction, closing that over-prediction for the realistic bulk. Outliers are labeled with tensor size M×K×N and split m×n×k. The outlier causes — work-division extreme (lopsided split), tensor-size extreme (thin reduction), and tiny (small output) — are colored separately.](figures/fig10_matmul_overlap.png)
 
@@ -987,9 +1083,9 @@ size *and* split):
 - **tiny** (small output, `min(M,N) ≤ 512`) — a small kernel riding the fixed per-kernel overhead floor.
 
 The **realistic** group (balanced split, normal shape) is the tightest — the regime the model is built
-for. (This figure keeps only the all-32-core, `k = 1`, power-of-2 cases; lower core counts are a separate
-`γ(cores)` refinement — a single `γ` is a compromise across core counts, the queued core-count sweep in
-the appendix.)
+for. (This figure keeps only the all-32-core, `k = 1`, power-of-2 cases. Lower core counts were once
+expected to need their own overlap fraction; as described above, that sweep has since been run and
+does not support one.)
 
 ### §11. A residual: when the operand tile overflows on-chip memory
 
@@ -1181,7 +1277,7 @@ Representative realistic points (the regime the model is built for):
 **Observation.** In batched matmul the compiler **never splits the batch across cores** — it keeps every batch on the same
 cores and iterates — so the **base** model (no bmm term) charges `B ×` a single matmul's compute and HBM. Measured, it runs
 much slower. (The figures and the 2–4.6× factor in this observation are all vs that *base* model; the
-slow-compute-rate term derived below closes the default-layout case to ~6 %.) At a balanced split the kernel is a **shape-dependent 2–4.6× the prediction**, and the
+layout-keyed compute-rate term derived below closes ALL FOUR layout combos to ~4 %.) At a balanced split the kernel is a **shape-dependent 2–4.6× the prediction**, and the
 factor is **flat in `B`** once `B ≥ 4`: a genuine per-batch floor, not a one-off start-up cost.
 (`B = 1` is excluded from the fit — with a single batch the compiler collapses the batch dimension
 into a different plan: its `op_it_space_splits` has three dims where `B ≥ 2` has four.)
@@ -1259,63 +1355,170 @@ rate. Recovering the full 3.3× needs *both* operands on `[1,0,2]`; swapping onl
 repeat-backed (the reps = 7 sweep gives 1840 / 546 µs for default / best, matching the IR run). The
 full split-keyed rate across `B` and shape awaits the complete layout sweep — this run stalled before
 the other quads finished — but this matched quad plus the IR confirm the mechanism and the default
-rate. **It is a slow COMPUTE rate, not a bandwidth derate — and it is now shipped.** The tell is that
-`µs/GMAC` is **flat at ~215** across the default-layout bmm cohort (16 distinct shapes, reps = 7,
-cores = 32, B ≥ 4) — constant over a 16× MAC range and across varying `rpc`/`cpc`/`K` — a
-**compute-bound** signature. A bandwidth effect would make `µs/GMAC` vary with the shape's byte/MAC
-ratio; it does not (the per-shape `eff BW` above only *looks* variable because `io_hbm/MACs` varies).
-So the strided per-batch stick re-gather of the default `[0,1,2]` order throttles the systolic array
-to a **slow sustained rate ~160 MAC/ns/core** (vs 1140 for a plain 2-D matmul). The model now charges
-this via a per-op `mac_peak` override (`_matmul_mac_peak`): a matmul whose **both** rank-3 operands sit
-on the default `[0,1,2]` device order (batch at device pos −2), with **B ≥ 4** and **cores ≥ 8**, uses
-`bmm_default_mac_peak_per_core_ns = 160`; every other matmul keeps 1140. On the clean repeat-backed
-cohort this cuts the default-bmm error from **~420 % to a mean |err| of ~6 %**, and it is **provably
-gold-safe** — 0 change on all 1514 non-bmm records (max |Δ| = 0.000000 µs), plain 2-D matmul
-byte-identical. It fires only on genuine both-batched bmm, so the `3d2d` projection (one rank-3
-operand) and the fast `[1,0,2]` layout are untouched. **Gates, honestly:** the slow rate is a
-*many-core* effect (implied per-core peak 407/241/168 at cores 1/2/4 → ~160 only at cores ≥ 8) so
-low-core bmm keeps 1140 and stays a large unmodeled residual; and at **B = 2** (batch ≪ the 32-way
-`m·n` split) the penalty roughly halves (~108 µs/GMAC), a distinct small-batch corner left on the
-plain rate. The remaining >10 % residuals are these gated corners plus thin single-stick tiles
-(`M`/`N` ≤ 512) and old **single-shot** bmm points that disagree with the reps = 7 cohort (distrusted
-per the noise protocol). A planner that placed bmm operands `[1,0,2]` would remove ~⅔ of the penalty
-outright.
+rate. **It is a slow COMPUTE rate, not a bandwidth derate — and the two operands contribute
+independently.** The tell that it is compute, not bandwidth: `µs/GMAC` is **flat at ~215** across the
+default-layout cohort (16 shapes, reps = 7, cores = 32, B ≥ 4) — constant over a 16× MAC range and
+across varying `rpc`/`cpc`/`K`. A bandwidth effect would track the shape's byte/MAC ratio; it does
+not (the per-shape `eff BW` above only *looks* variable because `io_hbm/MACs` varies). So the strided
+per-batch stick re-gather of the default `[0,1,2]` order throttles the systolic array.
+
+**The structure: the two penalties ADD IN TIME.** Across all **11 matched quads** (same `B,M,K,N`,
+same split, byte-identical, copy-free) the ratio
+
+```text
+(A-slow + B-slow) / (both-slow + both-fast)  =  0.983
+```
+
+every cell repeat-backed at reps = 7. Penalising one operand costs very nearly the *same* time
+whether or not the other is already penalised, so the **reciprocal rates add**:
+
+```text
+1/peak = 1/peak_fast + [A default]/peak_A + [B default]/peak_B
+```
+
+Three constants (`peak_fast = 650`, `peak_A = 368`, `peak_B = 517` MAC/ns/core, joint least squares
+over 47 reps = 7 records) then reproduce **all four** measured combos:
+
+| operand A | operand B | model rate | mean \|err\| before → after |
+|---|---|---:|---:|
+| `[0,1,2]` default | `[0,1,2]` default | 162 | 74.0 % → **1.5 %** |
+| `[0,1,2]` default | `[1,0,2]` fast | 235 | 64.0 % → **2.5 %** |
+| `[1,0,2]` fast | `[0,1,2]` default | 288 | 57.8 % → **2.5 %** |
+| `[1,0,2]` fast | `[1,0,2]` fast | 650 | 24.2 % → **4.4 %** |
+
+Note the two operands are **not** interchangeable — A's penalty is the larger — so the classifier
+keeps them ordered. A single constant (the earlier version of this term) could only reproduce the
+both-default *sum*, which is why the mixed layouts were previously the worst-predicted points in the
+whole model. The term is **provably gold-safe**: 0 change on all 1612 records outside the gated
+batched-matmul set (max |Δ| = 0.000000 µs), so plain 2-D matmul is byte-identical.
+
+**Two honest qualifications on that table.** First, the ratio above is *close to* one but not equal
+to it: against a measured run-to-run floor of about 0.2 %, nine of the eleven quads fall below one,
+and the shortfall grows with the output width. Combining two penalised operands is therefore about
+**1.7 % cheaper** than adding their costs — a real effect this form deliberately does not carry,
+because carrying it would mean a fourth constant fitted to eleven points. Second, the
+"before" column is measured against the model as it stood *before any batched-matmul term existed*.
+Against the single constant this actually replaced, only the top row is a fair comparison, and there
+the gain is small (1.7 % → 1.5 %). That is expected and is the honest framing of what this term buys:
+**every batched matmul the compiler emits today uses the default order on both operands**, so on
+today's kernels the three constants collapse to a sum that is within 1 % of the old single value. The
+other three rows exist to price a layout *change* — they are what lets the model say a `[1,0,2]`
+operand would be worth roughly 1.5× and both of them roughly 4×. That is the decision the model is
+meant to support, and it is exactly what a single constant could not express.
+
+**Gates, honestly.** The rates are calibrated at **one split (4×8) and cores = 32**, so they are
+confounded with split geometry — the same caveat the single-rate version carried. Two regimes are
+deliberately left on the plain 1140 peak because their data cannot yet support a rate: **cores < 8**
+(implied per-core peak 407/241/168 at cores 1/2/4 — only 3 repeat-backed points, all one shape, with
+cores confounded against per-core area) and **B = 2** (~2× faster, but only 2 repeat-backed points,
+both the same shape). The `3d2d` projection (one rank-3 operand) also takes no term: a flat rate is
+*refuted* there — `µs/GMAC` spans 2.7× with a K-dependence whose ~178 µs intercept implies a fixed
+cost, not a rate. Finally, the classifier requires rank-3 operands, so it does **not** fire on
+rank-4 batched matmuls such as flash-attention's; extending it would mean extrapolating these rates
+to a regime with no measurements. A planner that placed both bmm operands `[1,0,2]` would remove
+~⅔ of the penalty outright.
+
+One residual sits *inside* the region the term does cover, and it is worth naming because it is
+larger than anything the term itself resolves. Backing the sustained rate out of each measured run
+individually, holding the batch fixed, the answer is not one number: it ranges from about 158 to 170
+across shapes, roughly **8 %**, with `512×2048×512` consistently the fastest (about 170) and
+`2048×2048×1024` the slowest (about 158). A single constant sits in the middle, so the fast shapes
+are over-charged and the slow ones under-charged — worth about ±4 % of prediction error, in the
+direction you would expect.
+
+That is *not*, however, enough to explain the worst row in the table below, and the gap is worth
+recording. At `512×2048×512` the layout runs land at +4.6 % and +4.3 %, while an ordinary
+forced-split batched matmul at the same shape lands at **+41 %** — with the same core count, the same
+combination of tile orders, and the identical per-core tile of 128 rows by **64 columns, which is
+exactly one stick, the narrowest output a core can be given**. Same geometry, same rate, nearly ten
+times the error.
+
+There were two possible readings — that the two kinds of run simply measure differently, or that the
+difference is the batch size (4 against 8 and 16) — and the data settles it. Six other
+shape-and-batch combinations were measured *both* ways, and the two agree to
+**+0.2, +0.1, −0.5, +0.1, −0.1 and 0.0 percentage points**: for practical purposes they are the same
+measurement. So the way the run was generated is ruled out, and what is left is a small-shape effect
+that appears at the smallest batch. The one-stick per-core tile makes array underfill the natural
+suspect, and it is the same signature seen in plain matmuls — but this rests on a **single run**, so
+it is flagged rather than modelled. The follow-up sweep measures that shape at batch 2, 4 and 8 with
+repeats, which will confirm or kill it outright.
+
+It is also tempting to read the rate spread as a **batch-size** effect — pooled across shapes the
+rate does appear to climb with batch — but that is an artifact of which
+shapes happen to be measured at which batch size: the largest batch was only ever run on two shapes,
+one of them the fast one. Comparing like with like, the batch effect is under 1 % on the one shape
+measured at every batch size and flat on two others, while the shape effect is eight times larger.
+So the missing variable is shape, not batch, and the follow-up sweep varies shape at fixed batch
+accordingly.
 
 Two interactions are recorded so they are not later double-counted. A **lopsided** bmm split still
 pays §12 on top of the floor, so a short-dim-fanned bmm is worse again (up to ~15×). And **forcing the
 batch across cores** — which the planner never does — is catastrophic (~11× for the full bmm), because
 every core then reloads a full weight per batch; it is a guard case, not something to model.
 
-**Accuracy with the shipped bmm term.** On the clean repeat-backed default-layout cohort
-(`bmm_wd` + both-default `bmm_layout`, B ≥ 4, cores = 32, reps = 7, non-single-stick;
-`err = (pred − meas)/meas`, generated from the live model):
+**Accuracy with the layout-keyed term.** Every repeat-backed batched-matmul run the term applies to
+(B ≥ 4, at least 8 cores), one row per distinct layout-combination / shape / batch, measurements taken
+as the median across repeats and predictions generated from the live model
+(`err = (pred − meas)/meas`). Note the mix: the `def/def` rows are ordinary compiled batched matmuls —
+the only kind the compiler emits — while the other three combinations come from the layout experiment
+above, so they are the *evidence* for the term rather than a sample of production work:
 
-| M×K×N | B | meas µs | pred µs | err % |
-|---|---:|---:|---:|---:|
-| 512×2048×512 | 4 | 348 | 494 | +42 |
-| 1024×1024×1024 | 4 | 962 | 955 | -1 |
-| 1024×2048×1024 | 4 | 1838 | 1855 | +1 |
-| 1024×2048×2048 | 4 | 3682 | 3649 | -1 |
-| 2048×2048×1024 | 4 | 3688 | 3649 | -1 |
-| 2048×2048×2048 | 4 | 7368 | 7204 | -2 |
-| 1024×256×1024 | 8 | 656 | 536 | -18 |
-| 1024×512×1024 | 8 | 1107 | 1012 | -9 |
-| 512×2048×512 | 8 | 937 | 988 | +5 |
-| 1024×1024×1024 | 8 | 1956 | 1911 | -2 |
-| 1024×2048×1024 | 8 | 3654 | 3709 | +2 |
-| 1024×2048×2048 | 8 | 7261 | 7298 | +1 |
-| 1024×4096×1024 | 8 | 7091 | 7306 | +3 |
-| 2048×2048×1024 | 8 | 7383 | 7298 | -1 |
-| 512×2048×512 | 16 | 1879 | 1976 | +5 |
-| 1024×2048×1024 | 16 | 7309 | 7419 | +2 |
+| A / B layout | M×K×N | B | meas µs | pred µs | err % |
+|---|---|---:|---:|---:|---:|
+| `def/def` | 1024×1024×1024 | 4 | 962 | 947 | -1 |
+| `def/def` | 1024×2048×1024 | 4 | 1840 | 1839 | -0 |
+| `def/def` | 1024×2048×2048 | 4 | 3685 | 3617 | -2 |
+| `def/def` | 2048×2048×1024 | 4 | 3689 | 3617 | -2 |
+| `def/def` | 2048×2048×2048 | 4 | 7368 | 7140 | -3 |
+| `def/def` | 512×2048×512 | 4 | 348 | 490 | +41 |
+| `def/def` | 1024×1024×1024 | 8 | 1956 | 1895 | -3 |
+| `def/def` | 1024×2048×1024 | 8 | 3662 | 3677 | +0 |
+| `def/def` | 1024×2048×2048 | 8 | 7261 | 7234 | -0 |
+| `def/def` | 1024×256×1024 | 8 | 656 | 532 | -19 |
+| `def/def` | 1024×4096×1024 | 8 | 7091 | 7242 | +2 |
+| `def/def` | 1024×512×1024 | 8 | 1107 | 1004 | -9 |
+| `def/def` | 2048×2048×1024 | 8 | 7384 | 7234 | -2 |
+| `def/def` | 512×2048×512 | 8 | 937 | 980 | +5 |
+| `def/def` | 1024×2048×1024 | 16 | 7327 | 7355 | +0 |
+| `def/def` | 512×2048×512 | 16 | 1879 | 1959 | +4 |
+| `def/fast` | 1024×1024×1024 | 4 | 686 | 688 | +0 |
+| `def/fast` | 1024×2048×1024 | 4 | 1288 | 1319 | +2 |
+| `def/fast` | 1024×2048×2048 | 4 | 2468 | 2578 | +4 |
+| `def/fast` | 2048×2048×1024 | 4 | 2614 | 2578 | -1 |
+| `def/fast` | 1024×2048×1024 | 8 | 2550 | 2639 | +3 |
+| `def/fast` | 1024×2048×2048 | 8 | 5017 | 5157 | +3 |
+| `def/fast` | 2048×2048×1024 | 8 | 5109 | 5157 | +1 |
+| `def/fast` | 512×2048×512 | 8 | 732 | 720 | -2 |
+| `def/fast` | 1024×2048×1024 | 16 | 5118 | 5278 | +3 |
+| `def/fast` | 512×2048×512 | 16 | 1504 | 1440 | -4 |
+| `fast/def` | 1024×1024×1024 | 4 | 615 | 583 | -5 |
+| `fast/def` | 1024×2048×1024 | 4 | 1061 | 1109 | +5 |
+| `fast/def` | 1024×2048×2048 | 4 | 2137 | 2158 | +1 |
+| `fast/def` | 2048×2048×1024 | 4 | 2212 | 2158 | -2 |
+| `fast/def` | 1024×2048×1024 | 8 | 2178 | 2218 | +2 |
+| `fast/def` | 1024×2048×2048 | 8 | 4250 | 4316 | +2 |
+| `fast/def` | 2048×2048×1024 | 8 | 4468 | 4316 | -3 |
+| `fast/def` | 512×2048×512 | 8 | 601 | 615 | +2 |
+| `fast/def` | 1024×2048×1024 | 16 | 4260 | 4437 | +4 |
+| `fast/def` | 512×2048×512 | 16 | 1222 | 1230 | +1 |
+| `fast/fast` | 1024×1024×1024 | 4 | 381 | 327 | -14 |
+| `fast/fast` | 1024×2048×1024 | 4 | 549 | 590 | +8 |
+| `fast/fast` | 1024×2048×2048 | 4 | 1145 | 1120 | -2 |
+| `fast/fast` | 2048×2048×1024 | 4 | 1132 | 1120 | -1 |
+| `fast/fast` | 1024×2048×1024 | 8 | 1168 | 1180 | +1 |
+| `fast/fast` | 1024×2048×2048 | 8 | 2325 | 2239 | -4 |
+| `fast/fast` | 2048×2048×1024 | 8 | 2317 | 2239 | -3 |
+| `fast/fast` | 512×2048×512 | 8 | 401 | 387 | -3 |
+| `fast/fast` | 1024×2048×1024 | 16 | 2342 | 2360 | +1 |
+| `fast/fast` | 512×2048×512 | 16 | 807 | 774 | -4 |
 
-**Mean |err| ~6 %** over these 16 distinct clean shapes, most within ±5 %. The two outliers are the
-thin corners — `512×2048×512` (`M=N=512`, +42 %) and `1024×256×1024` (thin `K`, −18 %) — where a small
-per-core tile underfills *on top of* the slow rate (a follow-up bmm `pt_eff`). The `3d2d` shared-weight
-projection (one rank-3 operand) and the fast `[1,0,2]` layout do NOT take the term and keep their prior
-errors; low-core and B = 2 bmm are gated out and remain unmodeled. So the term closes the *normal* bmm
-case (the old −68 % category) to ~6 % while leaving the flagged corners honest. (The earlier two-rate
-weight-reread model is superseded — the bytes are layout-identical; the penalty is a compute rate.)
+**Mean |err| 4.1 %** over these 46 shapes, and the four layout
+combos are now predicted equally well — the point of the additive form. The two outliers are the
+thin corners: `512×2048×512` (M = N = 512, +40 %) and `1024×256×1024` (thin K, −19 %), where a small
+per-core tile underfills the array *on top of* the layout rate; that is a bmm-specific `pt_eff`, left
+for the follow-up sweep. So the normal bmm case — the old −68 % category — is closed to a few
+percent, with the flagged corners stated rather than fitted. (The earlier two-rate
+weight-reread model is superseded: the bytes are layout-identical, so the penalty is a compute rate.)
 
 ---
 
