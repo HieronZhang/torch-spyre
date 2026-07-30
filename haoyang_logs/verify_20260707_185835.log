@@ -1,0 +1,29 @@
+### neg
+  neg          read=16777216B write=16777216B lx=0B
+SUMMARY op=neg rows=2048 cols=4096 cores=32 tiles=0 lx=1 io_hbm_bytes=33554432 kernel_us=322.383 pred_us=319.997 err_pct=-0.7 bw_gbps=104.1 memset_us=278.221 other_dev_us=984.797 total_dev_us=1585.401
+### add4
+  add          read=33554432B write=0B lx=16777216B
+  add_1        read=16777216B write=0B lx=33554432B
+  add_2        read=16777216B write=16777216B lx=16777216B
+SUMMARY op=add4 rows=2048 cols=4096 cores=32 tiles=0 lx=1 io_hbm_bytes=83886080 kernel_us=717.377 pred_us=753.873 err_pct=+5.1 bw_gbps=116.9 memset_us=260.271 other_dev_us=908.016 total_dev_us=1885.664
+### transpose
+  clone        read=16777216B write=16777216B lx=0B [restickify]
+SUMMARY op=transpose rows=2048 cols=4096 cores=32 tiles=0 lx=1 io_hbm_bytes=33554432 kernel_us=287.273 pred_us=289.262 err_pct=+0.7 bw_gbps=116.8 memset_us=282.023 other_dev_us=921.793 total_dev_us=1491.089
+### cat0
+  clone        read=16777216B write=33554432B lx=0B [stick_scatter]
+SUMMARY op=cat0 rows=2048 cols=4096 cores=32 tiles=0 lx=1 io_hbm_bytes=50331648 kernel_us=840.704 pred_us=838.861 err_pct=-0.2 bw_gbps=59.9 memset_us=380.545 other_dev_us=2289.910 total_dev_us=3511.159
+### cat1
+  clone        read=16777216B write=33554432B lx=0B
+SUMMARY op=cat1 rows=2048 cols=4096 cores=32 tiles=0 lx=1 io_hbm_bytes=50331648 kernel_us=467.196 pred_us=431.846 err_pct=-7.6 bw_gbps=107.7 memset_us=384.704 other_dev_us=2251.833 total_dev_us=3103.733
+### sumrow
+  sum_1        read=16777216B write=262144B lx=0B [reduction: combine 0ns (k=1)]
+SUMMARY op=sumrow rows=2048 cols=4096 cores=32 tiles=0 lx=1 io_hbm_bytes=17039360 kernel_us=112.443 pred_us=115.100 err_pct=+2.4 bw_gbps=151.5 memset_us=27.722 other_dev_us=23.793 total_dev_us=163.958
+### sumcol
+  sum_1        read=16777216B write=8192B lx=0B [reduction: combine 0ns (k=1)] [reduce_outer]
+SUMMARY op=sumcol rows=2048 cols=4096 cores=32 tiles=0 lx=1 io_hbm_bytes=16785408 kernel_us=148.958 pred_us=148.543 err_pct=-0.3 bw_gbps=112.7 memset_us=18.502 other_dev_us=14.970 total_dev_us=182.430
+### mmwd 4x8x1 M=2048 K=4096 N=2048
+SUMMARY op=mmwd rows=2048 cols=4096 cores=32 tiles=0 lx=1 io_hbm_bytes=41943040 kernel_us=665.832 pred_us=666.113 err_pct=+0.0 bw_gbps=63.0 memset_us=255.102 other_dev_us=410.271 total_dev_us=1331.205
+### mmwd 4x8x1 M=8192 K=2048 N=2048
+SUMMARY op=mmwd rows=8192 cols=2048 cores=32 tiles=0 lx=1 io_hbm_bytes=75497472 kernel_us=1600.302 pred_us=1608.516 err_pct=+0.5 bw_gbps=47.2 memset_us=431.445 other_dev_us=2210.753 total_dev_us=4242.500
+### mmwd 2x2x1 M=2048 K=2048 N=2048
+SUMMARY op=mmwd rows=2048 cols=2048 cores=4 tiles=0 lx=1 io_hbm_bytes=25165824 kernel_us=2014.470 pred_us=2085.266 err_pct=+3.5 bw_gbps=12.5 memset_us=181.780 other_dev_us=448.142 total_dev_us=2644.392

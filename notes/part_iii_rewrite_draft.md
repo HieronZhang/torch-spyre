@@ -1,0 +1,108 @@
+# Part III rewrite DRAFT — matmul compute/HBM overlap (cats 3+4+6)
+
+**STATUS: DRAFT, not merged.** This is the report-ready prose for the coordinated Part III
+rework (the cat-3 overlap mechanism + operand-aware spill + cat-4 bmm + cat-6 coarse). It is
+kept OUT of `cost_model_report.md` until the model actually ships, so the report keeps tracking
+the *shipped* model (γ=0.46, peak 1140). Merge §9/§10/§11 below when the code change lands;
+FINALIZE the numeric coefficients (peak, γ, spill) on the clean forced-core sweep data
+(`run_matmul_overlap_iso_sweep.sh` + `run_coarse_bwcores_sweep.sh`) — the values here are from the
+noisy overnight data and are provisional. Full spec + validation in `cost_model_status.md`.
+
+> **🛑 2026-07-24 (session 2) CLEAN-DATA VERDICT — DO NOT MERGE THIS REWORK.** The clean, reps=7
+> forced-core sweep (`MMISO_CORE`, model sha fe3de66) landed. On it the **shipped** model (peak 1140,
+> γ 0.46, shipped overlap form) scores **RMS 6.0 %, mean +0.1 %, every point < 12 %** — it is already
+> adequate. The full Part-III package (read-overlap + 2·min + γ 0.70 + peak 1046) scores **5.6 %** — a
+> 0.4 pt gain that is *within the 0.8 % cv noise floor* — and peak 1046 *alone* REGRESSES the clean data
+> to **9.0 % (mean −6.5 %)**. So the large improvement that motivated this rework (5.4 % vs 9.0 % on the
+> OLD c201383 cohort) was a **noisy-data artifact**: the cohort was saturated/high-CV, γ was
+> unidentifiable, and the co-fit terms were compensating for each other. **Decision: keep the shipped
+> peak/γ/overlap form; shelve §9/§10 (peak/γ) and the coordinated re-fit.** The operand-min spill (§11)
+> and the bmm-layout / coarse terms are SEPARATE, per-op effects and are handled on the shipped model,
+> not as a coupled Part-III change. This whole draft is retained only as a record of the (noise-driven)
+> investigation.
+>
+> **⚠️ 2026-07-24 ADVERSARIAL DOWNGRADES (apply before merging — see the status-doc block):**
+> (1) peak is **≈1040**, not 1046 (1046 folds in M=4096's outlier 1073). (2) **γ is NOT a proven
+> constant** — it is UNIDENTIFIABLE on the clean (saturated, low-core) data and binds only on ~30
+> noisy 16/32-core points where the RMS-vs-γ valley is flat over 0.4–0.7. What the data proves is
+> that *reads hide*; the `min(read, γ·compute)` regime-switch is what makes a single γ *defensible*,
+> not a measured invariance. State γ as a central value, not a pinned constant — the corrected re-fit
+> harness (`analyze_matmul_overlap.py`) actually prefers **γ≈0.70** (entanglement best-fit 0.70–0.78;
+> unsaturated valley min ~0.7), a bit above the 0.6 in the body below. (3) The
+> writes-serial benefit is small (~0.2–0.3pt, within noise) and the write-heavy "shape family"
+> evidence is one noisy shape — keep writes-serial as a modeling choice that never hurts, but drop
+> the "markedly better / most visible on write-heavy shapes" claim below. (4) The entanglement
+> rationale for the *spill* term is wrong: 2·min helps under BOTH overlap forms (~1.3pt each), so it
+> is a robust standalone win; the genuine entanglement is **peak↔overlap-form** (dropping peak alone
+> regresses the shipped form). These rest on 132 records, all `is_current=False`, one noisy log —
+> re-fit on the clean overnight data before shipping.
+
+---
+
+## §9 (revised). The compute term — a measured sustained rate, not the datasheet peak
+
+The per-core compute time is `MACs / cores / (mac_peak · pt_eff)`. The load-bearing constant is
+`mac_peak`, the sustained MAC rate one core drives into the PT array. Forcing a matmul onto a
+*single* core makes it purely compute-bound (its HBM floor is 2–5 % of the kernel time), so the
+measured `MACs / (cores · time)` reads the rate directly, with no overlap or memory to untangle.
+Across every compute-dominant run the implied rate is **~1046 MAC/ns/core** (tight — a few percent
+spread over dozens of shapes), well below the 1536 datasheet peak. This is the number to use.
+
+Why this matters beyond accuracy: the previously-shipped model used 1140 here, ~9 % high. A
+9 %-inflated compute term does not just shift predictions — it forces the *overlap* term to absorb
+the error, and because the amount it must absorb depends on the compute/memory balance, that made
+a single overlap constant look as if it varied with shape. Getting the rate right is what lets the
+overlap be a clean constant (next section).
+
+## §10 (revised). Compute and HBM overlap — compute-bounded double-buffering
+
+**Observation.** Adding compute and memory over-predicts: the real kernel is faster than the sum,
+because the accelerator streams the *next* tile's operands from memory while the array computes the
+current one (double-buffering). But the two do not simply run concurrently — three facts pin the
+shape of the overlap, all measured:
+
+1. **Only the loads hide, not the stores.** Operand *reads* can be prefetched under compute; the
+   output *write* happens after its values are computed, so it cannot hide behind the same kernel's
+   compute. Charging writes serially (and hiding only reads) fits markedly better than hiding all
+   memory — most visibly on write-heavy shapes (wide-N, thin-K), which the all-memory form
+   over-optimistically predicts.
+2. **The hidden amount is capped by the compute duration.** Loads hide only while the array is
+   running, so at most a fixed fraction γ of the compute time is an overlap window. When the reads
+   are shorter than that window they hide completely; when they are longer, only γ·compute hides.
+3. **γ is a constant.** It is the double-buffer window fraction, a property of the pipeline, not of
+   the shape. (An earlier analysis appeared to show γ rising with tile aspect ratio and falling with
+   write/read ratio; that turned out to be measurement noise on un-repeated points — the trend
+   vanished on repeat-backed data. See the methodology note on back-out noise.)
+
+**Model.**
+
+```
+T = compute + read + write + turn − min(read, γ·compute)
+    read  = (operand_bytes + spill) / bw_read     (loads — double-buffered)
+    write = output_bytes / bw_write                (stores — serial)
+    γ ≈ 0.6   (double-buffer window fraction, constant)
+```
+
+For a non-matmul bundle compute = 0, so `min(read, 0) = 0` and the term vanishes — pointwise,
+reduction and transport ops are untouched. The effective overlap *appears* to vary with shape —
+a compute-heavy tile hides all its reads (`T → compute + write`), a memory-heavy tile hides only
+γ·compute — but that variation is a consequence of `min(read, γ·compute)` switching regimes, with a
+single constant γ underneath. That is the resolution of "γ cannot be constant": it is constant; the
+*net* overlap is access-pattern-dependent by construction.
+
+## §11 (revised). Operand-aware spill — re-read is bounded by the smaller operand
+
+When the per-core output tile `(M/m)·(N/n)` overflows on-chip capacity, an operand must be
+re-streamed from memory. The re-read is **not** symmetric in the two operands: the compiler keeps
+the larger operand resident and re-streams the smaller one, so the extra traffic scales with
+`2·min(|A|, |B|)`, not `(|A|+|B|)`. The old symmetric form over-charged tall-operand / thin-N tiles
+(where |A| ≫ |B|) and under-charged wide-N tiles — a bidirectional residual that the min form
+removes. The re-read *fraction* still grows with how far the tile overflows the capacity knee
+(`f(area)` unchanged), and the re-read is charged to the read side, so it is itself double-buffered.
+
+**Note on entanglement (why this ships as one change).** These three revisions are coupled: the
+operand-aware spill *hurts* under the old `γ·min(compute,mem)` overlap form and *helps* under the
+read-overlap form; raising the peak shifts what the spill and split terms must absorb. They were
+originally co-fit, so they must be re-fit together. The bmm layout rate (cat 4) and the coarse
+per-tile fill/drain (cat 6, the same double-buffering physics applied per coarse tile) build on this
+same compute model and land in the same coordinated change.

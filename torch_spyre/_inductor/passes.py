@@ -88,6 +88,11 @@ from .constants import DEVICE_NAME
 from .deadcode_elimination import deadcode_elimination
 from .dedup_constants import dedup_and_promote_constants
 from .wsr.coarse_tile import coarse_tile
+from .chunk_large_tensors import chunk_large_tensors
+from .coarse_tile import coarse_tile
+from .dump_fx_graph import dump_fx_graph
+from .dump_loop_ir import dump_loop_ir
+from .dump_cost_model import dump_cost_model
 from .split_multi_ops import split_multi_ops, validate_ops
 
 
@@ -224,6 +229,9 @@ class CustomPostPasses(_SpyreGraphPassPipeline):
     post-grad FX graph late in the sequence defined in `post_grad.post_grad_passes`.
     """
 
+    """
+    The list of custom passes to run
+    """
     def __init__(self):
         super().__init__(
             [
@@ -237,6 +245,7 @@ class CustomPostPasses(_SpyreGraphPassPipeline):
                 mm_to_bmm_pass.apply,
                 mark_direct_unit_bmm_pass,
                 bmm_unflatten_pass.apply,
+                dump_fx_graph,
             ]
         )
 
@@ -453,6 +462,7 @@ class CustomPreSchedulingPasses:
             logger.info(
                 "BEFORE PRE-SCHEDULING\n%s", format_operations(graph.operations)
             )
+        dump_loop_ir(graph.operations, "LoopLevel IR - BEFORE pre-scheduling passes")
 
         for pass_fn in self.passes:
             pass_name = _get_pass_name(pass_fn)
@@ -477,6 +487,8 @@ class CustomPreSchedulingPasses:
 
         if logger.isEnabledFor(logging.INFO):
             logger.info("AFTER PRE-SCHEDULING\n%s", format_operations(graph.operations))
+        dump_loop_ir(graph.operations, "LoopLevel IR - AFTER pre-scheduling passes")
+        dump_cost_model(graph.operations)
 
     def uuid(self) -> Any | None:
         return _uuid(self.passes)

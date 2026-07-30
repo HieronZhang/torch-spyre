@@ -20,6 +20,7 @@ from torch_spyre.profiler._ffdc import (
     CATEGORY_UNIMPLEMENTED,
     with_ffdc,
 )
+from torch_spyre.execution.profiling import kernel_timer
 
 logger = get_inductor_logger("kernel_runner")
 

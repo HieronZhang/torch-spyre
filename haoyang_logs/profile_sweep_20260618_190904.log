@@ -1,0 +1,9 @@
+==== golden profiler re-sweep Thu Jun 18 19:09:04 UTC 2026 ====
+git: 05b1b5d  rows: 2048  sections: A E F
+## A size-sweep fit (neg, gelu)
+SUMMARY op=neg rows=2048 cols=512 io_hbm_bytes=4194304 kernel_us=36.100 bw_gbps=116.2 memset_us=41.302 other_dev_us=0.000 total_dev_us=77.402
+SUMMARY op=gelu rows=2048 cols=512 io_hbm_bytes=4194304 kernel_us=35.985 bw_gbps=116.6 memset_us=69.540 other_dev_us=0.000 total_dev_us=105.525
+SUMMARY op=neg rows=2048 cols=1024 io_hbm_bytes=8388608 kernel_us=77.210 bw_gbps=108.6 memset_us=64.121 other_dev_us=0.000 total_dev_us=141.331
+SUMMARY op=gelu rows=2048 cols=1024 io_hbm_bytes=8388608 kernel_us=75.933 bw_gbps=110.5 memset_us=70.733 other_dev_us=0.000 total_dev_us=146.666
+SUMMARY op=neg rows=2048 cols=2048 io_hbm_bytes=16777216 kernel_us=157.065 bw_gbps=106.8 memset_us=111.349 other_dev_us=0.000 total_dev_us=268.414
+SUMMARY op=gelu rows=2048 cols=2048 io_hbm_bytes=16777216 kernel_us=161.277 bw_gbps=104.0 memset_us=117.613 other_dev_us=0.000 total_dev_us=278.890
