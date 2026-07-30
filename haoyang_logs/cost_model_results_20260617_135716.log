@@ -1,0 +1,170 @@
+================ cost-model calibration run ================
+date:    Wed Jun 17 13:57:16 UTC 2026
+examples/run_cost_model_plan.sh: line 42: hostname: command not found
+host:    
+git:     4980692 dev1
+python:  3.12.13 torch 2.11.0+aiu.kineto.1.1.2
+runs=100 warmup=20  SENCORES=default(32)
+log:     haoyang_logs/cost_model_results_20260617_135716.log
+===========================================================
+
+########################################################################
+## RUNG11a arithmetic: sumrow[512x4096]
+## + env BENCH_OP=sumrow BENCH_ROWS=512 BENCH_COLS=4096 python examples/bench_ops.py
+########################################################################
+[31m ERRR 17.06.2026 13:58:39.826052 [            runtime_stream.cpp: 141] RuntimeStream::synchronize() still waiting after 60000ms: in_flight_=1 device=0 — possible lost completion[0m
+[31m ERRR 17.06.2026 13:58:39.826341 [            runtime_stream.cpp: 150] RuntimeStream::synchronize() device=0 completed after 60000ms (1 timeout warning(s))[0m
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  sum_1        out=512 cores=32 hbm=4195328B lx=0B [reduction: read@176, combine 0ns (k=1)]
+      output hbm 512 elems
+      input  hbm 2097152 elems
+  => T = 43.84 us  (fill 20us; pointwise @111, reductions @176 + ring combine)
+
+sumrow[512x4096]  runs=100  LX_PLANNING=True  ALL_LX=False
+==== SPYRE_PROFILE: per-kernel host launch timing (min strips host jitter) ====
+kernel                                    count     min_us    mean_us     max_us
+sdsc_fused_sum_0                            100     52.747     57.963     60.521
+[note] SPYRE_PROFILE_SYNC on: times are per-kernel DEVICE latency (serialized); trust the min.
+
+########################################################################
+## RUNG11a arithmetic: amax[512x4096]
+## + env BENCH_OP=amax BENCH_ROWS=512 BENCH_COLS=4096 python examples/bench_ops.py
+########################################################################
+[31m ERRR 17.06.2026 14:00:00.357643 [            runtime_stream.cpp: 141] RuntimeStream::synchronize() still waiting after 60000ms: in_flight_=1 device=0 — possible lost completion[0m
+[31m ERRR 17.06.2026 14:00:00.357956 [            runtime_stream.cpp: 150] RuntimeStream::synchronize() device=0 completed after 60000ms (1 timeout warning(s))[0m
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  amax         out=512 cores=32 hbm=4195328B lx=0B [reduction: read@176, combine 0ns (k=1)]
+      output hbm 512 elems
+      input  hbm 2097152 elems
+  => T = 43.84 us  (fill 20us; pointwise @111, reductions @176 + ring combine)
+
+amax[512x4096]  runs=100  LX_PLANNING=True  ALL_LX=False
+==== SPYRE_PROFILE: per-kernel host launch timing (min strips host jitter) ====
+kernel                                    count     min_us    mean_us     max_us
+sdsc_fused_amax_0                           100     54.507     58.327     74.430
+[note] SPYRE_PROFILE_SYNC on: times are per-kernel DEVICE latency (serialized); trust the min.
+
+########################################################################
+## RUNG11a arithmetic: mean[512x4096]
+## + env BENCH_OP=mean BENCH_ROWS=512 BENCH_COLS=4096 python examples/bench_ops.py
+########################################################################
+[31m ERRR 17.06.2026 14:01:39.145088 [            runtime_stream.cpp: 141] RuntimeStream::synchronize() still waiting after 60000ms: in_flight_=1 device=0 — possible lost completion[0m
+[31m ERRR 17.06.2026 14:01:39.145358 [            runtime_stream.cpp: 150] RuntimeStream::synchronize() device=0 completed after 60000ms (1 timeout warning(s))[0m
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  mean         out=512 cores=32 hbm=4195328B lx=0B [reduction: read@176, combine 0ns (k=1)]
+      output hbm 512 elems
+      input  hbm 2097152 elems
+  => T = 43.84 us  (fill 20us; pointwise @111, reductions @176 + ring combine)
+
+mean[512x4096]  runs=100  LX_PLANNING=True  ALL_LX=False
+==== SPYRE_PROFILE: per-kernel host launch timing (min strips host jitter) ====
+kernel                                    count     min_us    mean_us     max_us
+sdsc_fused_mean_0                           100     53.255     58.211     62.868
+[note] SPYRE_PROFILE_SYNC on: times are per-kernel DEVICE latency (serialized); trust the min.
+
+########################################################################
+## RUNG11b read-BW: sumrow[512x1024]
+## + env BENCH_OP=sumrow BENCH_ROWS=512 BENCH_COLS=1024 python examples/bench_ops.py
+########################################################################
+[31m ERRR 17.06.2026 14:03:00.095282 [            runtime_stream.cpp: 141] RuntimeStream::synchronize() still waiting after 60000ms: in_flight_=1 device=0 — possible lost completion[0m
+[31m ERRR 17.06.2026 14:03:00.095553 [            runtime_stream.cpp: 150] RuntimeStream::synchronize() device=0 completed after 60000ms (1 timeout warning(s))[0m
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  sum_1        out=512 cores=32 hbm=1049600B lx=0B [reduction: read@176, combine 0ns (k=1)]
+      output hbm 512 elems
+      input  hbm 524288 elems
+  => T = 25.96 us  (fill 20us; pointwise @111, reductions @176 + ring combine)
+
+sumrow[512x1024]  runs=100  LX_PLANNING=True  ALL_LX=False
+==== SPYRE_PROFILE: per-kernel host launch timing (min strips host jitter) ====
+kernel                                    count     min_us    mean_us     max_us
+sdsc_fused_sum_0                            100     34.461     39.537     42.191
+[note] SPYRE_PROFILE_SYNC on: times are per-kernel DEVICE latency (serialized); trust the min.
+
+########################################################################
+## RUNG11c combine: sumall[512x1024]
+## + env BENCH_OP=sumall BENCH_ROWS=512 BENCH_COLS=1024 python examples/bench_ops.py
+########################################################################
+[31m ERRR 17.06.2026 14:04:24.192631 [            runtime_stream.cpp: 141] RuntimeStream::synchronize() still waiting after 60000ms: in_flight_=1 device=0 — possible lost completion[0m
+[31m ERRR 17.06.2026 14:04:24.192896 [            runtime_stream.cpp: 150] RuntimeStream::synchronize() device=0 completed after 60000ms (1 timeout warning(s))[0m
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  sum_1        out=1 cores=32 hbm=1048578B lx=0B [reduction: read@176, combine 4ns (k=32)]
+      output hbm 1 elems
+      input  hbm 524288 elems
+  => T = 25.96 us  (fill 20us; pointwise @111, reductions @176 + ring combine)
+
+sumall[512x1024]  runs=100  LX_PLANNING=True  ALL_LX=False
+==== SPYRE_PROFILE: per-kernel host launch timing (min strips host jitter) ====
+kernel                                    count     min_us    mean_us     max_us
+sdsc_fused_sum_0                            100     38.816     41.072     43.578
+[note] SPYRE_PROFILE_SYNC on: times are per-kernel DEVICE latency (serialized); trust the min.
+
+########################################################################
+## RUNG11b read-BW: sumrow[512x4096]
+## + env BENCH_OP=sumrow BENCH_ROWS=512 BENCH_COLS=4096 python examples/bench_ops.py
+########################################################################
+[31m ERRR 17.06.2026 14:05:46.954549 [            runtime_stream.cpp: 141] RuntimeStream::synchronize() still waiting after 60000ms: in_flight_=1 device=0 — possible lost completion[0m
+[31m ERRR 17.06.2026 14:05:46.954823 [            runtime_stream.cpp: 150] RuntimeStream::synchronize() device=0 completed after 60000ms (1 timeout warning(s))[0m
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  sum_1        out=512 cores=32 hbm=4195328B lx=0B [reduction: read@176, combine 0ns (k=1)]
+      output hbm 512 elems
+      input  hbm 2097152 elems
+  => T = 43.84 us  (fill 20us; pointwise @111, reductions @176 + ring combine)
+
+sumrow[512x4096]  runs=100  LX_PLANNING=True  ALL_LX=False
+==== SPYRE_PROFILE: per-kernel host launch timing (min strips host jitter) ====
+kernel                                    count     min_us    mean_us     max_us
+sdsc_fused_sum_0                            100     55.820     58.432     61.161
+[note] SPYRE_PROFILE_SYNC on: times are per-kernel DEVICE latency (serialized); trust the min.
+
+########################################################################
+## RUNG11c combine: sumall[512x4096]
+## + env BENCH_OP=sumall BENCH_ROWS=512 BENCH_COLS=4096 python examples/bench_ops.py
+########################################################################
+[31m ERRR 17.06.2026 14:07:10.208639 [            runtime_stream.cpp: 141] RuntimeStream::synchronize() still waiting after 60000ms: in_flight_=1 device=0 — possible lost completion[0m
+[31m ERRR 17.06.2026 14:07:10.208867 [            runtime_stream.cpp: 150] RuntimeStream::synchronize() device=0 completed after 60000ms (1 timeout warning(s))[0m
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  sum_1        out=1 cores=32 hbm=4194306B lx=0B [reduction: read@176, combine 4ns (k=32)]
+      output hbm 1 elems
+      input  hbm 2097152 elems
+  => T = 43.84 us  (fill 20us; pointwise @111, reductions @176 + ring combine)
+
+sumall[512x4096]  runs=100  LX_PLANNING=True  ALL_LX=False
+==== SPYRE_PROFILE: per-kernel host launch timing (min strips host jitter) ====
+kernel                                    count     min_us    mean_us     max_us
+sdsc_fused_sum_0                            100     54.116     59.174     63.915
+[note] SPYRE_PROFILE_SYNC on: times are per-kernel DEVICE latency (serialized); trust the min.
+
+########################################################################
+## RUNG11b read-BW: sumrow[512x16384]
+## + env BENCH_OP=sumrow BENCH_ROWS=512 BENCH_COLS=16384 python examples/bench_ops.py
+########################################################################
+[31m ERRR 17.06.2026 14:08:34.405378 [            runtime_stream.cpp: 141] RuntimeStream::synchronize() still waiting after 60000ms: in_flight_=1 device=0 — possible lost completion[0m
+[31m ERRR 17.06.2026 14:09:34.405589 [            runtime_stream.cpp: 141] RuntimeStream::synchronize() still waiting after 120000ms: in_flight_=1 device=0 — possible lost completion[0m

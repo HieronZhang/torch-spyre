@@ -1,0 +1,344 @@
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (2048, 4096) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (2048, 4096) spyre:0
+%arg2_1 : [num_users=1] = placeholder[target=arg2_1]    # torch.float16 (2048, 4096) spyre:0
+%arg3_1 : [num_users=1] = placeholder[target=arg3_1]    # torch.float16 (2048, 4096) spyre:0
+%arg4_1 : [num_users=1] = placeholder[target=arg4_1]    # torch.float16 (2048, 4096) spyre:0
+%arg5_1 : [num_users=1] = placeholder[target=arg5_1]    # torch.float16 (2048, 4096) spyre:0
+%add : [num_users=1] = call_function[target=torch.ops.aten.add.Tensor](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (2048, 4096) spyre:0
+%add_1 : [num_users=1] = call_function[target=torch.ops.aten.add.Tensor](args = (%add, %arg2_1), kwargs = {})    # torch.float16 (2048, 4096) spyre:0
+%add_2 : [num_users=1] = call_function[target=torch.ops.aten.add.Tensor](args = (%add_1, %arg3_1), kwargs = {})    # torch.float16 (2048, 4096) spyre:0
+%add_3 : [num_users=1] = call_function[target=torch.ops.aten.add.Tensor](args = (%add_2, %arg4_1), kwargs = {})    # torch.float16 (2048, 4096) spyre:0
+%add_4 : [num_users=1] = call_function[target=torch.ops.aten.add.Tensor](args = (%add_3, %arg5_1), kwargs = {})    # torch.float16 (2048, 4096) spyre:0
+return (add_4,)
+[12 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 4096 * i0)
+      tmp1 = ops.load(arg1_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add,
+  origins=OrderedSet([add]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 100, in _sum_all,
+      acc = acc + t,
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf0, i1 + 4096 * i0)
+      tmp1 = ops.load(arg2_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add_1,
+  origins=OrderedSet([add_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 100, in _sum_all,
+      acc = acc + t,
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 4096 * i0)
+      tmp1 = ops.load(arg3_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add_2,
+  origins=OrderedSet([add_2]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 100, in _sum_all,
+      acc = acc + t,
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 4096 * i0)
+      tmp1 = ops.load(arg4_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add_3,
+  origins=OrderedSet([add_3]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 100, in _sum_all,
+      acc = acc + t,
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf3, i1 + 4096 * i0)
+      tmp1 = ops.load(arg5_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add_4,
+  origins=OrderedSet([add_4]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 100, in _sum_all,
+      acc = acc + t,
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1], device_layout=SpyreTensorLayout(device_size=[64, 2048, 64], stride_map =[64, 4096, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 32, d1: 1}
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 4096 * i0)
+      tmp1 = ops.load(arg1_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add,
+  origins=OrderedSet([add]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 100, in _sum_all,
+      acc = acc + t,
+  ,
+  }
+)
+
+op1: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1], device_layout=SpyreTensorLayout(device_size=[64, 2048, 64], stride_map =[64, 4096, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 32, d1: 1}
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf0, i1 + 4096 * i0)
+      tmp1 = ops.load(arg2_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add_1,
+  origins=OrderedSet([add_1]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 100, in _sum_all,
+      acc = acc + t,
+  ,
+  }
+)
+
+op2: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1], device_layout=SpyreTensorLayout(device_size=[64, 2048, 64], stride_map =[64, 4096, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 32, d1: 1}
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf1, i1 + 4096 * i0)
+      tmp1 = ops.load(arg3_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add_2,
+  origins=OrderedSet([add_2]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 100, in _sum_all,
+      acc = acc + t,
+  ,
+  }
+)
+
+op3: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1], device_layout=SpyreTensorLayout(device_size=[64, 2048, 64], stride_map =[64, 4096, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 32, d1: 1}
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf2, i1 + 4096 * i0)
+      tmp1 = ops.load(arg4_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add_3,
+  origins=OrderedSet([add_3]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 100, in _sum_all,
+      acc = acc + t,
+  ,
+  }
+)
+
+op4: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1], device_layout=SpyreTensorLayout(device_size=[64, 2048, 64], stride_map =[64, 4096, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 32, d1: 1}
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(buf3, i1 + 4096 * i0)
+      tmp1 = ops.load(arg5_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add_4,
+  origins=OrderedSet([add_4]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 100, in _sum_all,
+      acc = acc + t,
+  ,
+  }
+)
+
+[5 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  add          read=33554432B write=16777216B lx=0B
+      output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  arg1_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  add_1        read=33554432B write=16777216B lx=0B
+      output op1                    torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf0                   torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  arg2_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  add_2        read=33554432B write=16777216B lx=0B
+      output op2                    torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf1                   torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  arg3_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  add_3        read=33554432B write=16777216B lx=0B
+      output op3                    torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf2                   torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  arg4_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  add_4        read=33554432B write=16777216B lx=0B
+      output op4                    torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  buf3                   torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  arg5_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  -- prediction (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+     R=167772160B (read)   W=83886080B (write)
+     base = (R+W)/150 = 1677.72 us
+     turn = a*min(R,W) = 0.00574*83886080 = 481.51 us
+     => T_model = 2159.23 us
+
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+[W729 12:13:52.662560247 collection.cpp:1077] Warning: Detected an event which was likely passed to kineto by the PyTorch profiler, but is not present in the set of known events: [memory] This most likely means that Kineto has not maintained address stability for this event. Please report this to the PyTorch team. (function operator())
+== add6[2048x4096] -- profiler kernel time vs cost-model I/O ==
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    Self SPYRE  Self SPYRE %   SPYRE total  SPYRE time avg       CPU Mem  Self CPU Mem     SPYRE Mem  Self SPYRE Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+sdsc_fused_add_0_f2zlbt34/spyreCodeDir/bundle.mlir#2...         0.00%       0.000us         0.00%       0.000us       0.000us       2.025ms        55.77%       2.025ms       2.025ms           0 B           0 B           0 B           0 B             1  
+                                          Memcpy (DtoH)         0.00%       0.000us         0.00%       0.000us       0.000us     804.445us        22.16%     804.445us     201.111us           0 B           0 B           0 B           0 B             4  
+sdsc_fused_add_1_vhora3jq/spyreCodeDir/bundle.mlir#2...         0.00%       0.000us         0.00%       0.000us       0.000us     494.574us        13.62%     494.574us     494.574us           0 B           0 B           0 B           0 B             1  
+                                        Memset (Device)         0.00%       0.000us         0.00%       0.000us       0.000us     289.459us         7.97%     289.459us      48.243us           0 B           0 B           0 B           0 B             6  
+                                          Memcpy (HtoD)         0.00%       0.000us         0.00%       0.000us       0.000us      17.472us         0.48%      17.472us       8.736us           0 B           0 B           0 B           0 B             2  
+                               TorchDynamo Cache Lookup         0.19%      51.323us         0.19%      51.323us      51.323us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                             Torch-Compiled Region: 0/0         0.27%      70.304us        10.08%       2.661ms       2.661ms       0.000us         0.00%       0.000us       0.000us           0 B           0 B      16.00 MB           0 B             1  
+                                      Pregraph bytecode         0.02%       4.746us         0.02%       4.746us       4.746us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                 AOTDispatcher Runtime Wrapper Prologue         0.04%      10.892us         0.04%      10.892us      10.892us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                        ## Call CompiledFxGraph None ##         0.30%      79.601us         9.76%       2.575ms       2.575ms       0.000us         0.00%       0.000us       0.000us           0 B           0 B      16.00 MB      16.00 MB             1  
+                        launch_jobplan:sdsc_fused_add_0         1.56%     411.569us         1.57%     414.517us     414.517us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                              aiuLaunchDMIControlBlocks         0.01%       2.648us         0.01%       2.648us       1.324us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             2  
+                                 aiuLaunchControlBlocks         0.01%       2.354us         0.01%       2.354us       1.177us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             2  
+                        launch_jobplan:sdsc_fused_add_1         7.88%       2.079ms         7.89%       2.081ms       2.081ms       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                                               aten::to         0.01%       3.202us        89.72%      23.678ms      23.678ms       0.000us         0.00%       0.000us       0.000us      16.00 MB           0 B           0 B           0 B             1  
+                                         aten::_to_copy         0.07%      17.481us        89.71%      23.674ms      23.674ms       0.000us         0.00%       0.000us       0.000us      16.00 MB           0 B           0 B           0 B             1  
+                                    aten::empty_strided         0.03%       6.777us         0.03%       6.777us       6.777us       0.000us         0.00%       0.000us       0.000us      16.00 MB      16.00 MB           0 B           0 B             1  
+                                            aten::copy_         0.05%      12.690us        89.62%      23.650ms      23.650ms       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                                       aten::_copy_from        89.56%      23.633ms        89.57%      23.637ms      23.637ms       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                              aiuLaunchDMOControlBlocks         0.02%       3.982us         0.02%       3.982us       0.996us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             4  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 26.390ms
+Self SPYRE time total: 3.631ms
+
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg1_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   op add_1
+IO     output op1                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  buf0                   torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg2_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   op add_2
+IO     output op2                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  buf1                   torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg3_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   op add_3
+IO     output op3                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  buf2                   torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg4_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   op add_4
+IO     output op4                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  buf3                   torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg5_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   => HBM I/O total = 251658240 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=167772160 B (read)   W=83886080 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 1677.72 us
+MODEL   turn = a*min(R,W) = 0.00574*83886080 = 481.51 us
+MODEL   => T_model = 2159.23 us
+MODEL FEATS [{"name":"add","is_reduction":false,"out_elems":8388608,"cores":32,"dtype_bytes":2,"args":[{"name":"op0","role":"output","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"arg0_1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"arg1_1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1}],"reduction_cores":1,"loop_trip":1,"tiles_output_dim":false,"tile_rows_per_core":0.0,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""},{"name":"add_1","is_reduction":false,"out_elems":8388608,"cores":32,"dtype_bytes":2,"args":[{"name":"op1","role":"output","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"buf0","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"arg2_1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1}],"reduction_cores":1,"loop_trip":1,"tiles_output_dim":false,"tile_rows_per_core":0.0,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""},{"name":"add_2","is_reduction":false,"out_elems":8388608,"cores":32,"dtype_bytes":2,"args":[{"name":"op2","role":"output","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"buf1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"arg3_1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1}],"reduction_cores":1,"loop_trip":1,"tiles_output_dim":false,"tile_rows_per_core":0.0,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""},{"name":"add_3","is_reduction":false,"out_elems":8388608,"cores":32,"dtype_bytes":2,"args":[{"name":"op3","role":"output","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"buf2","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"arg4_1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1}],"reduction_cores":1,"loop_trip":1,"tiles_output_dim":false,"tile_rows_per_core":0.0,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""},{"name":"add_4","is_reduction":false,"out_elems":8388608,"cores":32,"dtype_bytes":2,"args":[{"name":"op4","role":"output","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"buf3","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"arg5_1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1}],"reduction_cores":1,"loop_trip":1,"tiles_output_dim":false,"tile_rows_per_core":0.0,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""}]
+TIMING op=add6 reps=1/1 prof_wall_s=0.05 per_rep_s=0.048
+SUMMARY op=add6 rows=2048 cols=4096 cores=32 tiles=0 lx=0 io_hbm_bytes=251658240 kernel_us=2519.603 pred_us=2159.228 err_pct=-14.3 bw_gbps=99.9 memset_us=289.459 other_dev_us=821.917 total_dev_us=3630.979 kernel_us_min=2519.603 kernel_us_median=2519.603 kernel_us_mean=2519.603 kernel_us_std=0.000 kernel_us_cv=0.00 reps=1
