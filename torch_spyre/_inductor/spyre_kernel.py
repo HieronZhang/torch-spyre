@@ -60,7 +60,9 @@ from .op_spec import (
     OpSpec,
     TensorArg,
     UnimplementedOp as OpSpecUnimplementedOp,
+    format_op_spec_list,
 )
+from torch_spyre._inductor.provenance import build_debug_handle
 import logging
 
 logger = get_inductor_logger("spyre_kernel")
@@ -85,6 +87,14 @@ def _preserve_shared_weight_unit_bmm_dim(
     args: Sequence[TensorArg],
     op_info: dict[str, Any],
 ) -> dict[sympy.Symbol, tuple[sympy.Expr, int]]:
+    """Keep a size-one shared-weight BMM batch dim visible to SDSC.
+
+    Plain BMMs with B=1 can lose their batch axis because unit dimensions fold
+    to constant-zero device coordinates. Replacing that axis with a synthetic
+    loop symbol preserves the logical rank. When reordering the physical axes,
+    keep the outer-stick axis before the row axis so SDSC's reverse walk reports
+    [row, outer-stick, batch] for preferred explicit layouts.
+    """
     # TensorArg layout is normalized in-place below to match the surrounding
     # OpSpec construction helpers.
     if SHARED_WEIGHT_UNIT_BMM_INFO_KEY not in op_info:
@@ -113,6 +123,12 @@ def _preserve_shared_weight_unit_bmm_dim(
         ]
 
     target_args = (args[0], args[-1])
+    # The unit-BMM marker is only valid for plain rank-3 BMMs after layout
+    # construction. If a target tensor still carries extra physical axes, such
+    # as attention heads from SDPA, rewriting one axis into the BMM iteration
+    # space can produce an illegal SDSC layout.
+    if any(len(arg.device_size) > 4 for arg in target_args):
+        return it_space
     unit_idxs_by_arg = [_unit_indices(arg) for arg in target_args]
 
     if all(len(unit_idxs) == 0 for unit_idxs in unit_idxs_by_arg):
@@ -134,7 +150,23 @@ def _preserve_shared_weight_unit_bmm_dim(
     for arg, unit_idx in rewrite_targets:
         arg.device_coordinates[unit_idx] = unit_sym
         nonstick = list(range(len(arg.device_size) - 1))
-        order = [unit_idx] + [i for i in reversed(nonstick) if i != unit_idx]
+        stick_symbols = arg.device_coordinates[-1].free_symbols
+        outer_stick_idx = next(
+            (
+                i
+                for i in nonstick
+                if i != unit_idx
+                and bool(arg.device_coordinates[i].free_symbols & stick_symbols)
+            ),
+            None,
+        )
+        if outer_stick_idx is None:
+            order = [unit_idx] + [i for i in reversed(nonstick) if i != unit_idx]
+        else:
+            order = [unit_idx, outer_stick_idx]
+            order += [
+                i for i in reversed(nonstick) if i not in (unit_idx, outer_stick_idx)
+            ]
         order.append(len(arg.device_size) - 1)
         arg.device_size[:] = [arg.device_size[i] for i in order]
         arg.device_coordinates[:] = [arg.device_coordinates[i] for i in order]
@@ -524,7 +556,7 @@ class SpyreKernel(Kernel[CSEVariable]):
         )
         if (
             "lx" not in tensor.layout.allocation
-            and "pool" not in tensor.layout.allocation
+            and "hbm_pool" not in tensor.layout.allocation
         ):
             self.spyre_kernel_args.append((name, tensor_arg))
         return tensor_arg
@@ -665,6 +697,37 @@ class SpyreKernel(Kernel[CSEVariable]):
             if bounds is not None:
                 symbolic_dim_bounds[str(size_expr)] = bounds
 
+        # Provenance is a debug-only feature: a failure building the handle must
+        # never break a compile. build_debug_handle is best-effort, but guard the
+        # call site too so an unexpected node shape can't fail create_op_spec.
+        try:
+            debug_handle = build_debug_handle(ir_node)
+        except Exception:  # noqa: BLE001 - provenance must never fail the build
+            logger.warning(
+                "debug_handle construction failed for op %s; continuing without "
+                "provenance",
+                op,
+                exc_info=True,
+            )
+            debug_handle = None
+
+        if not is_reduction and op != "ReStickifyOpHBM" and not indirect_var_names:
+            stick_vars = {
+                next(iter(arg.device_coordinates[-1].free_symbols))
+                for arg in args
+                if arg.device_coordinates and arg.device_coordinates[-1].free_symbols
+            }
+            assert len(stick_vars) <= 1, (
+                f"create_op_spec: stick mismatch for op={op!r} "
+                f"ir_chain={getattr(debug_handle, 'ir_chain', '?')}: "
+                f"args have different stick loop variables: "
+                + ", ".join(
+                    str(arg.device_coordinates[-1])
+                    for arg in args
+                    if arg.device_coordinates
+                )
+            )
+
         return OpSpec(
             op,
             is_reduction,
@@ -673,6 +736,7 @@ class SpyreKernel(Kernel[CSEVariable]):
             op_info,
             tiled_symbols=tiled_syms,
             symbolic_dim_bounds=symbolic_dim_bounds,
+            debug_handle=debug_handle,
         )
 
     def remove_kernel_local_buffers(self) -> None:
@@ -683,7 +747,7 @@ class SpyreKernel(Kernel[CSEVariable]):
                 continue
             layout = buf.get_layout()
             if isinstance(layout, FixedTiledLayout) and (
-                "lx" in layout.allocation or "pool" in layout.allocation
+                "lx" in layout.allocation or "hbm_pool" in layout.allocation
             ):
                 self.remove_buffer(name)
 
@@ -697,7 +761,7 @@ class SpyreKernel(Kernel[CSEVariable]):
         if not isinstance(layout, FixedTiledLayout):
             raise Unsupported(f"{name} does not have FixedTiledLayout")
         index = sympy_subs(index, V.graph.sizevars.precomputed_replacements)
-        if "lx" not in layout.allocation and "pool" not in layout.allocation:
+        if "lx" not in layout.allocation and "hbm_pool" not in layout.allocation:
             _ = self.args.input(name)
 
         if logger.isEnabledFor(logging.DEBUG):
@@ -724,16 +788,24 @@ class SpyreKernel(Kernel[CSEVariable]):
         layout = buf.get_layout()
         if not isinstance(layout, FixedTiledLayout):
             raise Unsupported(f"{real_dst_name} does not have FixedTiledLayout")
-        # Pool buffers are intermediates whose address is baked into the TensorArg
+        # HBM-pool buffers are intermediates whose address is baked into the TensorArg
         # allocation dict; registering them as outputs would overflow SEGMENT_OFFSETS.
         # (lx buffers are already excluded from spyre_kernel_args in _tensor_arg.)
-        if "pool" not in layout.allocation:
+        # Also skip buffers marked as removed by Inductor's optimizer (e.g., by LX )
+        # This can occur when SDPA decomposition creates intermediate
+        # buffers that later get marked as dead code.
+        real_dst_name = V.graph.scheduler.mutation_real_name.get(name, name)
+        is_removed = real_dst_name in V.graph.removed_buffers
+        if "hbm_pool" not in layout.allocation and not is_removed:
             # Pass the alias here, not real_dst_name: args.output resolves the
             # mutation alias internally. (load() passes the pre-resolved real
             # name to args.input, which does not resolve.)
             _ = self.args.output(name)
         index = sympy_subs(index, V.graph.sizevars.precomputed_replacements)
-        dst = TensorAccess(real_dst_name, index, layout)
+        dst = TensorAccess(name, index, layout)
+        if real_dst_name != name:
+            # Skip allocating an output buffer; this name is an alias to another buffer
+            V.graph.removed_buffers.add(name)
         op_info: dict[str, Any] = {}
         if logger.isEnabledFor(logging.DEBUG):
             value_type = type(value).__name__
@@ -822,10 +894,10 @@ class SpyreKernel(Kernel[CSEVariable]):
         layout = buf.get_layout()
         if not isinstance(layout, FixedTiledLayout):
             raise Unsupported(f"{name} does not have FixedTiledLayout")
-        # Pool buffers are intermediates whose address is baked into the TensorArg
+        # HBM-pool buffers are intermediates whose address is baked into the TensorArg
         # allocation dict; registering them as outputs would overflow SEGMENT_OFFSETS.
         # (lx buffers are already excluded from spyre_kernel_args in _tensor_arg.)
-        if "pool" not in layout.allocation:
+        if "hbm_pool" not in layout.allocation:
             _ = self.args.output(name)
         index = sympy_subs(index, V.graph.sizevars.precomputed_replacements)
         dst = TensorAccess(name, index, layout)
@@ -888,8 +960,21 @@ class SpyreKernel(Kernel[CSEVariable]):
             if self.indirect_vars
             else None
         )
+
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                "OP SPECS AFTER CREATION/LOOP-WRAPPING\n%s",
+                format_op_spec_list(self.op_specs),
+            )
+
         for op_spec in _iter_op_specs(self.op_specs):
             simplify_op_spec(op_spec, self.indirect_sizes, indirect_access_subs)
+
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                "OP SPECS AFTER SIMPLIFICATION\n%s",
+                format_op_spec_list(self.op_specs),
+            )
 
         def sympy_str(x: sympy.Expr) -> str:
             if isinstance(x, IndirectAccess):
@@ -899,8 +984,8 @@ class SpyreKernel(Kernel[CSEVariable]):
 
         # Now that all loads/stores have been processed we know the final kernel_args and can map names to indices
         actuals = self.args.python_argdefs()[1]
-        pool_size = getattr(V.graph, "pool_size", 0)
-        has_pool_allocations = pool_size > 0
+        hbm_pool_size = getattr(V.graph, "hbm_pool_size", 0)
+        has_pool_allocations = hbm_pool_size > 0
 
         for name, tensor_arg in self.spyre_kernel_args:
             tensor_arg.arg_index = actuals.index(name)
@@ -925,12 +1010,12 @@ class SpyreKernel(Kernel[CSEVariable]):
         buf.writeline("]")
         return buf.getvalue()
 
-    def _kernel_uses_pool(self) -> bool:
-        """Return True if any op in this kernel references a pool-allocated tensor."""
+    def _kernel_uses_hbm_pool(self) -> bool:
+        """Return True if any op in this kernel references an HBM-pool-allocated tensor."""
         from torch_spyre._inductor.op_spec import TensorArg
 
         return any(
-            "pool" in arg.allocation
+            "hbm_pool" in arg.allocation
             for op in _iter_op_specs(self.op_specs)
             for arg in op.args
             if isinstance(arg, TensorArg)
@@ -941,7 +1026,7 @@ class SpyreKernel(Kernel[CSEVariable]):
         wrapper = V.graph.wrapper_code
         call_args = []
 
-        if self._kernel_uses_pool():
+        if self._kernel_uses_hbm_pool():
             call_args.append("_pool")
 
         # Add remaining kernel arguments, deduplicating tensors that appear as
@@ -1061,6 +1146,12 @@ def _codegen_op_spec_list(specs, buf: IndentedBuffer, sympy_str) -> None:
                 buf.writeline(
                     f"symbolic_dim_bounds={_serialize_value(op_spec.symbolic_dim_bounds)},"
                 )
+                if op_spec.debug_handle is not None:
+                    # Source-to-kernel provenance must survive the OpSpec ->
+                    # generated-source -> exec round-trip. DebugHandle/SourceLoc
+                    # are frozen dataclasses, so repr() is eval-able; the
+                    # generated wrapper header imports both names.
+                    buf.writeline(f"debug_handle={op_spec.debug_handle!r},")
                 buf.writeline("args=[")
                 with buf.indent():
                     for arg in op_spec.args:

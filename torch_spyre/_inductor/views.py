@@ -17,7 +17,7 @@
 from dataclasses import dataclass, astuple
 import math
 import sympy
-from typing import Optional, Sequence, Dict, Tuple, Callable
+from typing import Optional, Sequence, Dict, Tuple, Callable, cast
 from torch.utils._sympy.functions import ModularIndexing, FloorDiv
 
 from torch._inductor.virtualized import V
@@ -437,10 +437,19 @@ def normalize_coordinates(
         split_dim_terms = []
 
         cum_size = 1
+        # Save original numerators before the loop resets them to 1.
+        # dim_terms[i].num is the flat-index step for variable i.  The
+        # device-dimension range for variable i equals the ratio of
+        # consecutive steps: original_nums[i+1] // original_nums[i].
+        # Using dim_terms[i+1].num directly (which has already been reset
+        # to 1 for lower terms) would give the next variable's raw step,
+        # producing inflated dim_sizes and spurious backGaps when 3+ vars
+        # share a single flat device dimension (e.g. ho*96+kh*24+wo*4+kw).
+        original_nums: list[sympy.Expr] = [cast(sympy.Expr, t.num) for t in dim_terms]
         # for all terms but the last
         for i in range(0, len(dim_terms) - 1):
-            # set dim_size to numerator of next term
-            dim_terms[i].dim_size = dim_terms[i + 1].num
+            # range of variable i = step[i+1] / step[i]
+            dim_terms[i].dim_size = original_nums[i + 1] // original_nums[i]
             # set numerator of next term to 1
             dim_terms[i + 1].num = 1
             # compute cumulative dim_size of all terms up to current term
@@ -622,7 +631,18 @@ def align_tensors(
 
             # distribute work division for old var to new vars
             for v in reversed(remap[var]):
-                new_op_it_space_splits[v] = math.gcd(div, new_var_ranges[v])
+                # Re-intersect the committed split against the basis work
+                # division used for this var.
+                if v == var and v in stick_dim:
+                    # Stick var: stick count. The element range would drop a
+                    # legal split when the size is not a multiple of it
+                    # (e.g. gcd(2, 67) == 1).
+                    eps = int(stick_size[stick_dim.index(v)])
+                    basis = (int(new_var_ranges[v]) + eps - 1) // eps  # stick count
+                else:
+                    # Non-stick var (or synthetic sub-dim): element range.
+                    basis = new_var_ranges[v]
+                new_op_it_space_splits[v] = math.gcd(div, basis)
                 div //= new_op_it_space_splits[v]
         else:
             # no splits keep existing var, range, and work division
@@ -766,3 +786,37 @@ def align_tensors(
     }
 
     return new_iteration_space, new_tensors
+
+
+def tiling_expr_to_device_expr(
+    device_size: Sequence[sympy.Expr],
+    stride_map: Sequence[sympy.Expr],
+    index: sympy.Expr,
+) -> sympy.Expr:
+    """
+    Convert a tile offset expression (index) to a device layout (device_size and
+    stride_map)
+    """
+
+    assert all(isinstance(s, (int, sympy.Integer)) for s in device_size), (
+        f"tiling_expr_to_device_expr requires a concrete device_size, got {device_size}"
+    )
+    assert all(isinstance(s, (int, sympy.Integer)) for s in stride_map), (
+        f"tiling_expr_to_device_expr requires a concrete stride_map, got {stride_map}"
+    )
+
+    out = sympy.S.Zero
+    n = len(stride_map)
+    vars = index.free_symbols
+    for var in vars:
+        step = index.xreplace({var: 1}).xreplace({v: 0 for v in vars})
+        j = -1  # device dimension for var
+        for i in range(n):
+            if (
+                device_size[i] > 1
+                and stride_map[i] > (stride_map[j] if j != -1 else 0)
+                and stride_map[i] <= step
+            ):
+                j = i
+        out += var * math.prod(device_size[j + 1 : n]) * step // stride_map[j]
+    return out
