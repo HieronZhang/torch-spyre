@@ -1,0 +1,2 @@
+SUMMARY op=bmm_layout rows=1024 cols=2048 tiles=0 cores=32 layoutA=1,0,2 kernel_us=1.0
+op_it_space_splits: {d0: 1, d1: 32}

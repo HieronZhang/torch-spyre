@@ -1,0 +1,36 @@
+==== ADD-CHAIN IR CAPTURE Fri Jul 24 17:53:19 UTC 2026 ====
+-- IR add3 (-> haoyang_logs/ir/addchain_add3.txt)
+   bundles(async_compile.sdsc)=0
+0  loop_ir=yes
+   SUMMARY op=add3 rows=2048 cols=4096 cores=32 tiles=0 lx=0 io_hbm_bytes=100663296 kernel_us=929.497 pred_us=863.691 err_pct=-7.1 bw_gbps=108.3 memset_us=230.349 other_dev_us=1017.011 total_dev_us=2176.857 kernel_us_min=929.497 kernel_us_median=929.497 kernel_us_mean=929.497 kernel_us_std=0.000 kernel_us_cv=0.00 reps=1
+-- IR add4 (-> haoyang_logs/ir/addchain_add4.txt)
+   bundles(async_compile.sdsc)=0
+0  loop_ir=yes
+   SUMMARY op=add4 rows=2048 cols=4096 cores=32 tiles=0 lx=0 io_hbm_bytes=150994944 kernel_us=1509.221 pred_us=1295.537 err_pct=-14.2 bw_gbps=100.0 memset_us=267.677 other_dev_us=835.701 total_dev_us=2612.599 kernel_us_min=1509.221 kernel_us_median=1509.221 kernel_us_mean=1509.221 kernel_us_std=0.000 kernel_us_cv=0.00 reps=1
+-- IR add5 (-> haoyang_logs/ir/addchain_add5.txt)
+   bundles(async_compile.sdsc)=0
+0  loop_ir=yes
+   SUMMARY op=add5 rows=2048 cols=4096 cores=32 tiles=0 lx=0 io_hbm_bytes=201326592 kernel_us=2040.536 pred_us=1727.382 err_pct=-15.3 bw_gbps=98.7 memset_us=281.384 other_dev_us=996.803 total_dev_us=3318.723 kernel_us_min=2040.536 kernel_us_median=2040.536 kernel_us_mean=2040.536 kernel_us_std=0.000 kernel_us_cv=0.00 reps=1
+-- IR add6 (-> haoyang_logs/ir/addchain_add6.txt)
+   bundles(async_compile.sdsc)=0
+0  loop_ir=yes
+   SUMMARY op=add6 rows=2048 cols=4096 cores=32 tiles=0 lx=0 io_hbm_bytes=251658240 kernel_us=2517.797 pred_us=2159.228 err_pct=-14.2 bw_gbps=100.0 memset_us=302.993 other_dev_us=956.418 total_dev_us=3777.208 kernel_us_min=2517.797 kernel_us_median=2517.797 kernel_us_mean=2517.797 kernel_us_std=0.000 kernel_us_cv=0.00 reps=1
+-- IR add3_sep (-> haoyang_logs/ir/addchain_add3_sep.txt)
+   bundles(async_compile.sdsc)=0
+0  loop_ir=yes
+   SUMMARY op=add3_sep rows=2048 cols=4096 cores=32 tiles=0 lx=0 io_hbm_bytes=50331648 kernel_us=931.088 pred_us=431.846 err_pct=-53.6 bw_gbps=54.1 memset_us=260.870 other_dev_us=910.392 total_dev_us=2102.350 kernel_us_min=931.088 kernel_us_median=931.088 kernel_us_mean=931.088 kernel_us_std=0.000 kernel_us_cv=0.00 reps=1
+-- IR add4_sep (-> haoyang_logs/ir/addchain_add4_sep.txt)
+   bundles(async_compile.sdsc)=0
+0  loop_ir=yes
+   SUMMARY op=add4_sep rows=2048 cols=4096 cores=32 tiles=0 lx=0 io_hbm_bytes=50331648 kernel_us=1382.830 pred_us=431.846 err_pct=-68.8 bw_gbps=36.4 memset_us=228.380 other_dev_us=1058.631 total_dev_us=2669.841 kernel_us_min=1382.830 kernel_us_median=1382.830 kernel_us_mean=1382.830 kernel_us_std=0.000 kernel_us_cv=0.00 reps=1
+-- IR add5_sep (-> haoyang_logs/ir/addchain_add5_sep.txt)
+   bundles(async_compile.sdsc)=0
+0  loop_ir=yes
+   SUMMARY op=add5_sep rows=2048 cols=4096 cores=32 tiles=0 lx=0 io_hbm_bytes=50331648 kernel_us=2034.117 pred_us=431.846 err_pct=-78.8 bw_gbps=24.7 memset_us=286.980 other_dev_us=1014.214 total_dev_us=3335.311 kernel_us_min=2034.117 kernel_us_median=2034.117 kernel_us_mean=2034.117 kernel_us_std=0.000 kernel_us_cv=0.00 reps=1
+-- IR add6_sep (-> haoyang_logs/ir/addchain_add6_sep.txt)
+   bundles(async_compile.sdsc)=0
+0  loop_ir=yes
+   SUMMARY op=add6_sep rows=2048 cols=4096 cores=32 tiles=0 lx=0 io_hbm_bytes=50331648 kernel_us=2534.325 pred_us=431.846 err_pct=-83.0 bw_gbps=19.9 memset_us=311.180 other_dev_us=870.842 total_dev_us=3716.347 kernel_us_min=2534.325 kernel_us_median=2534.325 kernel_us_mean=2534.325 kernel_us_std=0.000 kernel_us_cv=0.00 reps=1
+==== DONE -- read haoyang_logs/ir/addchain_*.txt ====
+   EXPECT: add3,add4 bundles=1 ; first split (bundles>1) at add5 or add6 ;
+           add{n}_sep = n-1 separate sdsc kernels ; all chains left-associative.

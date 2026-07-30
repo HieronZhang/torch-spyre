@@ -1,0 +1,179 @@
+$ python docs/source/user_guide/examples/repro_sec3_addchain.py 
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+[W724 21:13:35.947779561 collection.cpp:1077] Warning: Detected an event which was likely passed to kineto by the PyTorch profiler, but is not present in the set of known events: [memory] This most likely means that Kineto has not maintained address stability for this event. Please report this to the PyTorch team. (function operator())
+
+==============================================================================
+OP: add (single)   (lx_planning=False, ROWS=2048, COLS=4096)
+==============================================================================
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    Self SPYRE  Self SPYRE %   SPYRE total  SPYRE time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          Memcpy (DtoH)         0.00%       0.000us         0.00%       0.000us       0.000us     919.978us        57.06%     919.978us     229.995us             4  
+sdsc_fused_add_0_dy4ekkzd/spyreCodeDir/bundle.mlir#2...         0.00%       0.000us         0.00%       0.000us       0.000us     438.433us        27.19%     438.433us     438.433us             1  
+                                        Memset (Device)         0.00%       0.000us         0.00%       0.000us       0.000us     224.955us        13.95%     224.955us      44.991us             5  
+                                          Memcpy (HtoD)         0.00%       0.000us         0.00%       0.000us       0.000us      29.042us         1.80%      29.042us      29.042us             1  
+                               TorchDynamo Cache Lookup         0.12%      27.675us         0.12%      27.675us      27.675us       0.000us         0.00%       0.000us       0.000us             1  
+                             Torch-Compiled Region: 0/0         0.22%      49.959us         1.58%     365.853us     365.853us       0.000us         0.00%       0.000us       0.000us             1  
+                                      Pregraph bytecode         0.01%       3.374us         0.01%       3.374us       3.374us       0.000us         0.00%       0.000us       0.000us             1  
+                 AOTDispatcher Runtime Wrapper Prologue         0.03%       6.636us         0.03%       6.636us       6.636us       0.000us         0.00%       0.000us       0.000us             1  
+                        ## Call CompiledFxGraph None ##         0.18%      40.645us         1.32%     305.884us     305.884us       0.000us         0.00%       0.000us       0.000us             1  
+                        launch_jobplan:sdsc_fused_add_0         1.14%     262.490us         1.15%     265.239us     265.239us       0.000us         0.00%       0.000us       0.000us             1  
+                              aiuLaunchDMIControlBlocks         0.01%       1.797us         0.01%       1.797us       1.797us       0.000us         0.00%       0.000us       0.000us             1  
+                                 aiuLaunchControlBlocks         0.00%       0.952us         0.00%       0.952us       0.952us       0.000us         0.00%       0.000us       0.000us             1  
+                                               aten::to         0.01%       1.850us        98.30%      22.728ms      22.728ms       0.000us         0.00%       0.000us       0.000us             1  
+                                         aten::_to_copy         0.08%      19.361us        98.29%      22.726ms      22.726ms       0.000us         0.00%       0.000us       0.000us             1  
+                                    aten::empty_strided         0.02%       4.307us         0.02%       4.307us       4.307us       0.000us         0.00%       0.000us       0.000us             1  
+                                            aten::copy_         0.05%      10.826us        98.19%      22.702ms      22.702ms       0.000us         0.00%       0.000us       0.000us             1  
+                                       aten::_copy_from        98.12%      22.687ms        98.14%      22.691ms      22.691ms       0.000us         0.00%       0.000us       0.000us             1  
+                              aiuLaunchDMOControlBlocks         0.02%       4.276us         0.02%       4.276us       1.069us       0.000us         0.00%       0.000us       0.000us             4  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 23.121ms
+Self SPYRE time total: 1.612ms
+
+--> compute kernel time (median over 7 reps, Memset/Memcpy excluded): 439.2 us
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+
+==============================================================================
+OP: add_indep2 (no dep)   (lx_planning=False, ROWS=2048, COLS=4096)
+==============================================================================
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    Self SPYRE  Self SPYRE %   SPYRE total  SPYRE time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          Memcpy (DtoH)         0.00%       0.000us         0.00%       0.000us       0.000us       1.620ms        53.49%       1.620ms     202.476us             8  
+sdsc_fused_add_0_r85ei1rw/spyreCodeDir/bundle.mlir#2...         0.00%       0.000us         0.00%       0.000us       0.000us     870.943us        28.76%     870.943us     870.943us             1  
+                                        Memset (Device)         0.00%       0.000us         0.00%       0.000us       0.000us     428.442us        14.15%     428.442us      47.605us             9  
+                                          Memcpy (HtoD)         0.00%       0.000us         0.00%       0.000us       0.000us     109.136us         3.60%     109.136us     109.136us             1  
+                               TorchDynamo Cache Lookup         0.07%      32.786us         0.07%      32.786us      32.786us       0.000us         0.00%       0.000us       0.000us             1  
+                             Torch-Compiled Region: 0/0         0.11%      48.109us         1.22%     546.664us     546.664us       0.000us         0.00%       0.000us       0.000us             1  
+                                      Pregraph bytecode         0.01%       3.511us         0.01%       3.511us       3.511us       0.000us         0.00%       0.000us       0.000us             1  
+                 AOTDispatcher Runtime Wrapper Prologue         0.02%       7.365us         0.02%       7.365us       7.365us       0.000us         0.00%       0.000us       0.000us             1  
+                        ## Call CompiledFxGraph None ##         0.10%      46.561us         1.09%     487.679us     487.679us       0.000us         0.00%       0.000us       0.000us             1  
+                        launch_jobplan:sdsc_fused_add_0         0.98%     438.137us         0.98%     441.118us     441.118us       0.000us         0.00%       0.000us       0.000us             1  
+                              aiuLaunchDMIControlBlocks         0.00%       1.817us         0.00%       1.817us       1.817us       0.000us         0.00%       0.000us       0.000us             1  
+                                 aiuLaunchControlBlocks         0.00%       1.164us         0.00%       1.164us       1.164us       0.000us         0.00%       0.000us       0.000us             1  
+                                               aten::to         0.01%       3.745us        98.71%      44.351ms      22.175ms       0.000us         0.00%       0.000us       0.000us             2  
+                                         aten::_to_copy         0.03%      13.360us        98.70%      44.347ms      22.173ms       0.000us         0.00%       0.000us       0.000us             2  
+                                    aten::empty_strided         0.02%       9.397us         0.02%       9.397us       4.699us       0.000us         0.00%       0.000us       0.000us             2  
+                                            aten::copy_         0.02%       8.231us        98.65%      44.324ms      22.162ms       0.000us         0.00%       0.000us       0.000us             2  
+                                       aten::_copy_from        98.61%      44.307ms        98.63%      44.316ms      22.158ms       0.000us         0.00%       0.000us       0.000us             2  
+                              aiuLaunchDMOControlBlocks         0.02%       8.639us         0.02%       8.639us       1.080us       0.000us         0.00%       0.000us       0.000us             8  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 44.930ms
+Self SPYRE time total: 3.028ms
+
+--> compute kernel time (median over 7 reps, Memset/Memcpy excluded): 873.2 us
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+
+==============================================================================
+OP: add3_sep (dep, separate)   (lx_planning=False, ROWS=2048, COLS=4096)
+==============================================================================
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    Self SPYRE  Self SPYRE %   SPYRE total  SPYRE time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          Memcpy (DtoH)         0.00%       0.000us         0.00%       0.000us       0.000us     940.645us        42.61%     940.645us     235.161us             4  
+sdsc_fused_add_0_m45h68kp/spyreCodeDir/bundle.mlir#2...         0.00%       0.000us         0.00%       0.000us       0.000us     932.552us        42.24%     932.552us     466.276us             2  
+                                        Memset (Device)         0.00%       0.000us         0.00%       0.000us       0.000us     221.054us        10.01%     221.054us      36.842us             6  
+                                          Memcpy (HtoD)         0.00%       0.000us         0.00%       0.000us       0.000us     113.393us         5.14%     113.393us      56.697us             2  
+                               TorchDynamo Cache Lookup         0.17%      39.802us         0.17%      39.802us      19.901us       0.000us         0.00%       0.000us       0.000us             2  
+                             Torch-Compiled Region: 0/0         0.26%      61.480us         3.97%     932.406us     466.203us       0.000us         0.00%       0.000us       0.000us             2  
+                                      Pregraph bytecode         0.02%       5.239us         0.02%       5.239us       2.620us       0.000us         0.00%       0.000us       0.000us             2  
+                 AOTDispatcher Runtime Wrapper Prologue         0.04%      10.051us         0.04%      10.051us       5.025us       0.000us         0.00%       0.000us       0.000us             2  
+                        ## Call CompiledFxGraph None ##         0.29%      67.456us         3.64%     855.636us     427.818us       0.000us         0.00%       0.000us       0.000us             2  
+                        launch_jobplan:sdsc_fused_add_0         3.34%     783.838us         3.36%     788.180us     394.090us       0.000us         0.00%       0.000us       0.000us             2  
+                              aiuLaunchDMIControlBlocks         0.01%       2.459us         0.01%       2.459us       1.230us       0.000us         0.00%       0.000us       0.000us             2  
+                                 aiuLaunchControlBlocks         0.01%       1.883us         0.01%       1.883us       0.942us       0.000us         0.00%       0.000us       0.000us             2  
+                                               aten::to         0.01%       1.875us        95.86%      22.517ms      22.517ms       0.000us         0.00%       0.000us       0.000us             1  
+                                         aten::_to_copy         0.03%       6.930us        95.85%      22.515ms      22.515ms       0.000us         0.00%       0.000us       0.000us             1  
+                                    aten::empty_strided         0.02%       4.170us         0.02%       4.170us       4.170us       0.000us         0.00%       0.000us       0.000us             1  
+                                            aten::copy_         0.02%       5.707us        95.81%      22.504ms      22.504ms       0.000us         0.00%       0.000us       0.000us             1  
+                                       aten::_copy_from        95.76%      22.494ms        95.78%      22.498ms      22.498ms       0.000us         0.00%       0.000us       0.000us             1  
+                              aiuLaunchDMOControlBlocks         0.02%       4.307us         0.02%       4.307us       1.077us       0.000us         0.00%       0.000us       0.000us             4  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 23.489ms
+Self SPYRE time total: 2.208ms
+
+--> compute kernel time (median over 7 reps, Memset/Memcpy excluded): 936.6 us
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+
+==============================================================================
+OP: add3 (dep, fused)   (lx_planning=False, ROWS=2048, COLS=4096)
+==============================================================================
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    Self SPYRE  Self SPYRE %   SPYRE total  SPYRE time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          Memcpy (DtoH)         0.00%       0.000us         0.00%       0.000us       0.000us     944.845us        42.32%     944.845us     236.211us             4  
+sdsc_fused_add_0_cnixvgre/spyreCodeDir/bundle.mlir#2...         0.00%       0.000us         0.00%       0.000us       0.000us     933.583us        41.81%     933.583us     933.583us             1  
+                                        Memset (Device)         0.00%       0.000us         0.00%       0.000us       0.000us     218.704us         9.80%     218.704us      43.741us             5  
+                                          Memcpy (HtoD)         0.00%       0.000us         0.00%       0.000us       0.000us     135.662us         6.08%     135.662us     135.662us             1  
+                               TorchDynamo Cache Lookup         0.13%      30.200us         0.13%      30.200us      30.200us       0.000us         0.00%       0.000us       0.000us             1  
+                             Torch-Compiled Region: 0/0         0.18%      41.640us         2.34%     549.945us     549.945us       0.000us         0.00%       0.000us       0.000us             1  
+                                      Pregraph bytecode         0.01%       3.414us         0.01%       3.414us       3.414us       0.000us         0.00%       0.000us       0.000us             1  
+                 AOTDispatcher Runtime Wrapper Prologue         0.03%       6.362us         0.03%       6.362us       6.362us       0.000us         0.00%       0.000us       0.000us             1  
+                        ## Call CompiledFxGraph None ##         0.25%      57.792us         2.12%     498.529us     498.529us       0.000us         0.00%       0.000us       0.000us             1  
+                        launch_jobplan:sdsc_fused_add_0         1.87%     438.018us         1.88%     440.737us     440.737us       0.000us         0.00%       0.000us       0.000us             1  
+                              aiuLaunchDMIControlBlocks         0.01%       1.827us         0.01%       1.827us       1.827us       0.000us         0.00%       0.000us       0.000us             1  
+                                 aiuLaunchControlBlocks         0.00%       0.892us         0.00%       0.892us       0.892us       0.000us         0.00%       0.000us       0.000us             1  
+                                               aten::to         0.01%       1.644us        97.53%      22.892ms      22.892ms       0.000us         0.00%       0.000us       0.000us             1  
+                                         aten::_to_copy         0.03%       7.855us        97.52%      22.891ms      22.891ms       0.000us         0.00%       0.000us       0.000us             1  
+                                    aten::empty_strided         0.02%       4.176us         0.02%       4.176us       4.176us       0.000us         0.00%       0.000us       0.000us             1  
+                                            aten::copy_         0.02%       5.125us        97.47%      22.879ms      22.879ms       0.000us         0.00%       0.000us       0.000us             1  
+                                       aten::_copy_from        97.43%      22.869ms        97.45%      22.874ms      22.874ms       0.000us         0.00%       0.000us       0.000us             1  
+                              aiuLaunchDMOControlBlocks         0.02%       4.103us         0.02%       4.103us       1.026us       0.000us         0.00%       0.000us       0.000us             4  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 23.472ms
+Self SPYRE time total: 2.233ms
+
+--> compute kernel time (median over 7 reps, Memset/Memcpy excluded): 932.9 us
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+
+==============================================================================
+OP: add3, LX on (buf on-chip)   (lx_planning=True, ROWS=2048, COLS=4096)
+==============================================================================
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    Self SPYRE  Self SPYRE %   SPYRE total  SPYRE time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          Memcpy (DtoH)         0.00%       0.000us         0.00%       0.000us       0.000us     969.272us        51.43%     969.272us     242.318us             4  
+sdsc_fused_add_0_7pmrt0j0/spyreCodeDir/bundle.mlir#2...         0.00%       0.000us         0.00%       0.000us       0.000us     600.737us        31.88%     600.737us     600.737us             1  
+                                        Memset (Device)         0.00%       0.000us         0.00%       0.000us       0.000us     214.807us        11.40%     214.807us      42.961us             5  
+                                          Memcpy (HtoD)         0.00%       0.000us         0.00%       0.000us       0.000us      99.758us         5.29%      99.758us      99.758us             1  
+                               TorchDynamo Cache Lookup         0.13%      29.554us         0.13%      29.554us      29.554us       0.000us         0.00%       0.000us       0.000us             1  
+                             Torch-Compiled Region: 0/0         0.19%      42.756us         2.09%     481.079us     481.079us       0.000us         0.00%       0.000us       0.000us             1  
+                                      Pregraph bytecode         0.02%       3.612us         0.02%       3.612us       3.612us       0.000us         0.00%       0.000us       0.000us             1  
+                 AOTDispatcher Runtime Wrapper Prologue         0.03%       6.249us         0.03%       6.249us       6.249us       0.000us         0.00%       0.000us       0.000us             1  
+                        ## Call CompiledFxGraph None ##         0.19%      44.512us         1.86%     428.462us     428.462us       0.000us         0.00%       0.000us       0.000us             1  
+                        launch_jobplan:sdsc_fused_add_0         1.66%     381.476us         1.67%     383.950us     383.950us       0.000us         0.00%       0.000us       0.000us             1  
+                              aiuLaunchDMIControlBlocks         0.01%       1.561us         0.01%       1.561us       1.561us       0.000us         0.00%       0.000us       0.000us             1  
+                                 aiuLaunchControlBlocks         0.00%       0.913us         0.00%       0.913us       0.913us       0.000us         0.00%       0.000us       0.000us             1  
+                                               aten::to         0.01%       1.780us        97.78%      22.495ms      22.495ms       0.000us         0.00%       0.000us       0.000us             1  
+                                         aten::_to_copy         0.03%       6.774us        97.77%      22.493ms      22.493ms       0.000us         0.00%       0.000us       0.000us             1  
+                                    aten::empty_strided         0.02%       4.349us         0.02%       4.349us       4.349us       0.000us         0.00%       0.000us       0.000us             1  
+                                            aten::copy_         0.02%       3.528us        97.72%      22.482ms      22.482ms       0.000us         0.00%       0.000us       0.000us             1  
+                                       aten::_copy_from        97.69%      22.475ms        97.71%      22.478ms      22.478ms       0.000us         0.00%       0.000us       0.000us             1  
+                              aiuLaunchDMOControlBlocks         0.02%       3.749us         0.02%       3.749us       0.937us       0.000us         0.00%       0.000us       0.000us             4  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 23.005ms
+Self SPYRE time total: 1.885ms
+
+--> compute kernel time (median over 7 reps, Memset/Memcpy excluded): 582.7 us
+
+##############################################################################
+# SUMMARY -- kernel time per op  (ROWS=2048, COLS=4096, reps=7)
+# byte-count baseline = 2 x add(single) = 2 x 439 = 878 us
+##############################################################################
+                          op |  kernel us | vs 2x add baseline
+----------------------------------------------------------------
+                add (single) |      439.2 | -- (this is 1x add)
+         add_indep2 (no dep) |      873.2 |                -1%
+    add3_sep (dep, separate) |      936.6 |                +7%
+           add3 (dep, fused) |      932.9 |                +6%
+   add3, LX on (buf on-chip) |      582.7 |               -34%
+
+Expected: add_indep2 ~0%, add3_sep ~+7%, add3 ~+7% (== separate -> the dependency is
+the margin, fusion is free), add3 LX-on ~-34% (the HBM round-trip is gone).

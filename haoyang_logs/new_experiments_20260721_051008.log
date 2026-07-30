@@ -1,0 +1,114 @@
+==== new-experiments sweep Tue Jul 21 05:10:08 UTC 2026 ====
+git: 6794b02  sections: GAMMA BWCORES ARITY THINK TINY MSPLIT BMM COARSE
+## GAMMA γ(cores): 2048³ & 4096×2048×2048 at cores {4,8,16,32}
+-- mmwd M=2048 K=2048 N=2048 split m=2 n=2 k=1 (cores=4 M/m=1024 N/n=1024)
+SUMMARY mmwd M=2048 K=2048 N=2048 split m=2 n=2 k=1 FAILED
+-- mmwd M=2048 K=2048 N=2048 split m=2 n=4 k=1 (cores=8 M/m=1024 N/n=512)
+SUMMARY mmwd M=2048 K=2048 N=2048 split m=2 n=4 k=1 FAILED
+-- mmwd M=2048 K=2048 N=2048 split m=4 n=4 k=1 (cores=16 M/m=512 N/n=512)
+SUMMARY mmwd M=2048 K=2048 N=2048 split m=4 n=4 k=1 FAILED
+-- mmwd M=2048 K=2048 N=2048 split m=4 n=8 k=1 (cores=32 M/m=512 N/n=256)
+SUMMARY mmwd M=2048 K=2048 N=2048 split m=4 n=8 k=1 FAILED
+-- mmwd M=4096 K=2048 N=2048 split m=2 n=2 k=1 (cores=4 M/m=2048 N/n=1024)
+SUMMARY mmwd M=4096 K=2048 N=2048 split m=2 n=2 k=1 FAILED
+-- mmwd M=4096 K=2048 N=2048 split m=2 n=4 k=1 (cores=8 M/m=2048 N/n=512)
+SUMMARY mmwd M=4096 K=2048 N=2048 split m=2 n=4 k=1 FAILED
+-- mmwd M=4096 K=2048 N=2048 split m=4 n=4 k=1 (cores=16 M/m=1024 N/n=512)
+SUMMARY mmwd M=4096 K=2048 N=2048 split m=4 n=4 k=1 FAILED
+-- mmwd M=4096 K=2048 N=2048 split m=4 n=8 k=1 (cores=32 M/m=1024 N/n=256)
+SUMMARY mmwd M=4096 K=2048 N=2048 split m=4 n=8 k=1 FAILED
+-- mmwd M=2048 K=4096 N=2048 split m=2 n=2 k=1 (cores=4 M/m=1024 N/n=1024)
+SUMMARY mmwd M=2048 K=4096 N=2048 split m=2 n=2 k=1 FAILED
+-- mmwd M=2048 K=4096 N=2048 split m=2 n=4 k=1 (cores=8 M/m=1024 N/n=512)
+SUMMARY mmwd M=2048 K=4096 N=2048 split m=2 n=4 k=1 FAILED
+-- mmwd M=2048 K=4096 N=2048 split m=4 n=4 k=1 (cores=16 M/m=512 N/n=512)
+SUMMARY mmwd M=2048 K=4096 N=2048 split m=4 n=4 k=1 FAILED
+-- mmwd M=2048 K=4096 N=2048 split m=4 n=8 k=1 (cores=32 M/m=512 N/n=256)
+SUMMARY mmwd M=2048 K=4096 N=2048 split m=4 n=8 k=1 FAILED
+## BWCORES memory-bound op at SENCORES {1,2,4,8,16,32}
+-- neg [8192,2048] sencores=1 tiles=1
+SUMMARY neg [8192,2048] sencores=1 tiles=1 FAILED
+-- neg [8192,2048] sencores=2 tiles=1
+SUMMARY neg [8192,2048] sencores=2 tiles=1 FAILED
+-- neg [8192,2048] sencores=4 tiles=1
+SUMMARY neg [8192,2048] sencores=4 tiles=1 FAILED
+-- neg [8192,2048] sencores=8 tiles=1
+SUMMARY neg [8192,2048] sencores=8 tiles=1 FAILED
+-- neg [8192,2048] sencores=16 tiles=1
+SUMMARY neg [8192,2048] sencores=16 tiles=1 FAILED
+-- neg [8192,2048] sencores=32 tiles=1
+SUMMARY neg [8192,2048] sencores=32 tiles=1 FAILED
+-- read [8192,2048] sencores=1 tiles=1
+SUMMARY read [8192,2048] sencores=1 tiles=1 FAILED
+-- read [8192,2048] sencores=2 tiles=1
+SUMMARY read [8192,2048] sencores=2 tiles=1 FAILED
+-- read [8192,2048] sencores=4 tiles=1
+SUMMARY read [8192,2048] sencores=4 tiles=1 FAILED
+-- read [8192,2048] sencores=8 tiles=1
+SUMMARY read [8192,2048] sencores=8 tiles=1 FAILED
+-- read [8192,2048] sencores=16 tiles=1
+SUMMARY read [8192,2048] sencores=16 tiles=1 FAILED
+-- read [8192,2048] sencores=32 tiles=1
+SUMMARY read [8192,2048] sencores=32 tiles=1 FAILED
+-- softmax_row_tiling [8192,2048] sencores=1 tiles=8
+SUMMARY softmax_row_tiling [8192,2048] sencores=1 tiles=8 FAILED
+-- softmax_row_tiling [8192,2048] sencores=2 tiles=8
+SUMMARY softmax_row_tiling [8192,2048] sencores=2 tiles=8 FAILED
+-- softmax_row_tiling [8192,2048] sencores=4 tiles=8
+SUMMARY softmax_row_tiling [8192,2048] sencores=4 tiles=8 FAILED
+-- softmax_row_tiling [8192,2048] sencores=8 tiles=8
+SUMMARY softmax_row_tiling [8192,2048] sencores=8 tiles=8 FAILED
+-- softmax_row_tiling [8192,2048] sencores=16 tiles=8
+SUMMARY softmax_row_tiling [8192,2048] sencores=16 tiles=8 FAILED
+-- softmax_row_tiling [8192,2048] sencores=32 tiles=8
+SUMMARY softmax_row_tiling [8192,2048] sencores=32 tiles=8 FAILED
+-- neg [16384,4096] sencores=1 tiles=1
+SUMMARY neg [16384,4096] sencores=1 tiles=1 FAILED
+-- neg [16384,4096] sencores=2 tiles=1
+SUMMARY neg [16384,4096] sencores=2 tiles=1 FAILED
+-- neg [16384,4096] sencores=4 tiles=1
+SUMMARY neg [16384,4096] sencores=4 tiles=1 FAILED
+-- neg [16384,4096] sencores=8 tiles=1
+SUMMARY neg [16384,4096] sencores=8 tiles=1 FAILED
+-- neg [16384,4096] sencores=16 tiles=1
+SUMMARY neg [16384,4096] sencores=16 tiles=1 FAILED
+-- neg [16384,4096] sencores=32 tiles=1
+SUMMARY neg [16384,4096] sencores=32 tiles=1 FAILED
+## ARITY add{,3,4,5,6}+add_indep2 at 3 shapes, LX_PLANNING 0 and 1
+-- add [2048,1024] lx=0
+SUMMARY add [2048,1024] lx=0 FAILED
+-- add3 [2048,1024] lx=0
+SUMMARY add3 [2048,1024] lx=0 FAILED
+-- add4 [2048,1024] lx=0
+SUMMARY add4 [2048,1024] lx=0 FAILED
+-- add5 [2048,1024] lx=0
+SUMMARY add5 [2048,1024] lx=0 FAILED
+-- add6 [2048,1024] lx=0
+SUMMARY add6 [2048,1024] lx=0 FAILED
+-- add_indep2 [2048,1024] lx=0
+SUMMARY add_indep2 [2048,1024] lx=0 FAILED
+-- add [2048,4096] lx=0
+SUMMARY add [2048,4096] lx=0 FAILED
+-- add3 [2048,4096] lx=0
+SUMMARY add3 [2048,4096] lx=0 FAILED
+-- add4 [2048,4096] lx=0
+SUMMARY add4 [2048,4096] lx=0 FAILED
+-- add5 [2048,4096] lx=0
+SUMMARY add5 [2048,4096] lx=0 FAILED
+-- add6 [2048,4096] lx=0
+SUMMARY add6 [2048,4096] lx=0 FAILED
+-- add_indep2 [2048,4096] lx=0
+SUMMARY add_indep2 [2048,4096] lx=0 FAILED
+-- add [2048,16384] lx=0
+SUMMARY add [2048,16384] lx=0 FAILED
+-- add3 [2048,16384] lx=0
+SUMMARY add3 [2048,16384] lx=0 FAILED
+-- add4 [2048,16384] lx=0
+SUMMARY add4 [2048,16384] lx=0 FAILED
+-- add5 [2048,16384] lx=0
+SUMMARY add5 [2048,16384] lx=0 FAILED
+-- add6 [2048,16384] lx=0
+SUMMARY add6 [2048,16384] lx=0 FAILED
+-- add_indep2 [2048,16384] lx=0
+SUMMARY add_indep2 [2048,16384] lx=0 FAILED
+-- add [2048,1024] lx=1

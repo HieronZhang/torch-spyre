@@ -1,0 +1,25 @@
+==== grand 5h sweep Fri Jun 19 13:00:11 UTC 2026 ====
+git: 09bb061  rows: 2048  sections: P2a P2b P2c P2d
+## P2a coarse-tile K-sweep (ctsum, B=2048 D=512; LX off+on)
+SUMMARY op=ctsum tiles=2 lx=0 B=2048 D=512 FAILED
+SUMMARY op=ctsum tiles=2 lx=1 B=2048 D=512 FAILED
+SUMMARY op=ctsum tiles=4 lx=0 B=2048 D=512 FAILED
+SUMMARY op=ctsum tiles=4 lx=1 B=2048 D=512 FAILED
+SUMMARY op=ctsum tiles=8 lx=0 B=2048 D=512 FAILED
+SUMMARY op=ctsum tiles=8 lx=1 B=2048 D=512 FAILED
+SUMMARY op=ctsum tiles=16 lx=0 B=2048 D=512 FAILED
+SUMMARY op=ctsum tiles=16 lx=1 B=2048 D=512 FAILED
+## P2b coarse-tile op coverage (ctamax, ctamin; K=8)
+SUMMARY op=ctamax tiles=8 lx=0 B=2048 D=512 FAILED
+SUMMARY op=ctamax tiles=8 lx=1 B=2048 D=512 FAILED
+SUMMARY op=ctamin tiles=8 lx=0 B=2048 D=512 FAILED
+SUMMARY op=ctamin tiles=8 lx=1 B=2048 D=512 FAILED
+## P2c coarse-tile D-sweep (ctsum K=8, LX off, B=2048)
+SUMMARY op=ctsum tiles=8 lx=0 B=2048 D=64 FAILED
+SUMMARY op=ctsum tiles=8 lx=0 B=2048 D=256 FAILED
+SUMMARY op=ctsum tiles=8 lx=0 B=2048 D=1024 FAILED
+## P2d untiled reduction baselines (B=2048 D=512)
+SUMMARY op=ctsum tiles=1 lx=0 B=2048 D=512 FAILED
+SUMMARY op=ctamax tiles=1 lx=0 B=2048 D=512 FAILED
+SUMMARY op=ctamin tiles=1 lx=0 B=2048 D=512 FAILED
+==== DONE -> forward haoyang_logs/grand_sweep_20260619_130011.log ====

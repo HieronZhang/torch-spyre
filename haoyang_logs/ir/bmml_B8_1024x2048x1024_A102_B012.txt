@@ -1,0 +1,1 @@
+SUMMARY op=bmm_layout layoutA=1,0,2 kernel_us=1.0

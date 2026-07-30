@@ -1,0 +1,124 @@
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/_dynamo/pgo.py:538: UserWarning: dynamo_pgo force disabled by torch.compiler.config.force_disable_caches
+  warn_once(
+==============================================================================
+==== ATen FX graph (post-grad, pre-lowering)
+==============================================================================
+%arg0_1 : [num_users=1] = placeholder[target=arg0_1]    # torch.float16 (2048, 4096) spyre:0
+%arg1_1 : [num_users=1] = placeholder[target=arg1_1]    # torch.float16 (2048, 4096) spyre:0
+%add : [num_users=1] = call_function[target=torch.ops.aten.add.Tensor](args = (%arg0_1, %arg1_1), kwargs = {})    # torch.float16 (2048, 4096) spyre:0
+return (add,)
+[4 nodes]
+
+==============================================================================
+==== LoopLevel IR - BEFORE pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1])
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 4096 * i0)
+      tmp1 = ops.load(arg1_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add,
+  origins=OrderedSet([add]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 726, in <lambda>,
+      f = torch.compile(lambda a, b: a + b)  # noqa: E731,
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== LoopLevel IR - AFTER pre-scheduling passes
+==============================================================================
+op0: ComputedBuffer
+  layout=FixedTiledLayout('spyre:0', torch.float16, size=[2048, 4096], stride=[4096, 1], device_layout=SpyreTensorLayout(device_size=[64, 2048, 64], stride_map =[64, 4096, 1], device_dtype=DataFormats.SEN169_FP16))
+  op_it_space_splits={d0: 32, d1: 1}
+  Pointwise(
+  'spyre',
+  torch.float16,
+  def inner_fn(index):
+      i0, i1 = index
+      tmp0 = ops.load(arg0_1, i1 + 4096 * i0)
+      tmp1 = ops.load(arg1_1, i1 + 4096 * i0)
+      tmp2 = tmp0 + tmp1
+      return tmp2
+  ,
+  ranges=[2048, 4096],
+  origin_node=add,
+  origins=OrderedSet([add]),
+  stack_traces = {,
+    File "/home/haoyang/torch-spyre/docs/source/user_guide/examples/profile_ops.py", line 726, in <lambda>,
+      f = torch.compile(lambda a, b: a + b)  # noqa: E731,
+  ,
+  }
+)
+
+[1 ops]
+
+==============================================================================
+==== Cost model features + prediction (after pre-scheduling)
+==============================================================================
+  add          read=33554432B write=16777216B lx=0B
+      output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+      input  arg1_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM  | 8388608 elems x 2B = 16777216 B (hbm counted: 16777216 B)
+  -- prediction (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+     R=33554432B (read)   W=16777216B (write)
+     base = (R+W)/150 = 335.54 us
+     turn = a*min(R,W) = 0.00574*16777216 = 96.30 us
+     => T_model = 431.85 us
+
+/home/haoyang/torch-spyre/.venv/lib64/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+[W729 12:14:23.037156702 collection.cpp:1077] Warning: Detected an event which was likely passed to kineto by the PyTorch profiler, but is not present in the set of known events: [memory] This most likely means that Kineto has not maintained address stability for this event. Please report this to the PyTorch team. (function operator())
+[W729 12:14:23.037208051 collection.cpp:665] Warning: aiuLaunchDMOControlBlocks (function operator())
+== add4_sep[2048x4096] -- profiler kernel time vs cost-model I/O ==
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    Self SPYRE  Self SPYRE %   SPYRE total  SPYRE time avg       CPU Mem  Self CPU Mem     SPYRE Mem  Self SPYRE Mem    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+sdsc_fused_add_0_69o3fn06/spyreCodeDir/bundle.mlir#2...         0.00%       0.000us         0.00%       0.000us       0.000us       1.380ms        52.99%       1.380ms     460.063us           0 B           0 B           0 B           0 B             3  
+                                          Memcpy (DtoH)         0.00%       0.000us         0.00%       0.000us       0.000us     881.009us        33.82%     881.009us     220.252us           0 B           0 B           0 B           0 B             4  
+                                        Memset (Device)         0.00%       0.000us         0.00%       0.000us       0.000us     218.250us         8.38%     218.250us      31.179us           0 B           0 B           0 B           0 B             7  
+                                          Memcpy (HtoD)         0.00%       0.000us         0.00%       0.000us       0.000us     125.163us         4.81%     125.163us      41.721us           0 B           0 B           0 B           0 B             3  
+                               TorchDynamo Cache Lookup         0.23%      54.010us         0.23%      54.010us      18.003us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             3  
+                             Torch-Compiled Region: 0/0         0.41%      98.494us         6.15%       1.469ms     489.771us       0.000us         0.00%       0.000us       0.000us           0 B           0 B      48.00 MB           0 B             3  
+                                      Pregraph bytecode         0.03%       6.243us         0.03%       6.243us       2.081us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             3  
+                 AOTDispatcher Runtime Wrapper Prologue         0.07%      15.769us         0.07%      15.769us       5.256us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             3  
+                        ## Call CompiledFxGraph None ##         0.38%      90.536us         5.65%       1.349ms     449.603us       0.000us         0.00%       0.000us       0.000us           0 B           0 B      48.00 MB      48.00 MB             3  
+                        launch_jobplan:sdsc_fused_add_0         5.24%       1.252ms         5.27%       1.258ms     419.424us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             3  
+                              aiuLaunchDMIControlBlocks         0.02%       3.779us         0.02%       3.779us       1.260us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             3  
+                                 aiuLaunchControlBlocks         0.01%       2.876us         0.01%       2.876us       0.959us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             3  
+                                               [memory]         0.00%       0.000us         0.00%       0.000us       0.000us       0.000us         0.00%       0.000us       0.000us     -16.00 MB     -16.00 MB     -48.00 MB     -48.00 MB             4  
+                                               aten::to         0.01%       3.024us        93.62%      22.350ms      22.350ms       0.000us         0.00%       0.000us       0.000us      16.00 MB           0 B           0 B           0 B             1  
+                                         aten::_to_copy         0.07%      16.549us        93.61%      22.347ms      22.347ms       0.000us         0.00%       0.000us       0.000us      16.00 MB           0 B           0 B           0 B             1  
+                                    aten::empty_strided         0.02%       5.771us         0.02%       5.771us       5.771us       0.000us         0.00%       0.000us       0.000us      16.00 MB      16.00 MB           0 B           0 B             1  
+                                            aten::copy_         0.04%       9.421us        93.51%      22.324ms      22.324ms       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                                       aten::_copy_from        93.46%      22.312ms        93.47%      22.315ms      22.315ms       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             1  
+                              aiuLaunchDMOControlBlocks         0.01%       2.505us         0.01%       2.505us       0.626us       0.000us         0.00%       0.000us       0.000us           0 B           0 B           0 B           0 B             4  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 23.873ms
+Self SPYRE time total: 2.605ms
+
+IO -- device-layout I/O (cost model, stick-padded) --
+IO   op add
+IO     output op0                    torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg0_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO     input  arg1_1                 torch [2048, 4096] -> device [64, 2048, 64] in HBM = 8388608 elems x 2B = 16777216 B  (hbm counted: 16777216 B)
+IO   => HBM I/O total = 50331648 B  (lx 0 B, ~free)
+MODEL -- estimate (turnaround): T = (R+W)/BW_PEAK + a*min(R,W) --
+MODEL   R=33554432 B (read)   W=16777216 B (write)   loop_trip L=1
+MODEL   base = (R+W)/150 = 335.54 us
+MODEL   turn = a*min(R,W) = 0.00574*16777216 = 96.30 us
+MODEL   => T_model = 431.85 us
+MODEL FEATS [{"name":"add","is_reduction":false,"out_elems":8388608,"cores":32,"dtype_bytes":2,"args":[{"name":"op0","role":"output","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"arg0_1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1},{"name":"arg1_1","role":"input","mem":"hbm","elems":8388608,"broadcast":false,"dims":[64,2048,64],"logical":[2048,4096],"loop_factor":1}],"reduction_cores":1,"loop_trip":1,"tiles_output_dim":false,"tile_rows_per_core":0.0,"is_matmul":false,"matmul_macs":0,"matmul_rows_per_core":0.0,"matmul_cols_per_core":0.0,"matmul_a_bytes":0,"matmul_b_bytes":0,"matmul_m_split":1,"matmul_n_split":1,"hbm_pattern":""}]
+TIMING op=add4_sep reps=1/1 prof_wall_s=0.04 per_rep_s=0.042
+SUMMARY op=add4_sep rows=2048 cols=4096 cores=32 tiles=0 lx=0 io_hbm_bytes=50331648 kernel_us=1380.190 pred_us=431.846 err_pct=-68.7 bw_gbps=36.5 memset_us=218.250 other_dev_us=1006.172 total_dev_us=2604.612 kernel_us_min=1380.190 kernel_us_median=1380.190 kernel_us_mean=1380.190 kernel_us_std=0.000 kernel_us_cv=0.00 reps=1
