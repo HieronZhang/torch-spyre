@@ -87,7 +87,7 @@ for op in matmul_row_tiling mm_nested_m_k; do
     echo "-- IR $op tiles=$t (-> $irf)" | tee -a "$LOG"
     SENCORES="${SENCORES:-32}" LX_PLANNING=0 SPYRE_DUMP_IR=1 \
       BENCH_OP="$op" BENCH_ROWS=2048 BENCH_COLS=2048 BENCH_N=2048 \
-      BENCH_TILES="$t" COARSE_TILES="$t" BENCH_REPS=1 BENCH_WARMUP=1 \
+      BENCH_TILES="$t" BENCH_REPS=1 BENCH_WARMUP=1 \
       timeout -k 30 "${COARSE_IR_TIMEOUT:-400}" python "$PROFILE_OPS" > "$irf" 2>&1
     haveir=$(grep -qc 'LoopLevel IR - AFTER pre-scheduling' "$irf" 2>/dev/null && echo yes || echo NO)
     lines=$(wc -l < "$irf")
