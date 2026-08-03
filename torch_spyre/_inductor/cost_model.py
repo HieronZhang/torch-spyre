@@ -171,6 +171,13 @@ class OpFeatures:
     # each core's per-tile height shrinks and the underfill derate applies. False for
     # reduction-dim tiling and for untiled ops.
     tiles_output_dim: bool = False
+    # True when the coarse loop tiles the REDUCTION dim. Recorded because it is what
+    # decides whether the extractor's raw `out_elems * k_size` is a per-iteration slice
+    # or the whole-loop total; `matmul_macs` is now always the TOTAL, so nothing here
+    # multiplies by `loop_trip`. Records written before that fix carry per-tile macs for
+    # reduction-tiled ops and will under-count compute -- they also lack this field, so
+    # `tiles_reduction_dim=False` on a coarse op with `loop_trip>1` marks a stale row.
+    tiles_reduction_dim: bool = False
     # Per-core per-tile pass-row height (output-tiled ops only): the streamed tile's
     # "rows" / cores. Drives ``eff_underfill``; 0.0 = unknown / not applicable -> no
     # derate.

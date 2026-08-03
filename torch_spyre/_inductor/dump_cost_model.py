@@ -182,10 +182,22 @@ def _row_split(op, default: int) -> int:
         return default
 
 
-def _matmul_features(op, out_elems: int, dtype_bytes: int):
+def _matmul_features(
+    op, out_elems: int, dtype_bytes: int, loop_trip: int = 1, tiles_red_dim: bool = False
+):
     """(macs, rows_per_core, cols_per_core, a_bytes, b_bytes, k_split, m_split, n_split).
 
-    ``macs`` = device(M*N)*K. ``rows_per_core`` = M/m (drives pt_eff + A re-read),
+    ``macs`` = the TOTAL multiply-accumulates the op performs across the WHOLE coarse
+    loop, never a per-iteration slice. That distinction used to leak into the feature
+    file: ``out_elems`` comes from the committed device layout and ``k_size`` from
+    ``reduction_ranges``, and when the coarse loop tiles the REDUCTION dim each iteration
+    sees only ``K/loop_trip``, so the raw product came out ``TOTAL/loop_trip``. When the
+    loop tiles only an OUTPUT dim the output buffer is full-extent and the raw product is
+    already the total. The consumer (cost_model.predict_ops) multiplies nothing by
+    ``loop_trip``, so the reduction-tiled ops were under-counting compute by up to 16x.
+    ``tiles_reduction_dim`` is exactly the discriminator -- it predicts the convention on
+    all six coarse ops measured (row_tiling total; k_tiling / nested / bmm_k / bmm_nested
+    / bmm_3d2d per-tile) -- so the factor is applied here, once, at the source. ``rows_per_core`` = M/m (drives pt_eff + A re-read),
     ``cols_per_core`` = N/n (drives B re-read). ``a_bytes`` = |A| = M*K, ``b_bytes`` =
     |B| = K*N (device dtype). ``k_split``/``m_split``/``n_split`` = the K/M/N core splits.
     M/N/K + splits are recovered from the iteration space: reduction (K) vars have coeff 0
@@ -198,7 +210,8 @@ def _matmul_features(op, out_elems: int, dtype_bytes: int):
     """
     data = getattr(op, "data", None)
     k_size = _prod_ints(getattr(data, "reduction_ranges", None) or [])
-    macs = out_elems * k_size
+    # Scale a reduction-tiled slice back up to the whole-loop total (see docstring).
+    macs = out_elems * k_size * (loop_trip if tiles_red_dim else 1)
     rows_per_core = cols_per_core = 0.0
     a_bytes = b_bytes = 0
     k_split = m_split = n_split = 1
@@ -369,7 +382,7 @@ def extract_op_features(op) -> OpFeatures:
             k_split,
             matmul_m_split,
             matmul_n_split,
-        ) = _matmul_features(op, out_elems, dtype_bytes)
+        ) = _matmul_features(op, out_elems, dtype_bytes, loop_trip, is_tiled_red)
         reduction_cores = k_split
 
     # Per-core per-tile pass-row height for the UNDERFILL derate -- only for OUTPUT-dim
@@ -464,6 +477,7 @@ def extract_op_features(op) -> OpFeatures:
         reduction_cores=reduction_cores,
         loop_trip=loop_trip,
         tiles_output_dim=tiles_out_dim,
+        tiles_reduction_dim=is_tiled_red,
         tile_rows_per_core=tile_rows_per_core,
         is_matmul=is_matmul,
         matmul_macs=matmul_macs,

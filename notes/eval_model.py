@@ -228,6 +228,53 @@ def features_for(rec, default_params, tol=0.02):
     return ops, "io"
 
 
+# --------------------------------------------------------------------------- scope
+# STANDING SCOPE DECISIONS (user, 2026-07-31). These are permanently OUT of the
+# model's evaluation set -- not filtered ad hoc per analysis, so a number quoted
+# anywhere in the report always refers to the same population.
+#
+#   1. cores < 8. Never a target regime. The few points we had were also
+#      hopelessly confounded (cores aliased with per-core area and split fanout,
+#      n=2 per core count on a single shape), so they could only ever have been
+#      fitted, not explained.
+#   2. A fused reduction with fewer than 1024 columns. The reduced-axis length is
+#      the dominant driver of the fused-reduction rate and the short-row corner is
+#      a different regime; including it drags a shape term toward a corner we do
+#      not care about.
+#
+# Everything else stays in, including the slow bmm layouts: those are the EVIDENCE
+# for the additive layout model even though only the fast layout is a target.
+_MIN_CORES = 8
+_MIN_FUSED_REDUCTION_COLS = 1024
+# 3. Logs written at these SHAs carry CORRUPT features, not merely stale ones. Proof:
+#    the same measured config (bmm_k_tiling B=4 1024x2048x1024 cores=32, untiled) is
+#    recorded at rows_per_core=4 with m_split/n_split=None here, versus rows_per_core=64
+#    with m_split=16/n_split=2 in every later log -- a 16x error in M/m. The MEASUREMENTS
+#    agree to 0.8 %, so only the features drifted; scoring them yields +20 % where the
+#    correct features yield -51 % on an identical kernel. Rows like that cannot judge the
+#    model in either direction.
+_CORRUPT_FEATURE_SHAS = {"7f37527", "f321503"}
+
+
+def in_scope(rec) -> bool:
+    """False for rows excluded by the standing scope decisions above."""
+    try:
+        cores = int(rec.get("cores"))
+    except (TypeError, ValueError):
+        cores = None
+    if cores is not None and cores < _MIN_CORES:
+        return False
+    sha = rec.get("model_sha") or ""
+    if sha in _CORRUPT_FEATURE_SHAS and rec.get("feats"):
+        return False
+    op = rec.get("op") or ""
+    if op.startswith("softmax"):
+        cols = rec.get("cols")
+        if isinstance(cols, int) and cols < _MIN_FUSED_REDUCTION_COLS:
+            return False
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--records", default=os.path.join(_HERE, "sweep_records.json"))
@@ -259,6 +306,7 @@ def main():
     params = make_params(overrides)
 
     rows = [r for r in records if not r.get("failed") and r.get("kernel_us")]
+    rows = [r for r in rows if in_scope(r)]
     if not args.all:
         # Score every row that CAN be scored against the current model: any row carrying
         # `feats` (its exact input, recomputed with the current model regardless of which
