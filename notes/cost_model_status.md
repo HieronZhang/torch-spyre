@@ -1,4 +1,4 @@
-# Spyre Cost Model — Status / Handoff (updated 2026-07-24)
+# Spyre Cost Model — Status / Handoff (updated 2026-08-03)
 
 Living status + detail doc — **read this first on resume**. The full model write-up is
 [cost_model_report.md](cost_model_report.md) (the MAIN doc — the long-form derivation of every
@@ -12,16 +12,302 @@ edit locally, hand commands to a run machine, logs pasted back.
 
 ---
 
-## ⭐ CURRENT STATE & PLAN (2026-07-24) — supersedes the older dated sections below
+## ⭐ CURRENT STATE (2026-08-03) — coarse tiling: root cause found, rate blocked on one sweep
+
+Supersedes every dated section below. **Order of work is fixed by the user: coarse tiling is the
+prerequisite for flash-attention, so it is solved first.** A deciding sweep is IN FLIGHT (below);
+while it runs, the single-op report sections (Parts I–III) are being brought up to date.
+
+### The defect — PROVEN from IR, not inferred from timing
+
+In `haoyang_logs/ir/coarsemm_matmul_row_tiling_2048x2048x2048_t4.txt` the coarse-tiled matmul's
+`inner_fn` is:
+
+```text
+i0, i1 = index                                # ranges=[2048, 2048]
+tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)     # A[M,K] -- index CONTAINS i0
+tmp1 = ops.load(arg1_1, i1   + 2048 * r0_0)   # B[K,N] -- index has NO i0
+```
+
+The op carries `loop_tiled_dims=[[0]]` and `DimHint(dim_names=['M'], loop_var=d0)`, so the tiled
+symbol is `i0`. Therefore **A advances with the loop and B is loop-INVARIANT** — every iteration
+re-enters the same K×N operand. The extractor charges B **once**, because `loop_factor` is computed
+as two PER-OP scalars (`out_factor` / `in_factor` in `dump_cost_model.py`) instead of per arg:
+
+```python
+out_factor = 1 if tiles_out_dim else loop_trip
+in_factor  = 1 if (tiles_out_dim or is_tiled_red) else loop_trip
+```
+
+Consequence: **the loop trip count never enters the memory term.** At M=4096 K=N=2048 cores=32 the
+model predicts a byte-identical 684.6 µs at L=4, 8 **and** 16 while measurement goes
+677.8 → 874.3 → 1306.8 µs. The error ladder is monotone and is **zero exactly where the bug is
+inert** (L=1): mean error −0.9 / −6.4 / −9.5 / −23.4 / −58.8 % at L = 1/2/4/8/16.
+
+### The architecture this implies (user's framing, and it is correct)
+
+A coarse-tiled region is **one loop nest containing N ops**, not N independent ops. Loop-invariance
+is a property of the loop, which is why it cannot be decided op-locally. The IR already carries
+every piece needed for a two-pass extractor, and **most of the plumbing already exists**:
+
+- `loop_info.loop_group_id` is the region identity. Verified: `softmax_row_tiling` has **5**
+  ComputedBuffers (max → sub/exp → sum → div) all sharing `loop_group_id=(0,)`;
+  `matmul_row_tiling` has **1**. (Earlier "12 ops" readings are dump STAGES, not ops.)
+- `spyre_kernel.py:605-660` already maps host-range dim → iteration-space symbol (the
+  `host_to_it` mapping) — the same mapping pass 2 needs.
+- `ArgTraffic.loop_factor` is **already per-arg and already applied per-arg**:
+  `_fused_hbm_bytes` computes `a.elems * a.loop_factor * o.dtype_bytes`.
+- `_fused_hbm_bytes(ops)` already takes the whole bundle and dedups external inputs across it.
+
+So pass 2 is: `loop_factor = 1 if the arg's index contains a tiled symbol else loop_trip`.
+
+### What is settled vs what is NOT
+
+**Settled: the COUNT.** B is re-entered every iteration and is charged once. That is a bug.
+Validated offline — `cost_model.py` is pure Python and recorded `feats` carry per-arg
+`loop_factor`, so **no hardware is needed to test it** (`notes/test_loop_invariant_reread.py`; the
+`alpha=0` control reproduces the known ladder exactly). Charging the re-read takes
+`matmul_row_tiling` from RMS 21.0 % → **9.1 %**, mean −13.4 % → −1.8 % (repeat-backed subset,
+n=77).
+
+**NOT settled: the RATE.** Three effects all scale as `(L−1)` and are **perfectly aliased** on the
+data we hold:
+
+| effect | scales as | |
+|---|---|---|
+| (a) B re-read | `(L−1)·K·N·dtype / BW` | scales with B |
+| (b) fixed per-iteration cost | `(L−1)·c` | independent of B |
+| (c) per-tile underfill | rows-per-core | independent of B |
+
+Every one of the recorded `matmul_row_tiling` rows has **K = N = 2048 — one single B size
+(8.0 MB) across only two (M,K,N,cores) cells.** B never varies, so any coefficient fitted here
+would be fitting the aliasing, not measuring a mechanism. This is the same trap as the γ work.
+
+**Also not a monotone effect.** The ladder is **U-shaped**: at M=4096 tiling is 19 % *faster* at
+L=4 than at L=1 before turning over. The model already reproduces the down-slope (its spill/LX
+behaviour); only the **up-slope** is missing. The fix is an ADDED term, not a replacement.
+
+### ✅ RE-READ LADDER — RUN AND FOLDED (2026-08-03). The RATE is measured; an ONSET is the new unknown
+
+`haoyang_logs/coarse_reread_20260803_211314.log`, 32/32 runs, reps=5, cv ≤ 0.9 %. Folded as
+`coarse_rereadnorm_20260803_211314.log` → **2716 → 2748 records**.
+
+**ANSWER TO THE DISCRIMINATOR: the cost scales with B — it is the re-read, not a fixed
+per-iteration cost.** Measuring the marginal cost in the *rising* region,
+`d = (T(16) − T(8))/8`, at cores = 32:
+
+| N | B = K·N | d µs/iter | B / 150 GB/s | ratio |
+|---:|---:|---:|---:|---:|
+| 512 | 2 MB | 17.34 | 13.98 | 1.24 |
+| 1024 | 4 MB | 27.63 | 27.96 | **0.99** |
+| 2048 | 8 MB | 54.09 | 55.92 | **0.97** |
+| 4096 | 16 MB | 100.53 | 111.85 | **0.90** |
+
+`d` spans **5.8×** while B spans 8×; a fixed per-iteration cost would have been flat. So each extra
+iteration in the rising region costs **one full HBM pass over B at ≈ peak bandwidth** — the count
+fix is right and the rate is ~1.0, *not* the 0.5 the earlier offline fit suggested.
+
+**Why the earlier offline fit said 0.5, and why it is not evidence against this.** That test added
+bytes through the model's machinery (`/ eff`, `/ s_lx`, then `− γ·min`), which absorbs part of any
+added traffic; and its reference for "a full HBM read" was each run's *whole-kernel* `bw_gbps`
+(~65–112 GB/s, which includes compute) instead of the 150 GB/s peak. Both errors pushed the
+apparent price of a re-read down.
+
+**THE NEW UNKNOWN — the re-read is not paid at every iteration.** Adding `(L−1)·B/peak` to the
+run-time predictions makes the fit *worse* (RMS 19.5 % → 23.7 %, mean −10.6 % → +17.9 %), because
+the ladder is U-shaped and the up-slope has an **onset**:
+
+| cores | N | T(1) | T(4) | T(8) | T(16) | onset |
+|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 512 | 206.6 | 206.6 | 275.0 | 413.7 | L=8 |
+| 32 | 1024 | 417.2 | 433.5 | 439.5 | 660.5 | L=4 |
+| 32 | 2048 | 839.0 | 679.8 | 874.9 | 1307.7 | L=8 |
+| 32 | 4096 | 1572.8 | 1513.6 | 1445.1 | 2249.3 | L=16 |
+| 16 | 4096 | 2598.0 | 2569.4 | 2550.9 | 2521.5 | never (≤16) |
+
+Below the onset the re-read is evidently served on-chip and costs nothing; above it, full price.
+**Larger N turns up LATER**, which is the opposite of a naive "big B spills sooner" story — it is
+consistent with tiling's *benefit* (shrinking the A/out tiles into LX) growing with N faster than
+the re-read *cost* does, moving the crossover right. 8 cells is too few to fit an onset rule, and
+one cell never turns over at all, so **do not model the onset yet.**
+
+**Two defects in my sweep script, both now fixed in-tree, both worth knowing:**
+
+1. It wrote `L=4  SUMMARY ...` (indented, prefixed). `parse_sweep_logs.py` requires `SUMMARY` at
+   **column 0**, plus `## section` / `-- label`, so it matched **0 runs** on the first attempt. The
+   existing log was salvaged by normalising it; the script now emits the canonical format.
+2. It did **not** set `SPYRE_DUMP_COST=1`, so these 32 rows carry **no `feats`** and can only be
+   scored against the `pred_us` baked in at run time — they cannot be re-scored against a *changed*
+   model. The script now sets it and captures the `IO`/`MODEL`/`MODEL FEATS` blocks. **A re-run is
+   needed before these rows can validate a model change**; the rate conclusion above does not
+   depend on it, since it comes from measured times only.
+
+### 🛠️ FIX IN PROGRESS (2026-08-03) — model term LANDED (inert); one residual isolated
+
+**Landed in `cost_model.py`: `_loop_reread_bytes` + its charge in `predict_ops`.** Counts the HBM
+bytes an operand costs beyond its first pass when it is loop-invariant
+(`elems * (loop_factor - 1) * dtype`), and charges them at **peak, AFTER the derates**:
+
+```python
+mem_t = max(_fused_floor_ns, p.fill_ns + mem / eff / spill_derate)
+mem_t += _loop_reread_bytes(ops) / p.mm_bw_read_gbps
+```
+
+Placement is mechanism, not convenience: `eff` models a **short per-tile stream** underfilling the
+pipeline, whereas a re-read of an invariant operand is one **large contiguous pass** over the whole
+operand — it must not be inflated by `1/eff`. Same reasoning as `_fused_floor_ns`, which is applied
+at the same point for the same reason. The matmul branch subtracts the same quantity from `r` so
+the bytes are charged exactly once.
+
+**GOLD-SAFE, verified: 0 of 2287 feature-carrying records are touched; every category is
+byte-identical** (`bmm` 55.0, `bmm_3d2d` 18.0, `matmul_k` 7.9, OVERALL 224.0 / +5.6). `ruff` clean.
+
+**The gate caught a real defect in my first attempt.** I had assumed `loop_factor` was pinned to 1
+everywhere. It is **not**: 91 records already carry `loop_factor > 1`, on the REDUCTION-tiled ops
+(`matmul_k_tiling`, `bmm_k_tiling`, `bmm_3d2d_k_tiling`, `ctsum`/`ctamax`/`ctamin`) — and on their
+**inputs as well as their outputs**. Those factors mean something different (under K-tiling each
+iteration takes a fresh K-slice, so the inputs *advance*; only the accumulator is re-touched) and
+are themselves part of the known per-iteration-vs-per-loop inconsistency. Charging them made
+`matmul_k` **7.9 → 32.4 %** and `bmm_3d2d` **18.0 → 38.8 %**. The term is now gated to
+`is_matmul AND tiles_output_dim AND role == "input"` — exactly the established case.
+
+**Independent confirmation of the mechanism, from the recorded features.** For
+`matmul_row_tiling`, `matmul_b_bytes` is the **full `K*N*2` at every L (ratio 1.00)** while
+`matmul_a_bytes` is exactly `M*K*2 / L` (1.00 / 0.50 / 0.25 / 0.12 / 0.06 at L = 1/2/4/8/16). The
+extractor already records the asymmetry in those two fields; it just does not reflect it in
+`loop_factor`, which is what feeds the byte count.
+
+**α = 1.0 is corroborated a second way.** Simulating the extractor fix on the 96 in-scope
+`matmul_row_tiling` rows, α = 1.0 gives the **flattest** per-L profile (L4 +16.3, L8 +19.9,
+L16 +17.1) — the L-slope is captured. Lower α leaves a slope (α = 0.5: +2.0 / −5.1 / −21.1).
+
+**THE REMAINING RESIDUAL, now isolated: a flat ~17 % over-prediction on every tiled run (L ≥ 4),
+absent at L = 1/2.** It is *not* the spill term — driving `mm_spill_cap` from 1.5 to 0 moves only
+L=1 and leaves L≥4 unchanged (spill is already ~0 there). It is not `eff` either: `eff` varies
+0.95 / 0.72 / 0.45 across L = 4/8/16 while the error stays flat, so `eff` is tracking something
+real. The shape that fits is a **saturating benefit the model does not have for matmul** — the
+A/output tiles shrinking into LX. The raw data shows exactly that: `R(L) = T(L) − (L−1)·B/peak`
+falls and saturates at ~0.56 of its L=1 value (cores 32, N 2048). And `_lx_spill_bw_derate` is
+**gated OFF for matmul** (`if any(is_matmul): return 1.0`), so coarse matmul currently carries no
+LX term at all. That is the next piece, and it is the same gap the LX-information section below
+describes.
+
+**NOT yet done: the extractor's per-arg `loop_factor`.** Activating it flips `matmul_row_tiling`
+from −14.7 % to +10.8 % mean (RMS 22.6 → 17.5, but >10 % 48 → 62) because the other coarse terms
+were silently absorbing the missing traffic. Land it together with the LX-benefit term and re-fit
+the pair, on a re-run that carries `feats` — not before.
+
+### 🔎 IS B IN LX? NO — settled two independent ways (2026-08-03)
+
+**From the compiler, not from timing.** A graph input can only become LX-resident by being
+**cloned** into LX (`allocator.py`: the source "stays in HBM (not an LX candidate)"). Whether that
+clone is made is decided by `_input_residency_reason`, whose FIRST gate is:
+
+```python
+if self._read_count(uses) == 0:
+    return "no consumer reads it from LX"
+```
+
+and `_read_count(uses) = max(0, len(uses) - 1)` — **the first use is never counted**, because it is
+the clone-in read the input cannot avoid. A coarse-tiled matmul is **one** ComputedBuffer, so B has
+exactly **one** consuming op ⇒ `read_count = 0` ⇒ residency denied. Pinning it would cost a
+clone-in transfer and save nothing *as far as the allocator can see* — the allocator counts uses in
+the GRAPH, and the L loop iterations are inside a single op, invisible to it.
+
+**Empirically, from every record we hold.** Coarse-matmul input args: **684 HBM / 0 LX**.
+`matmul_row_tiling`: **0 LX args in 363**. `mmwd`: 0 LX in 1260. The planner is not broken and was
+not off (`LX_PLANNING=1`, `lx=1` in every SUMMARY) — `softmax_row_tiling` gets **1420** LX args. It
+simply declines for matmul.
+
+**So "B is read every iteration" is the better-supported reading, not the opposite.** B is in HBM
+and nothing pins it. Subtracting exactly one re-read per iteration,
+`R(L) = T(L) − (L−1)·B/peak`, leaves a **monotone falling, saturating** curve in **5 of 8** cells —
+the signature of a separate benefit (the A/output tiles shrinking into LX), not of a re-read that
+is not happening. In the 3 exceptions the marginal *exceeds* one full re-read (1.18–1.24), which is
+the opposite of "read less often"; those are the smallest B (2 MB at both core counts, 4 MB at 16
+cores), where a short transfer does not reach peak bandwidth.
+
+### 📌 THE COST MODEL CAN GET MUCH BETTER LX INFORMATION — and mostly does not use it
+
+What the model does **today**: `_mem_of_layout` reduces `layout.allocation` to a **boolean**
+lx/hbm; `_lx_spill_working_set` **estimates** the per-core working set as "~2 live tiles of
+`tile_rows_per_core × cols`"; `_lx_spill_bw_derate` compares that against a **fitted**
+`lx_spill_cap_bytes = 512 KB` (the real budget is 1638 KB/core = 2 MB × (1 − 0.2)); and the whole
+term is **gated OFF for matmul** (`if any(is_matmul): return 1.0`). So for coarse matmul the model
+carries no LX term at all, and everywhere else it is approximating a quantity the planner computed
+exactly.
+
+What is available and unused:
+
+| source | what it gives | reachable today? |
+|---|---|---|
+| `layout.allocation["lx"]` | the LX **address** of a placed buffer — with sizes, the real per-buffer footprint and true occupancy | **yes**, but read only as a boolean |
+| `allocator.reject_reasons: dict[str, str]` | per-buffer verdict for **why** a buffer is not in LX: `no consumer reads it from LX`, `partial/offset read`, `core div mismatch: …`, `lx back gap`, restickify barrier | **no** — computed every compile, emitted only at DEBUG (`_log_lx_pinning`), never stamped on the op |
+| solver `log_lx_usage` | per-timestep scratchpad occupancy | **no** — DEBUG only |
+
+**The change is small and contained:** stamp `reject_reasons` (and the allocation address/size)
+onto the ops the way `loop_info` is already stamped, then read them in `dump_cost_model`. The model
+would then *know* that B was denied LX and why, instead of inferring spill from a size heuristic —
+which is precisely the input the re-read term needs, and would also let the `s_lx` derate use the
+planner's real answer rather than a fitted 512 KB proxy.
+
+### 🔬 ORIGINAL SWEEP DESIGN — `run_coarse_reread_ladder.sh` (launched 2026-08-03)
+
+`docs/source/user_guide/examples/run_coarse_reread_ladder.sh` — 32 runs, reps=5, cores ≥ 8.
+Two knobs break the aliasing: **N** varies B=K·N without touching A=M·K; **cores** varies
+rows-per-core without touching B. Discriminator = the per-iteration slope
+`s = (T(L) − T(1)) / (L − 1)` plotted against N:
+
+- `s` ∝ N → the re-read is real and HBM-priced.
+- `s` flat in N → it is a fixed per-iteration cost; do **not** add re-read bytes.
+- `s` sub-linear in N → partial residency; `s / (B/BW)` **measures** the HBM fraction of each
+  re-read, which is the number that goes in the model.
+
+Env vars and op name verified against `profile_ops.py`; `bash -n` clean. **UNTRACKED — must be
+COPIED to the run machine (rsync/scp), not pulled.**
+
+### Do NOT generalise the fix to the nested ops
+
+The same patch makes `mm_nested_m_k` / `bmm_nested_b_k` **worse** (RMS 46.0 % → 142.8 %). Their
+loops are nested (`loop_group_id=(0,0)`, `loop_count=[K1,K2]`) and tile **K as well as M**, so B is
+sliced along K and is *not* invariant. Each op needs its own IR dump before any change — per-op
+verification is doing real work here.
+
+### Next steps, in order
+
+1. Fold the re-read ladder; read `s` vs N; fix the rate **or** conclude it is a fixed per-iteration
+   cost. Re-run `notes/test_loop_invariant_reread.py` with real B variation.
+2. Implement the two-pass extractor (pass 1 group by `loop_group_id` → tiled symbols; pass 2
+   per-arg `loop_factor`). Gold-safety gate + adversarial review as usual.
+3. Dump IR for the nested ops, then decide their rule separately.
+4. Only then flash-attention (currently ~40× over-predicted).
+
+### Known scoring gaps found while re-scoring (2026-08-03)
+
+- **`kernel_us` is the canonical measured field** (present on all 2030 in-scope rows and used by
+  `eval_model.py`). `kernel_us_min` exists on only 45 % (repeat-backed rows) and runs a median
+  0.77 % below it. Any ad-hoc analysis must use `kernel_us` or its `n` will silently be a
+  repeat-biased subset.
+- **Plain `mm` is unscoreable**: all 21 records are `no-feats` (no `feats`, no reconstructable I/O
+  block), so §7–11 — the sections that derive the core matmul memory/compute/overlap terms — have
+  **zero** rows scoring against the live model. Those terms are in practice validated on `mmwd`
+  (§12, 318 rows). There is also no plain-`mm` IR dump in `haoyang_logs/ir/`. Worth closing.
+
+---
+
+## CURRENT STATE & PLAN (2026-07-24) — superseded by the section above
 
 **The active effort is the "outlier attack": fix every ≥10% mispredicted *normal/valid* input,
 mechanistically and noise-controlled** (standing directive, see memory `outlier-attack-six-categories`;
 detailed plan `~/.claude/plans/shimmering-percolating-rivest.md`). Ignore tiny matmuls and
 1×32/32×1 extremes.
 
-### 🤖 AUTONOMOUS RUN IN PROGRESS (2026-07-24, session 2) — cats 3→6 then flash-attn
+### 🏁 AUTONOMOUS RUN — ENDED (was 2026-07-24, session 2) — cats 3→6 then flash-attn
 
-Running unattended (~4h). A 5-min heartbeat cron re-invokes and reads THIS section to continue.
+**This run is over; no heartbeat is active.** Kept for its discipline checklist, which still
+applies. Its findings were superseded by sessions 3–5 and by the CURRENT STATE section at the top.
+
+Ran unattended (~4h). A 5-min heartbeat cron re-invoked and read THIS section to continue.
 Discipline (MUST): mechanism-based modeling; **adversarially review EVERY claim with a Workflow of
 challenger agents before acting** (user mandate, repeated); design isolation sweeps + hand off if
 data is thin (don't wait); dump lower-level IR locally if mechanism unclear; goal <10%/point; never
@@ -29,7 +315,7 @@ commit/git; regenerate figure + full end-of-section table after any model change
 consistent. Analysis scripts: `notes/analyze_matmul_overlap.py` (cat3), `notes/analyze_bmm_layout.py`
 (cat4). **Findings below are UNDER REVIEW / not yet verified until their challenge workflow passes.**
 
-### TASK 8 (report figure fixes) — DONE (2026-07-24), adversarial review in flight
+### TASK 8 (report figure fixes) — DONE (2026-07-24), review COMPLETED (no longer in flight)
 
 User-added task: fix three report figures/claims. All done on EXISTING data (no HW), each
 independently re-verified against `sweep_records.json` before editing; a Task-8 challenge workflow
@@ -501,7 +787,20 @@ reason, or blocked on `run_outlier_closeout.sh`. Note `copy` at −62.8 % (cv 0.
 noise-controlled error left in the model and is dropped only by user instruction — worth re-raising if
 that instruction is revisited.
 
-### ✅ SESSION 4 (2026-07-29) — "xxx may be more complex" (user): the overlap term is SATURATED
+### ⚠️ SESSION 4 (2026-07-29) — "xxx may be more complex" (user): FUNCTIONAL FORM held, "SATURATED" REFUTED
+
+> **Read this header, not the old one.** The functional-family half of this session survived: no
+> alternative form for the leftover term beats the shipped `(1−γ)·min` out of sample. The
+> **"the overlap term is SATURATED" half was WRONG and is withdrawn** — it rested on a harness
+> with two bugs (a dead `setattr` on non-existent split params, so `split` was identically 0; and
+> `mac_peak=1e12` failing to zero compute on the bmm-gated path, silently dropping 170 bmm
+> records), and on an "oracle" that froze every other coefficient even though γ is entangled with
+> SPILL. A proper joint 5-fold CV gains **+0.62/+0.53/+0.57** with γ landing at 0.58–0.70 every
+> fold, so **γ = 0.46 is not pinned**. It is kept anyway because the per-cohort argmins pull in
+> opposite directions (plain 0.60, bmm 0.30, coarse 0.30) — it is a compromise between populations,
+> not a settled constant, and the two dissenting cohorts have known defects that make them poor
+> arbiters. Do not re-fit γ until the coarse per-arg `loop_factor` defect (see CURRENT STATE) is
+> fixed. Everything below is retained as the record of the search.
 
 Follow-up to the above, on the user's note that the leftover may need a richer form than
 `(1−γ)·min`. Harness: `notes/explore_overlap_forms.py`. Four independent lines, same answer.
@@ -959,13 +1258,27 @@ coordinated Part III rework (cats 3+4+6) fits on clean data. Report-ready prose 
   **broadcast small-ROWS sweep** `haoyang_logs/bcast_smallr_20260724_015428.log`, both folded into
   `notes/sweep_records.json`. Per-run IR dumps in `haoyang_logs/ir/`.
 - **Noise protocol** now in `profile_ops.py`: `BENCH_REPS` back-to-back profiled measurements →
-  `kernel_us_min/median/std/cv` in the SUMMARY. **Score on CLEAN, MATCHED data** (cores=32, low
-  `cv`). `eval_model.py --all` mixes core counts (a real `BW(cores)` effect) and old runs, so it
-  is NOT the accuracy number — filter to matched conditions.
+  `kernel_us_min/median/std/cv` in the SUMMARY.
+- ⚠️ **SUPERSEDED (2026-08-03):** this section used to say "`eval_model.py --all` is NOT the
+  accuracy number — filter to matched conditions". That is no longer true. The standing scope
+  decisions are now enforced inside `eval_model.in_scope()` (cores ≥ 8; fused reductions ≥ 1024
+  columns; two corrupt-feature SHAs dropped), so **`eval_model.py --all` IS the accuracy number**
+  and every quoted figure refers to the same population (2030 in scope, 1748 scoreable). Per-section report tables come
+  from `notes/report_tables.py`. Score on `kernel_us`, **not** `kernel_us_min` — the latter exists
+  on only ~45 % of rows, so using it silently reduces any population to a repeat-backed subset.
 - Sweep scripts: `docs/source/user_guide/examples/run_outlier_sweep.sh` (the superset, 9 sections,
   budget-guarded via `MAX_SECONDS`), `run_broadcast_smallr_sweep.sh`.
 
 ### The six categories — status + key finding
+
+> ⚠️ **The accuracy numbers in this list are 2026-07-24 vintage and are NOT current** — they
+> predate the scope decisions, so they were computed over a different population. For live figures
+> run `python3 notes/report_tables.py`. Today (1748 scoreable records): broadcast/write **5.7 %**,
+> transport **6.1 %**, reduction **7.2 %**, single pointwise **3.6 %**, matmul split **15.1 %**,
+> batched matmul **27.3 %** (but **5.9 %** on the fast tile order — the layout we actually target).
+> One item below is now outright wrong: transport's `M ≠ 8` is **no longer** unmodelled — the
+> `M < 8` penalty (`tx_touter_m_*`) shipped afterwards and holds to within ~6 %; only `M > 8`
+> (specifically M=32, mean −12.7 %) is still deliberately unmodelled.
 
 1. **broadcast / write** — ✅ **DONE** (report §4, models below). RMS 12.0→6.3%.
 2. **transport** — ✅ **DONE (2026-07-24).** report §6 now 5.5% RMS over 100 shapes (was 8.5%/42;
@@ -1169,7 +1482,14 @@ on X if data does; mechanism must fit the controls; get-data-don't-guess), `repo
 `claim-discipline-perf-modeling`, `conservative-claims-adversarial-check`, `do-not-commit` (the
 user manages ALL git — never commit/push/stage).
 
-### Immediate next step
+### Immediate next step — ⚠️ SUPERSEDED, see CURRENT STATE at the top
+
+> **Do not act on this section.** It is kept as the record of what was planned on 2026-07-24. The
+> γ(cores) work it proposes has since been **done and retired**: the sweep was run, and γ(cores)
+> came out **non-monotone** (0.20/0.60/0.84/0.60/0.56/0.52 for cores 1→32) and barely identifiable
+> at low core counts. The report's old promise that "an `L`-dependent γ is the natural refinement"
+> was withdrawn on the strength of it. The live next step is the coarse-tiling per-arg
+> `loop_factor` defect.
 
 Cats 1 (broadcast/write) and 2 (transport) are DONE. Start **(3) matmul γ(cores)** — read the
 verbatim directive for it above. The single scalar γ=0.46 for compute/HBM overlap can't hold
@@ -1426,7 +1746,12 @@ the flaws fixed BEFORE writing (memory: conservative-claims-adversarial-check). 
 - **Extractor** `dump_cost_model.py`: `_matmul_features` (MACs, M/m, N/n, |A|, |B|, k),
   `_hbm_pattern` (restickify / stick_scatter / reduce_outer from IR index+layout).
 
-## Immediate next steps
+## Immediate next steps (2026-07-08 vintage) — ⚠️ SUPERSEDED, see CURRENT STATE at the top
+
+> **Do not act on this list.** It predates the bmm layout work, the close-out sweeps and the
+> scope decisions, and several items are now known to be resolved or wrong. Item 0's "batch floor"
+> was in fact largely a **device tensor layout** effect (report §13); items 1–3 have been run.
+> Retained only as the record of the plan at that date.
 
 0. **bmm (current focus).** §12a split-shape term is shipped for mm. bmm is NOT just mm×batches:
    a forced `b=1` (batch serialized) sweep shows a large **batch floor** — bmm is −78 % even at a

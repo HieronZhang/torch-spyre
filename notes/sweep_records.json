@@ -86823,6 +86823,1030 @@
       "is_current": false
     },
     {
+      "id": "coarse_rereadnorm_20260803_211314.log:4",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 4,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x512 t=1 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 1,
+      "lx": 1,
+      "io_hbm_bytes": 23068672,
+      "kernel_us": 206.611,
+      "pred_us": 241.443,
+      "err_pct": 16.9,
+      "bw_gbps": 111.7,
+      "memset_us": 102.623,
+      "other_dev_us": 400.542,
+      "total_dev_us": 709.776,
+      "kernel_us_min": 203.515,
+      "kernel_us_median": 206.611,
+      "kernel_us_mean": 206.56,
+      "kernel_us_std": 1.831,
+      "kernel_us_cv": 0.89,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:6",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 6,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x512 t=4 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 4,
+      "lx": 1,
+      "io_hbm_bytes": 23068672,
+      "kernel_us": 206.645,
+      "pred_us": 250.805,
+      "err_pct": 21.4,
+      "bw_gbps": 111.6,
+      "memset_us": 61.667,
+      "other_dev_us": 417.149,
+      "total_dev_us": 685.461,
+      "kernel_us_min": 205.032,
+      "kernel_us_median": 206.645,
+      "kernel_us_mean": 206.418,
+      "kernel_us_std": 0.784,
+      "kernel_us_cv": 0.38,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:8",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 8,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x512 t=8 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 8,
+      "lx": 1,
+      "io_hbm_bytes": 23068672,
+      "kernel_us": 274.959,
+      "pred_us": 250.805,
+      "err_pct": -8.8,
+      "bw_gbps": 83.9,
+      "memset_us": 60.358,
+      "other_dev_us": 418.093,
+      "total_dev_us": 753.41,
+      "kernel_us_min": 273.864,
+      "kernel_us_median": 274.959,
+      "kernel_us_mean": 274.841,
+      "kernel_us_std": 0.714,
+      "kernel_us_cv": 0.26,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:10",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 10,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x512 t=16 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 16,
+      "lx": 1,
+      "io_hbm_bytes": 23068672,
+      "kernel_us": 413.719,
+      "pred_us": 250.805,
+      "err_pct": -39.4,
+      "bw_gbps": 55.8,
+      "memset_us": 77.71,
+      "other_dev_us": 510.441,
+      "total_dev_us": 1001.87,
+      "kernel_us_min": 412.148,
+      "kernel_us_median": 413.719,
+      "kernel_us_mean": 413.394,
+      "kernel_us_std": 0.965,
+      "kernel_us_cv": 0.23,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:12",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 12,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x1024 t=1 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 1,
+      "lx": 1,
+      "io_hbm_bytes": 29360128,
+      "kernel_us": 417.189,
+      "pred_us": 433.953,
+      "err_pct": 4.0,
+      "bw_gbps": 70.4,
+      "memset_us": 83.263,
+      "other_dev_us": 648.679,
+      "total_dev_us": 1149.131,
+      "kernel_us_min": 411.347,
+      "kernel_us_median": 417.189,
+      "kernel_us_mean": 416.76,
+      "kernel_us_std": 4.825,
+      "kernel_us_cv": 1.16,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:14",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 14,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x1024 t=4 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 4,
+      "lx": 1,
+      "io_hbm_bytes": 29360128,
+      "kernel_us": 433.455,
+      "pred_us": 383.874,
+      "err_pct": -11.4,
+      "bw_gbps": 67.7,
+      "memset_us": 72.695,
+      "other_dev_us": 597.931,
+      "total_dev_us": 1104.081,
+      "kernel_us_min": 429.146,
+      "kernel_us_median": 433.455,
+      "kernel_us_mean": 433.209,
+      "kernel_us_std": 2.402,
+      "kernel_us_cv": 0.55,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:16",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 16,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x1024 t=8 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 8,
+      "lx": 1,
+      "io_hbm_bytes": 29360128,
+      "kernel_us": 439.454,
+      "pred_us": 383.874,
+      "err_pct": -12.6,
+      "bw_gbps": 66.8,
+      "memset_us": 78.661,
+      "other_dev_us": 585.004,
+      "total_dev_us": 1103.119,
+      "kernel_us_min": 438.022,
+      "kernel_us_median": 439.454,
+      "kernel_us_mean": 438.978,
+      "kernel_us_std": 0.777,
+      "kernel_us_cv": 0.18,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:18",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 18,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x1024 t=16 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 16,
+      "lx": 1,
+      "io_hbm_bytes": 29360128,
+      "kernel_us": 660.506,
+      "pred_us": 383.874,
+      "err_pct": -41.9,
+      "bw_gbps": 44.5,
+      "memset_us": 115.285,
+      "other_dev_us": 641.688,
+      "total_dev_us": 1417.479,
+      "kernel_us_min": 658.199,
+      "kernel_us_median": 660.506,
+      "kernel_us_mean": 660.232,
+      "kernel_us_std": 1.205,
+      "kernel_us_cv": 0.18,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:20",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 20,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x2048 t=1 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 1,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 839.035,
+      "pred_us": 781.224,
+      "err_pct": -6.9,
+      "bw_gbps": 50.0,
+      "memset_us": 111.482,
+      "other_dev_us": 1166.75,
+      "total_dev_us": 2117.267,
+      "kernel_us_min": 832.98,
+      "kernel_us_median": 839.035,
+      "kernel_us_mean": 838.361,
+      "kernel_us_std": 3.145,
+      "kernel_us_cv": 0.38,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:22",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 22,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x2048 t=4 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 4,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 679.774,
+      "pred_us": 684.621,
+      "err_pct": 0.7,
+      "bw_gbps": 61.7,
+      "memset_us": 101.909,
+      "other_dev_us": 1182.313,
+      "total_dev_us": 1963.996,
+      "kernel_us_min": 677.451,
+      "kernel_us_median": 679.774,
+      "kernel_us_mean": 679.948,
+      "kernel_us_std": 1.903,
+      "kernel_us_cv": 0.28,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:24",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 24,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x2048 t=8 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 8,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 874.944,
+      "pred_us": 684.621,
+      "err_pct": -21.8,
+      "bw_gbps": 47.9,
+      "memset_us": 98.095,
+      "other_dev_us": 1147.551,
+      "total_dev_us": 2120.59,
+      "kernel_us_min": 869.214,
+      "kernel_us_median": 874.944,
+      "kernel_us_mean": 874.357,
+      "kernel_us_std": 2.918,
+      "kernel_us_cv": 0.33,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:26",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 26,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x2048 t=16 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 16,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 1307.694,
+      "pred_us": 684.621,
+      "err_pct": -47.6,
+      "bw_gbps": 32.1,
+      "memset_us": 99.031,
+      "other_dev_us": 1178.101,
+      "total_dev_us": 2584.826,
+      "kernel_us_min": 1301.511,
+      "kernel_us_median": 1307.694,
+      "kernel_us_mean": 1308.434,
+      "kernel_us_std": 4.572,
+      "kernel_us_cv": 0.35,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:28",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 28,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x4096 t=1 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 1,
+      "lx": 1,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 1572.785,
+      "pred_us": 1450.599,
+      "err_pct": -7.8,
+      "bw_gbps": 42.7,
+      "memset_us": 149.145,
+      "other_dev_us": 3401.672,
+      "total_dev_us": 5123.602,
+      "kernel_us_min": 1565.154,
+      "kernel_us_median": 1572.785,
+      "kernel_us_mean": 1572.162,
+      "kernel_us_std": 5.094,
+      "kernel_us_cv": 0.32,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:30",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 30,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x4096 t=4 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 4,
+      "lx": 1,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 1513.584,
+      "pred_us": 1341.427,
+      "err_pct": -11.4,
+      "bw_gbps": 44.3,
+      "memset_us": 168.443,
+      "other_dev_us": 3372.462,
+      "total_dev_us": 5054.489,
+      "kernel_us_min": 1498.49,
+      "kernel_us_median": 1513.584,
+      "kernel_us_mean": 1510.547,
+      "kernel_us_std": 6.507,
+      "kernel_us_cv": 0.43,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:32",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 32,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x4096 t=8 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 8,
+      "lx": 1,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 1445.069,
+      "pred_us": 1305.665,
+      "err_pct": -9.6,
+      "bw_gbps": 46.4,
+      "memset_us": 119.826,
+      "other_dev_us": 3441.987,
+      "total_dev_us": 5006.882,
+      "kernel_us_min": 1440.269,
+      "kernel_us_median": 1445.069,
+      "kernel_us_mean": 1445.774,
+      "kernel_us_std": 3.639,
+      "kernel_us_cv": 0.25,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:34",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 34,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x4096 t=16 cores=32",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 32,
+      "tiles": 16,
+      "lx": 1,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 2249.271,
+      "pred_us": 1305.665,
+      "err_pct": -42.0,
+      "bw_gbps": 29.8,
+      "memset_us": 124.066,
+      "other_dev_us": 3421.127,
+      "total_dev_us": 5794.464,
+      "kernel_us_min": 2246.904,
+      "kernel_us_median": 2249.271,
+      "kernel_us_mean": 2252.237,
+      "kernel_us_std": 5.516,
+      "kernel_us_cv": 0.24,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:36",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 36,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x512 t=1 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 1,
+      "lx": 1,
+      "io_hbm_bytes": 23068672,
+      "kernel_us": 355.879,
+      "pred_us": 362.094,
+      "err_pct": 1.7,
+      "bw_gbps": 64.8,
+      "memset_us": 64.742,
+      "other_dev_us": 430.681,
+      "total_dev_us": 851.302,
+      "kernel_us_min": 352.715,
+      "kernel_us_median": 355.879,
+      "kernel_us_mean": 356.375,
+      "kernel_us_std": 2.301,
+      "kernel_us_cv": 0.65,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:38",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 38,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x512 t=4 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 4,
+      "lx": 1,
+      "io_hbm_bytes": 23068672,
+      "kernel_us": 309.271,
+      "pred_us": 336.573,
+      "err_pct": 8.8,
+      "bw_gbps": 74.6,
+      "memset_us": 61.934,
+      "other_dev_us": 465.996,
+      "total_dev_us": 837.201,
+      "kernel_us_min": 308.927,
+      "kernel_us_median": 309.271,
+      "kernel_us_mean": 309.313,
+      "kernel_us_std": 0.278,
+      "kernel_us_cv": 0.09,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:40",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 40,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x512 t=8 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 8,
+      "lx": 1,
+      "io_hbm_bytes": 23068672,
+      "kernel_us": 348.453,
+      "pred_us": 336.573,
+      "err_pct": -3.4,
+      "bw_gbps": 66.2,
+      "memset_us": 78.91,
+      "other_dev_us": 418.36,
+      "total_dev_us": 845.723,
+      "kernel_us_min": 348.123,
+      "kernel_us_median": 348.453,
+      "kernel_us_mean": 348.428,
+      "kernel_us_std": 0.298,
+      "kernel_us_cv": 0.09,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:42",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 42,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x512 t=16 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 16,
+      "lx": 1,
+      "io_hbm_bytes": 23068672,
+      "kernel_us": 480.419,
+      "pred_us": 336.573,
+      "err_pct": -29.9,
+      "bw_gbps": 48.0,
+      "memset_us": 87.081,
+      "other_dev_us": 488.837,
+      "total_dev_us": 1056.337,
+      "kernel_us_min": 478.833,
+      "kernel_us_median": 480.419,
+      "kernel_us_mean": 480.514,
+      "kernel_us_std": 1.235,
+      "kernel_us_cv": 0.26,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:44",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 44,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x1024 t=1 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 1,
+      "lx": 1,
+      "io_hbm_bytes": 29360128,
+      "kernel_us": 704.828,
+      "pred_us": 670.585,
+      "err_pct": -4.9,
+      "bw_gbps": 41.7,
+      "memset_us": 96.018,
+      "other_dev_us": 628.625,
+      "total_dev_us": 1429.471,
+      "kernel_us_min": 703.461,
+      "kernel_us_median": 704.828,
+      "kernel_us_mean": 705.337,
+      "kernel_us_std": 1.724,
+      "kernel_us_cv": 0.24,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:46",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 46,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x1024 t=4 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 4,
+      "lx": 1,
+      "io_hbm_bytes": 29360128,
+      "kernel_us": 609.921,
+      "pred_us": 609.569,
+      "err_pct": -0.1,
+      "bw_gbps": 48.1,
+      "memset_us": 96.664,
+      "other_dev_us": 564.755,
+      "total_dev_us": 1271.34,
+      "kernel_us_min": 607.907,
+      "kernel_us_median": 609.921,
+      "kernel_us_mean": 609.932,
+      "kernel_us_std": 1.713,
+      "kernel_us_cv": 0.28,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:48",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 48,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x1024 t=8 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 8,
+      "lx": 1,
+      "io_hbm_bytes": 29360128,
+      "kernel_us": 665.208,
+      "pred_us": 609.569,
+      "err_pct": -8.4,
+      "bw_gbps": 44.1,
+      "memset_us": 108.637,
+      "other_dev_us": 611.031,
+      "total_dev_us": 1384.876,
+      "kernel_us_min": 663.536,
+      "kernel_us_median": 665.208,
+      "kernel_us_mean": 665.813,
+      "kernel_us_std": 1.87,
+      "kernel_us_cv": 0.28,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:50",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 50,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x1024 t=16 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 16,
+      "lx": 1,
+      "io_hbm_bytes": 29360128,
+      "kernel_us": 911.0,
+      "pred_us": 609.569,
+      "err_pct": -33.1,
+      "bw_gbps": 32.2,
+      "memset_us": 116.88,
+      "other_dev_us": 651.944,
+      "total_dev_us": 1679.824,
+      "kernel_us_min": 905.139,
+      "kernel_us_median": 911.0,
+      "kernel_us_mean": 911.019,
+      "kernel_us_std": 4.516,
+      "kernel_us_cv": 0.5,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:52",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 52,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x2048 t=1 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 1,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 1180.259,
+      "pred_us": 1267.182,
+      "err_pct": 7.4,
+      "bw_gbps": 35.5,
+      "memset_us": 77.683,
+      "other_dev_us": 1212.721,
+      "total_dev_us": 2470.663,
+      "kernel_us_min": 1175.301,
+      "kernel_us_median": 1180.259,
+      "kernel_us_mean": 1178.793,
+      "kernel_us_std": 2.884,
+      "kernel_us_cv": 0.24,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:54",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 54,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x2048 t=4 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 4,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 1186.955,
+      "pred_us": 1177.018,
+      "err_pct": -0.8,
+      "bw_gbps": 35.3,
+      "memset_us": 113.884,
+      "other_dev_us": 1177.551,
+      "total_dev_us": 2478.39,
+      "kernel_us_min": 1179.025,
+      "kernel_us_median": 1186.955,
+      "kernel_us_mean": 1185.771,
+      "kernel_us_std": 4.922,
+      "kernel_us_cv": 0.42,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:56",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 56,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x2048 t=8 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 8,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 1219.704,
+      "pred_us": 1155.56,
+      "err_pct": -5.3,
+      "bw_gbps": 34.4,
+      "memset_us": 113.995,
+      "other_dev_us": 1141.45,
+      "total_dev_us": 2475.149,
+      "kernel_us_min": 1217.438,
+      "kernel_us_median": 1219.704,
+      "kernel_us_mean": 1219.88,
+      "kernel_us_std": 2.188,
+      "kernel_us_cv": 0.18,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:58",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 58,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x2048 t=16 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 16,
+      "lx": 1,
+      "io_hbm_bytes": 41943040,
+      "kernel_us": 1363.901,
+      "pred_us": 1155.56,
+      "err_pct": -15.3,
+      "bw_gbps": 30.8,
+      "memset_us": 128.122,
+      "other_dev_us": 1240.439,
+      "total_dev_us": 2732.462,
+      "kernel_us_min": 1363.552,
+      "kernel_us_median": 1363.901,
+      "kernel_us_mean": 1364.789,
+      "kernel_us_std": 1.354,
+      "kernel_us_cv": 0.1,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:60",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 60,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x4096 t=1 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 1,
+      "lx": 1,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 2597.957,
+      "pred_us": 2410.549,
+      "err_pct": -7.2,
+      "bw_gbps": 25.8,
+      "memset_us": 123.742,
+      "other_dev_us": 3427.861,
+      "total_dev_us": 6149.56,
+      "kernel_us_min": 2591.084,
+      "kernel_us_median": 2597.957,
+      "kernel_us_mean": 2597.871,
+      "kernel_us_std": 5.621,
+      "kernel_us_cv": 0.22,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:62",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 62,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x4096 t=4 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 4,
+      "lx": 1,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 2569.423,
+      "pred_us": 2319.068,
+      "err_pct": -9.7,
+      "bw_gbps": 26.1,
+      "memset_us": 122.943,
+      "other_dev_us": 3421.1,
+      "total_dev_us": 6113.466,
+      "kernel_us_min": 2562.632,
+      "kernel_us_median": 2569.423,
+      "kernel_us_mean": 2569.766,
+      "kernel_us_std": 6.805,
+      "kernel_us_cv": 0.26,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:64",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 64,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x4096 t=8 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 8,
+      "lx": 1,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 2550.857,
+      "pred_us": 2279.73,
+      "err_pct": -10.6,
+      "bw_gbps": 26.3,
+      "memset_us": 162.698,
+      "other_dev_us": 3422.084,
+      "total_dev_us": 6135.639,
+      "kernel_us_min": 2538.156,
+      "kernel_us_median": 2550.857,
+      "kernel_us_mean": 2547.465,
+      "kernel_us_std": 7.187,
+      "kernel_us_cv": 0.28,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
+      "id": "coarse_rereadnorm_20260803_211314.log:66",
+      "log_file": "coarse_rereadnorm_20260803_211314.log",
+      "lineno": 66,
+      "model_sha": "217d8c2",
+      "log_date": "20260803_211314",
+      "section": "coarse_reread",
+      "label": "matmul_row_tiling 4096x2048x4096 t=16 cores=16",
+      "op_it_space_splits": null,
+      "op": "matmul_row_tiling",
+      "rows": 4096,
+      "cols": 2048,
+      "cores": 16,
+      "tiles": 16,
+      "lx": 1,
+      "io_hbm_bytes": 67108864,
+      "kernel_us": 2521.491,
+      "pred_us": 2247.544,
+      "err_pct": -10.9,
+      "bw_gbps": 26.6,
+      "memset_us": 121.554,
+      "other_dev_us": 3410.854,
+      "total_dev_us": 6053.899,
+      "kernel_us_min": 2517.873,
+      "kernel_us_median": 2521.491,
+      "kernel_us_mean": 2523.259,
+      "kernel_us_std": 4.234,
+      "kernel_us_cv": 0.17,
+      "reps": 5,
+      "failed": false,
+      "is_current": true
+    },
+    {
       "id": "coarse_terms_20260707_213342.log:34",
       "log_file": "coarse_terms_20260707_213342.log",
       "lineno": 34,
@@ -170033,7 +171057,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:38",
@@ -170202,7 +171226,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:56",
@@ -170365,7 +171389,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:86",
@@ -170893,7 +171917,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:101",
@@ -171029,7 +172053,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:121",
@@ -171192,7 +172216,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:139",
@@ -171355,7 +172379,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:157",
@@ -171518,7 +172542,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:174",
@@ -171681,7 +172705,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:202",
@@ -172118,7 +173142,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:230",
@@ -172555,7 +173579,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:247",
@@ -172718,7 +173742,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:271",
@@ -173071,7 +174095,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:295",
@@ -173424,7 +174448,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:323",
@@ -173594,7 +174618,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:340",
@@ -173764,7 +174788,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:357",
@@ -173934,7 +174958,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:374",
@@ -174104,7 +175128,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:391",
@@ -174274,7 +175298,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:408",
@@ -174444,7 +175468,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:425",
@@ -174614,7 +175638,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:442",
@@ -174784,7 +175808,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:459",
@@ -174954,7 +175978,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:476",
@@ -175124,7 +176148,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:493",
@@ -175294,7 +176318,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:510",
@@ -175464,7 +176488,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:527",
@@ -175634,7 +176658,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:544",
@@ -175804,7 +176828,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:561",
@@ -175974,7 +176998,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:578",
@@ -176144,7 +177168,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:595",
@@ -176314,7 +177338,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:612",
@@ -176484,7 +177508,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:629",
@@ -176654,7 +177678,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:646",
@@ -176824,7 +177848,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:663",
@@ -176994,7 +178018,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:680",
@@ -177164,7 +178188,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:697",
@@ -177334,7 +178358,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:714",
@@ -177504,7 +178528,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:731",
@@ -177674,7 +178698,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:748",
@@ -177844,7 +178868,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:765",
@@ -178014,7 +179038,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:782",
@@ -178184,7 +179208,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:799",
@@ -178354,7 +179378,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:816",
@@ -178524,7 +179548,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:833",
@@ -178694,7 +179718,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:850",
@@ -178864,7 +179888,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:867",
@@ -179034,7 +180058,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:884",
@@ -179204,7 +180228,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:901",
@@ -179374,7 +180398,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:918",
@@ -179544,7 +180568,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:935",
@@ -179714,7 +180738,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:952",
@@ -179884,7 +180908,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:969",
@@ -180054,7 +181078,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:986",
@@ -180224,7 +181248,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1003",
@@ -180394,7 +181418,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1020",
@@ -180564,7 +181588,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1037",
@@ -180734,7 +181758,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1054",
@@ -180904,7 +181928,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1071",
@@ -181074,7 +182098,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1088",
@@ -181244,7 +182268,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1105",
@@ -181414,7 +182438,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1122",
@@ -181584,7 +182608,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1139",
@@ -181754,7 +182778,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1156",
@@ -181924,7 +182948,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1173",
@@ -182094,7 +183118,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1190",
@@ -182259,7 +183283,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1207",
@@ -182429,7 +183453,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1224",
@@ -182599,7 +183623,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1241",
@@ -182769,7 +183793,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1258",
@@ -182934,7 +183958,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1275",
@@ -183104,7 +184128,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1292",
@@ -183274,7 +184298,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1309",
@@ -183444,7 +184468,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1326",
@@ -183609,7 +184633,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1426",
@@ -186129,7 +187153,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1523",
@@ -188649,7 +189673,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1620",
@@ -191169,7 +192193,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1623",
@@ -191189,7 +192213,7 @@
       "size": 2,
       "split": 4.0,
       "failed": true,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1720",
@@ -193709,7 +194733,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1817",
@@ -196229,7 +197253,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1944",
@@ -199622,7 +200646,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1947",
@@ -199638,7 +200662,7 @@
       "Lk": 2048,
       "ktiles": 4,
       "failed": true,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1971",
@@ -199794,7 +200818,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:1987",
@@ -199954,7 +200978,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2003",
@@ -200114,7 +201138,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2019",
@@ -200274,7 +201298,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2035",
@@ -200434,7 +201458,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2051",
@@ -200590,7 +201614,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2067",
@@ -200750,7 +201774,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2083",
@@ -200910,7 +201934,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2099",
@@ -201070,7 +202094,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2115",
@@ -201230,7 +202254,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2131",
@@ -201386,7 +202410,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2147",
@@ -201546,7 +202570,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2163",
@@ -201706,7 +202730,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2179",
@@ -201866,7 +202890,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2195",
@@ -202026,7 +203050,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2211",
@@ -202182,7 +203206,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2227",
@@ -202342,7 +203366,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2243",
@@ -202502,7 +203526,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2259",
@@ -202662,7 +203686,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2275",
@@ -202822,7 +203846,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2290",
@@ -202958,7 +203982,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2305",
@@ -203094,7 +204118,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2320",
@@ -203230,7 +204254,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2335",
@@ -203366,7 +204390,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2350",
@@ -203502,7 +204526,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2365",
@@ -203638,7 +204662,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2380",
@@ -203774,7 +204798,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2395",
@@ -203910,7 +204934,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2410",
@@ -204046,7 +205070,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2425",
@@ -204182,7 +205206,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2440",
@@ -204318,7 +205342,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2455",
@@ -204454,7 +205478,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2472",
@@ -204619,7 +205643,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2489",
@@ -204784,7 +205808,7 @@
       ],
       "M": 4096,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2506",
@@ -204949,7 +205973,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2523",
@@ -205114,7 +206138,7 @@
       ],
       "M": 4096,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2540",
@@ -205279,7 +206303,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2557",
@@ -205444,7 +206468,7 @@
       ],
       "M": 4096,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2574",
@@ -205609,7 +206633,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2591",
@@ -205774,7 +206798,7 @@
       ],
       "M": 4096,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2608",
@@ -205939,7 +206963,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2625",
@@ -206104,7 +207128,7 @@
       ],
       "M": 4096,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2642",
@@ -206269,7 +207293,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2659",
@@ -206434,7 +207458,7 @@
       ],
       "M": 4096,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2676",
@@ -206599,7 +207623,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2693",
@@ -206764,7 +207788,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2710",
@@ -206929,7 +207953,7 @@
       ],
       "M": 2048,
       "K": 2048,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2727",
@@ -207094,7 +208118,7 @@
       ],
       "M": 4096,
       "K": 4096,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2744",
@@ -207259,7 +208283,7 @@
       ],
       "M": 4096,
       "K": 4096,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2761",
@@ -207424,7 +208448,7 @@
       ],
       "M": 4096,
       "K": 4096,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2778",
@@ -207589,7 +208613,7 @@
       ],
       "M": 2048,
       "K": 4096,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2795",
@@ -207754,7 +208778,7 @@
       ],
       "M": 2048,
       "K": 4096,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2812",
@@ -207919,7 +208943,7 @@
       ],
       "M": 2048,
       "K": 4096,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2829",
@@ -208089,7 +209113,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2846",
@@ -208257,7 +209281,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2863",
@@ -208427,7 +209451,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2880",
@@ -208595,7 +209619,7 @@
         }
       ],
       "B": 2,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2897",
@@ -208765,7 +209789,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2914",
@@ -208933,7 +209957,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2931",
@@ -209103,7 +210127,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2948",
@@ -209271,7 +210295,7 @@
         }
       ],
       "B": 4,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2965",
@@ -209441,7 +210465,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2982",
@@ -209609,7 +210633,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:2999",
@@ -209779,7 +210803,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3016",
@@ -209947,7 +210971,7 @@
         }
       ],
       "B": 8,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3033",
@@ -210117,7 +211141,7 @@
         }
       ],
       "B": 16,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3050",
@@ -210285,7 +211309,7 @@
         }
       ],
       "B": 16,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3067",
@@ -210455,7 +211479,7 @@
         }
       ],
       "B": 16,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3084",
@@ -210623,7 +211647,7 @@
         }
       ],
       "B": 16,
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3102",
@@ -210754,7 +211778,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3117",
@@ -210885,7 +211909,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3132",
@@ -211016,7 +212040,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3147",
@@ -211147,7 +212171,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3162",
@@ -211278,7 +212302,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3177",
@@ -211409,7 +212433,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3192",
@@ -211540,7 +212564,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3207",
@@ -211671,7 +212695,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3222",
@@ -211802,7 +212826,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3237",
@@ -211933,7 +212957,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3252",
@@ -212064,7 +213088,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3267",
@@ -212195,7 +213219,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3282",
@@ -212326,7 +213350,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3297",
@@ -212457,7 +213481,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3312",
@@ -212588,7 +213612,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3327",
@@ -212719,7 +213743,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3342",
@@ -212850,7 +213874,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3357",
@@ -212981,7 +214005,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3372",
@@ -213112,7 +214136,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3387",
@@ -213243,7 +214267,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3402",
@@ -213374,7 +214398,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3417",
@@ -213505,7 +214529,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3432",
@@ -213636,7 +214660,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3447",
@@ -213767,7 +214791,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3477",
@@ -214295,7 +215319,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3507",
@@ -214823,7 +215847,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3537",
@@ -215351,7 +216375,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3567",
@@ -215879,7 +216903,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3597",
@@ -216407,7 +217431,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3627",
@@ -216935,7 +217959,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3657",
@@ -217463,7 +218487,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3687",
@@ -217991,7 +219015,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3717",
@@ -218519,7 +219543,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3747",
@@ -219047,7 +220071,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3777",
@@ -219575,7 +220599,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3807",
@@ -220103,7 +221127,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3836",
@@ -220631,7 +221655,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3865",
@@ -221159,7 +222183,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3897",
@@ -221771,7 +222795,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3927",
@@ -222299,7 +223323,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3957",
@@ -222827,7 +223851,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:3987",
@@ -223355,7 +224379,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4017",
@@ -223883,7 +224907,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4047",
@@ -224411,7 +225435,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4077",
@@ -224939,7 +225963,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4107",
@@ -225467,7 +226491,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4137",
@@ -225995,7 +227019,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4167",
@@ -226523,7 +227547,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4184",
@@ -226686,7 +227710,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4202",
@@ -226849,7 +227873,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4220",
@@ -227012,7 +228036,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4238",
@@ -227175,7 +228199,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4256",
@@ -227338,7 +228362,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4273",
@@ -227501,7 +228525,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4297",
@@ -227854,7 +228878,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4321",
@@ -228207,7 +229231,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4345",
@@ -228560,7 +229584,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4369",
@@ -228913,7 +229937,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4386",
@@ -229076,7 +230100,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4414",
@@ -229513,7 +230537,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4442",
@@ -229950,7 +230974,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4470",
@@ -230387,7 +231411,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_20260730_224425.log:4498",
@@ -230824,7 +231848,7 @@
           "hbm_pattern": ""
         }
       ],
-      "is_current": true
+      "is_current": false
     },
     {
       "id": "grand_sweep_20260619_060944.log:10",

@@ -77,27 +77,53 @@ LOG="haoyang_logs/coarse_reread_$(date +%Y%m%d_%H%M%S).log"
 M=${M:-4096}
 K=${K:-2048}
 REPS=${BENCH_REPS:-5}
+# L values. The default coarse ladder answered "does the cost scale with B?" (yes: each
+# extra iteration costs one full HBM pass over B). Run DENSE=1 for the follow-up question
+# -- where the tiling BENEFIT saturates -- which needs the turnover bracketed to better
+# than a factor of 2. The benefit is large (with B's cost removed, tiling is up to 3x
+# faster) and the model's existing spill term reaches zero by L=4 while the measurement
+# keeps improving through L=16, so the shape between them is what has to be pinned down.
+if [ "${DENSE:-0}" = "1" ]; then
+  LVALS="1 2 3 4 6 8 12 16 24 32"
+  NVALS="${NVALS:-1024 4096}"     # one early-turnover cell, one late
+else
+  LVALS="1 4 8 16"
+  NVALS="${NVALS:-512 1024 2048 4096}"
+fi
 
+# LOG FORMAT IS LOAD-BEARING. notes/parse_sweep_logs.py only recognises: a `git: <sha>` line,
+# `## <section>`, `-- <label>`, and a SUMMARY line that starts at COLUMN 0. Do not indent the
+# SUMMARY or prefix it with anything -- an earlier version of this script wrote "  L=4  SUMMARY ..."
+# and the parser silently matched 0 runs. The label carries M/K/N and the tile count, because the
+# SUMMARY itself has no field for N.
 echo "==== COARSE RE-READ LADDER  $(date) ====" | tee "$LOG"
-echo "git: $(git rev-parse --short HEAD)   M=$M K=$K reps=$REPS" | tee -a "$LOG"
-echo "fixed M,K; N varies B=K*N; cores varies rows/core; L is the loop trip" | tee -a "$LOG"
+echo "git: $(git rev-parse --short HEAD)" | tee -a "$LOG"
+echo "# fixed M=$M K=$K reps=$REPS; N varies B=K*N; cores varies rows/core; L is the loop trip" \
+  | tee -a "$LOG"
+echo "## coarse_reread" | tee -a "$LOG"
 
 for cores in 32 16; do
-  for N in 512 1024 2048 4096; do
+  for N in $NVALS; do
     bmb=$(python3 -c "print(f'{$K*$N*2/1048576:.1f}')")
-    echo "" | tee -a "$LOG"
-    echo "---- cores=$cores N=$N  (B = ${bmb} MB) ----" | tee -a "$LOG"
-    for L in 1 4 8 16; do
-      out=$(SENCORES="$cores" BENCH_OP=matmul_row_tiling \
+    echo "# ---- cores=$cores N=$N  (B = ${bmb} MB) ----" | tee -a "$LOG"
+    for L in $LVALS; do
+      # SPYRE_DUMP_COST=1 is REQUIRED: without it the rows carry no `feats`/IO block, so they
+      # can never be re-scored against a CHANGED model offline -- only against the pred_us
+      # baked in at run time. The first version of this script omitted it and the 32 resulting
+      # rows are timing-only.
+      out=$(SENCORES="$cores" SPYRE_DUMP_COST=1 BENCH_OP=matmul_row_tiling \
             BENCH_ROWS="$M" BENCH_COLS="$K" BENCH_N="$N" \
             BENCH_TILES="$L" BENCH_REPS="$REPS" \
             timeout -k 30 "${RUN_TIMEOUT:-600}" python "$PROFILE_OPS" 2>&1)
       line=$(printf '%s\n' "$out" | grep -E '^SUMMARY' | head -1)
+      echo "-- matmul_row_tiling ${M}x${K}x${N} t=$L cores=$cores" | tee -a "$LOG"
       if [ -z "$line" ]; then
-        echo "  L=$L  FAILED" | tee -a "$LOG"
-        printf '%s\n' "$out" | tail -3 | sed 's/^/     /' | tee -a "$LOG"
+        echo "#   FAILED" | tee -a "$LOG"
+        printf '%s\n' "$out" | tail -3 | sed 's/^/#     /' | tee -a "$LOG"
       else
-        echo "  L=$L  $line" | tee -a "$LOG"
+        # Emit the model's own IO / MODEL / MODEL FEATS blocks too, so the row is re-scoreable.
+        printf '%s\n' "$out" | grep -E '^(IO |MODEL |op_it_space_splits)' | tee -a "$LOG"
+        printf '%s\n' "$line" | tee -a "$LOG"
       fi
     done
   done

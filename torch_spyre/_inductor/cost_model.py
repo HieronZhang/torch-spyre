@@ -484,8 +484,12 @@ class CostParams:
     bmm_3d2d_mac_peak_hi_ns: float = 470.0  # B >  bmm_3d2d_batch_knee
     bmm_3d2d_batch_knee: int = 4
     bmm_layout_peak_fast_ns: float = 650.0  # both operands on the fast [1,0,2] order
-    bmm_layout_peak_a_default_ns: float = 368.0  # added when operand A is default [0,1,2]
-    bmm_layout_peak_b_default_ns: float = 517.0  # added when operand B is default [0,1,2]
+    bmm_layout_peak_a_default_ns: float = (
+        368.0  # added when operand A is default [0,1,2]
+    )
+    bmm_layout_peak_b_default_ns: float = (
+        517.0  # added when operand B is default [0,1,2]
+    )
 
     # Access-pattern effective HBM BW (GB/s) for non-matmul ops whose stick layout is
     # reorganized -- these fold turnaround into the single rate (measured io/kernel on
@@ -829,6 +833,59 @@ def _fused_hbm_bytes(ops: list) -> tuple:
     return r, w
 
 
+def _loop_reread_bytes(ops: list) -> float:
+    """HBM bytes re-read because an operand is LOOP-INVARIANT under coarse tiling.
+
+    A coarse-tiled kernel is one op containing an L-iteration loop. An operand whose
+    index expression does not involve the tiled loop symbol is re-entered at the SAME
+    address every iteration -- so it is transferred L times, not once. The extractor
+    marks this per arg as ``loop_factor > 1``; this returns only the EXCESS over the
+    first pass, i.e. ``elems * (loop_factor - 1) * dtype``.
+
+    Established for ``matmul_row_tiling`` (tiles M) two independent ways:
+
+    * IR: ``inner_fn`` loads A at ``r0_0 + 2048*i0`` (contains the tiled symbol ``i0``)
+      and B at ``i1 + 2048*r0_0`` (does not), with ``loop_tiled_dims=[[0]]`` and
+      ``DimHint(dim_names=['M'], loop_var=d0)``.
+    * The recorded features already show the asymmetry: ``matmul_b_bytes`` is the FULL
+      ``K*N*2`` at every L (ratio 1.00), while ``matmul_a_bytes`` is exactly ``M*K*2/L``.
+
+    B is NOT served from LX. The scratchpad allocator only pins a graph input by cloning
+    it, and ``_input_residency_reason``'s first gate rejects any input whose
+    ``_read_count`` (which excludes the unavoidable first read) is 0. The L iterations
+    live INSIDE one op, so the allocator sees a single use and declines -- confirmed on
+    every record we hold: coarse-matmul input args are 684 HBM / 0 LX, while
+    ``softmax_row_tiling`` gets 1420 LX args, so the planner is working and simply does
+    not apply here.
+
+    SCOPE -- deliberately narrow. Counts only an **input** of a **matmul** whose loop
+    tiles an **output** dim. That is exactly the case established above, and the gate
+    matters: ``loop_factor > 1`` ALREADY occurs today on the REDUCTION-tiled ops
+    (``matmul_k_tiling``, ``bmm_k_tiling``, ``bmm_3d2d_k_tiling``, ``ctsum``/``ctamax``/
+    ``ctamin``), where it is set on the output accumulator AND the inputs alike. Those
+    factors mean something different -- under K-tiling each iteration consumes a fresh
+    K-slice, so the inputs ADVANCE and only the accumulator is re-touched -- and they are
+    part of the known per-iteration-vs-per-loop inconsistency in the extractor, not a
+    verified quantity. Charging them here made ``matmul_k`` 7.9 -> 32.4 % and
+    ``bmm_3d2d`` 18.0 -> 38.8 %, so they are excluded until that inconsistency is fixed.
+
+    0.0 for every op the extractor emits today (output-dim-tiled matmuls carry
+    ``loop_factor = 1`` on all args), so this term is INERT until the extractor sets the
+    invariant input's factor -- verified by the gold gate.
+    """
+    extra = 0.0
+    for o in ops:
+        if not (getattr(o, "is_matmul", False) and o.tiles_output_dim):
+            continue
+        for a in o.args:
+            if a.mem != "hbm" or a.role != "input":
+                continue
+            lf = getattr(a, "loop_factor", 1) or 1
+            if lf > 1:
+                extra += a.elems * (lf - 1) * o.dtype_bytes
+    return extra
+
+
 def _is_broadcast_op(o) -> bool:
     """True for an op that streams a FULL HBM input AND a small BROADCAST operand (loaded
     once): copy (x+const), bcast, bcastcol, mulbcast. These run at ``bw_broadcast_gbps``,
@@ -1077,7 +1134,6 @@ def _reduction_bw_cores_factor(cores, p):
     return 1.0
 
 
-
 def _fused_elem_floor_ns(ops, p):
     """Per-core element-throughput floor (ns) for a FUSED reduction bundle (softmax).
 
@@ -1158,11 +1214,14 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
             for o in ops
             if getattr(o, "is_matmul", False)
         )
+        # The loop-invariant re-read is held OUT of this term and charged separately
+        # below, at peak and outside the per-tile underfill derate (see `mem_t`).
+        r_base = r - _loop_reread_bytes(ops)
         mem = (
-            r / p.mm_bw_read_gbps
+            r_base / p.mm_bw_read_gbps
             + w / p.mm_bw_write_gbps
             + spill / p.mm_bw_read_gbps
-            + p.rw_turnaround_ns_per_byte * min(r, w)
+            + p.rw_turnaround_ns_per_byte * min(r_base, w)
         )
     elif any(_eff_bw(o) is not None for o in ops):
         # Per-op effective BW (access-pattern transports OR a broadcast operand); these
@@ -1192,9 +1251,9 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         # calibration; below 32 cores fewer streams drive the HBM bus, so derate by g(cores)
         # (g(32)=1 -> gold untouched). Only read/amax/sumrow/mean reach here at cores<32;
         # ctsum/ctamax/ctamin/sumall structurally qualify too but only ever run at cores=32.
-        _bw = reduction_read_bw(_reduction_rows(ops[0]), p) * _reduction_bw_cores_factor(
-            ops[0].cores, p
-        )
+        _bw = reduction_read_bw(
+            _reduction_rows(ops[0]), p
+        ) * _reduction_bw_cores_factor(ops[0].cores, p)
         mem = (r + w) / _bw
     elif (
         len(ops) > 1
@@ -1250,6 +1309,16 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     # A fused reduction bundle is floored by per-core element throughput (see
     # `_fused_elem_floor_ns`); apply it to the FINAL memory time, after the derates.
     mem_t = max(_fused_floor_ns, p.fill_ns + mem / eff / spill_derate)
+    # LOOP-INVARIANT OPERAND RE-READ, charged AFTER the derates and at the plain peak
+    # rate. Placement is the mechanism, not a convenience: `eff` models a SHORT PER-TILE
+    # stream underfilling the pipeline, but a re-read of a loop-invariant operand is one
+    # large CONTIGUOUS pass over the whole operand -- it is not tile-shaped and must not
+    # be inflated by 1/eff (the same reason `_fused_floor_ns` is applied here and not
+    # inside `mem`). Measured: at cores=32 each extra iteration costs 0.90-1.24x a full
+    # HBM pass over B at 150 GB/s (B = 2/4/8/16 MB -> 1.24/0.99/0.97/0.90), while the
+    # marginal cost itself spans 5.8x -- so it scales with the operand, and is not a
+    # fixed per-iteration overhead. 0 until the extractor sets per-arg `loop_factor`.
+    mem_t += _loop_reread_bytes(ops) / p.mm_bw_read_gbps
     # MATMUL compute = MACs/cores derated by pt_eff (PT-array fill).
     compute = 0.0
     for o in ops:
@@ -1364,7 +1433,11 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             mac_peak = _matmul_mac_peak(o, p)
             c_ns = o.matmul_macs / o.cores / (mac_peak * pe)
             mm_us += c_ns / 1000
-            slow = " [default-layout bmm slow rate]" if mac_peak != p.mac_peak_per_core_ns else ""
+            slow = (
+                " [default-layout bmm slow rate]"
+                if mac_peak != p.mac_peak_per_core_ns
+                else ""
+            )
             mm_lines.append(
                 f"     compute = MACs/cores/(mac_peak*pt_eff) = {o.matmul_macs}/"
                 f"{o.cores}/({mac_peak:.0f}*{pe:.3f}) = {c_ns / 1000:.2f}"

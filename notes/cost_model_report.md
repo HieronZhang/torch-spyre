@@ -17,6 +17,54 @@ This section is the **destination**; Parts I–IV are the route — each term be
 from the data in the section noted, starting from an observation. Read this for the shape of the
 whole model, then the Parts for why each piece takes the form it does.
 
+### The data every number here is scored against
+
+**2748 measurements recorded, 2030 in scope, 1748 scoreable.** Every accuracy figure in this report
+is recomputed from the live model against `notes/sweep_records.json` — nothing is hand-typed.
+Regenerate the per-section accuracy lines and tables with `python3 notes/report_tables.py`, and the
+figures with `python3 notes/plot_report.py`.
+
+The three counts differ for reasons worth stating. *In scope* applies the permanent exclusions
+below. *Scoreable* additionally requires that a record carry enough information to be re-costed by
+the **current** model — either the logged per-op features, or an I/O block the features can be
+reconstructed from and verified against. Runs made before feature logging existed can still be
+compared against the prediction baked into them at the time, but they cannot test a model that has
+since changed, so they are excluded from every accuracy figure here.
+
+Measured time is each record's `kernel_us`. (Runs that repeat a configuration also store a
+`kernel_us_min`; it exists on only ~45 % of rows, so using it would quietly reduce every
+population to a repeat-backed subset.)
+
+Three classes of measurement are **permanently excluded**, so that a number quoted anywhere in
+this report always refers to the same population:
+
+| excluded | why |
+|---|---|
+| fewer than 8 cores | never a target regime, and the few points were confounded — core count moved together with per-core area and split fanout, so they could only have been fitted, not explained |
+| a fused reduction narrower than 1024 columns | the reduced-axis length dominates that rate; the short-row corner is a different regime and drags the shape term toward a case we do not care about |
+| two early logs with corrupted features | the same measured configuration is recorded with a 16× different per-core row count than in every later log. The *measurements* agree to 0.8 %, so only the features drifted — such rows cannot judge the model in either direction |
+
+**Accuracy of the single-op model today** (Parts I–III; the coarse-tiling model of Part IV is
+mid-revision and is reported separately):
+
+| section | n | RMS % | mean % | beyond ±10 % |
+|---|---:|---:|---:|---:|
+| Part I — single pointwise | 89 | 3.6 | −1.5 | 4 |
+| §4 — broadcast / write | 281 | 5.7 | −0.2 | 22 |
+| §5 — reduction | 97 | 7.2 | +3.0 | 14 |
+| §6 — transport | 203 | 6.1 | −0.0 | 15 |
+| §12 — matmul split shape | 318 | 15.1 | −0.3 | 89 |
+| §13 — batched matmul | 239 | 27.3 | −12.7 | 74 |
+
+The memory-bound ops (Parts I–II) are comfortably inside the ±15–20 % bar. Matmul is not yet:
+§12's spread is two-sided (−48…+48 %) and §13 is dominated by batched cases whose device tile
+order is the slow default — see those sections for what is and is not modelled.
+
+Two gaps worth stating plainly. **§7–11 has no scoreable data**: all 21 plain `mm` records
+predate feature logging and carry no reconstructable I/O block, so the memory, compute and
+overlap terms those sections derive are in practice validated through `mmwd` (§12) rather than
+through `mm` itself. And there is no plain-`mm` IR dump on disk. Both are worth closing.
+
 ### The harness ops (what each benchmark actually runs)
 
 | group | ops | torch expression |
@@ -247,10 +295,25 @@ beyond softmax — so it is scoped there, not patched in here.
 ### Part I accuracy — every pointwise data point
 
 Predicted vs measured for every **single** pointwise op (`T = (R+W)/BW_peak + α·min(R,W)`).
-**RMS 1.9 %, mean +0.1 %, range −2.6…+4.3 %** over 22 points — every point within ~4 %. (The chained
-adds `add3`/`add4` are **not** single ops — they are multi-op dependent chains, whose read-after-write
-cost is a program-level effect not modeled here; see §3. `copy` is excluded too: `x + 1.0` lowers to an
-`add` with a resident broadcast constant, so it is a broadcast op, reported in §4.)
+**RMS 3.6 %, mean −1.5 %, range −14.6…+6.7 %** over 89 points, four of them beyond ±10 %.
+
+Those four are worth separating out, because they are not scattered. At the 32-core budget the
+rate was calibrated at, the model is **RMS 2.2 %, mean −0.9 % over 85 points, with nothing beyond
+±10 %**. Every one of the four outliers is a measurement taken *below* 32 cores — two at 8 cores,
+two at 16 — and all four under-predict by 13–15 %. In other words the flat peak bandwidth is a
+32-core number, and pointwise ops evidently do not reach it on a fraction of the machine, exactly
+as row-reductions do not (§5 needed an explicit `g(cores)` derate for the same reason). Four points
+is far too thin to fit such a derate here, and the pointwise sweeps otherwise hold cores at 32, so
+this is recorded as a known residual rather than modelled: the deciding measurement is a pointwise
+cores ladder at fixed shape, which does not exist yet.
+
+(The chained adds `add3`/`add4` are **not** single ops — they are multi-op dependent chains, whose
+read-after-write cost is a program-level effect not modeled here; see §3. `copy` is excluded too:
+`x + 1.0` lowers to an `add` with a resident broadcast constant, so it is a broadcast op, reported
+in §4.)
+
+Representative shapes at 32 cores (the full 89-point population is scored by
+`python3 notes/report_tables.py --section 1-3`):
 
 | op | R×C | measured µs | predicted µs | err % |
 |---|---|---:|---:|---:|
@@ -397,18 +460,26 @@ extra_bytes  =  min( 2.0e-9 · ROWS^1.75 · COLS^2.60 ,  2.4 · output_bytes )
 This takes `write` from **18.9 %** error to **9.6 %**. It is an honest black-box for a rare op; the
 worst residuals are `2048×8192` (−30 %) and narrow-COLS over-predictions (`16384×2048` +12 %).
 
-**§4 accuracy** (per-op error, `(pred − meas)/meas`):
+**§4 accuracy.** RMS **5.7 %**, mean −0.2 %, range −30.2…+17.0 %, over 281 points — 22 beyond
+±10 %. Every measurement here is at 32 cores, so unlike Part I there is no core-count question
+mixed in.
 
-| op | error |
-|---|---:|
-| `bcast` | **3.4 %** (nothing over ±10 %) |
-| `mulbcast` | **3.5 %** (nothing over ±10 %) |
-| `copy` | **7.5 %** |
-| `bcastcol` | **7.2 %** |
-| `write` | **9.6 %** |
+| op | n | RMS % | mean % | err range | >10 % |
+|---|---:|---:|---:|---|---:|
+| `bcast` | 59 | 3.0 | −0.1 | −8.9…+7.9 | 0 |
+| `mulbcast` | 62 | 3.1 | +0.0 | −8.9…+8.9 | 0 |
+| `copy` | 56 | 6.3 | −1.1 | −18.4…+7.8 | 7 |
+| `bcastcol` | 57 | 6.6 | +1.7 | −18.5…+17.0 | 7 |
+| `write` | 47 | 8.5 | −1.9 | −30.2…+11.6 | 8 |
+| **all** | **281** | **5.7** | **−0.2** | **−30.2…+17.0** | **22** |
 
-Overall **6.3 %**. `bcast`/`mulbcast` have no point over ±10 %; the residuals are the
-`copy`/`bcastcol` boundary corners and the `write` black-box.
+The two row-broadcast ops are essentially solved — 121 points between them, not one beyond ±10 %,
+and mean error indistinguishable from zero. The residual is concentrated exactly where the
+derivation said it would be: the `copy`/`bcastcol` regime boundary (7 points each, both directions)
+and `write`, whose extra traffic is still an empirical power law rather than a mechanism, and which
+owns the worst point in the section at −30 %. `write` is also the only op here whose error changes
+sign with *both* R and C, which is why refitting it would produce another black box rather than an
+explanation.
 
 **Every measured broadcast/write point** (error = `(pred − meas)/meas`):
 
@@ -617,9 +688,32 @@ coarse-tiling work, not here. **Caveat:** the low-core anchors are single-shot (
 `c8`/`c16` plateau and the shape-generality of `g(cores)` need a repeated low-core reduction sweep
 to confirm (`run_reduction_cores_sweep.sh`, written).
 
-**§5 accuracy.** RMS **2.6 %**, mean +1.3 %, over 58 points at the full 32-core budget — within
-~6 % everywhere, across the full ROWS range now that the falloff is modeled (the low-core `g(cores)`
-derate above is a separate 20-point set). Representative shapes (repeats omitted):
+**§5 accuracy.** RMS **7.2 %**, mean +3.0 %, range −8.0…+20.6 %, over 97 points, 14 beyond ±10 %.
+As in Part I that headline hides a sharp split by core count:
+
+| cores | n | RMS % | mean % | >10 % |
+|---:|---:|---:|---:|---:|
+| 32 | 71 | 2.5 | +1.2 | 0 |
+| 16 | 13 | 12.4 | +7.7 | 5 |
+| 8 | 13 | 14.1 | +8.5 | 9 |
+
+At the full budget the ROWS falloff is modelled well — **2.5 % RMS over 71 points with nothing
+beyond ±10 %**, across the whole ROWS range. Every outlier lives in the `g(cores)` derate, and they
+are not scattered: all 14 are the *same shape*, `8192×2048`, and all **over**-predict by 19–21 %,
+i.e. the derate makes the machine too slow there. That is a coherent failure, not noise — the model
+returns an identical 531 µs at 8 and 16 cores because `g(8) = g(16) = 0.54`, and the measurements
+are indeed nearly identical (443 and 441 µs), so the *plateau* is right and only its *value* is
+wrong at this shape.
+
+Two honest caveats on that derate. Its low-core anchors were single-shot, and — more importantly —
+it was calibrated largely on 1/2/4-core measurements that the standing scope rules now exclude
+altogether. The only values still exercised by the scored population are `g(8) = g(16) = 0.54` and
+`g(32) = 1`, so most of the curve is no longer testable against the data this report scores
+against. A repeated 8/16-core reduction sweep across several shapes would settle whether 0.54 is
+simply too low or whether the derate should depend on shape as well as core count.
+
+Representative shapes at 32 cores (the full population is scored by
+`python3 notes/report_tables.py --section 5`):
 
 | op | R×C | measured µs | predicted µs | err % |
 |---|---|---:|---:|---:|
@@ -726,11 +820,35 @@ the M-ladder sweep fills the missing cells.
 | 2048×8192 | 16 | 13036.3 | 12936.6 | -0.8 |
 | 2048×8192 | 32 | 28340.5 | 25873.3 | -8.7 |
 
-**§6 accuracy.** RMS **5.9 %**, mean +0.9 %, over 176 measurements. `transpose` is exact (±2 %); the
-shape-dependent copies mostly land within ~8 %, the residual confined to the extreme corners —
-the smallest operands (a 512×512 `cat0` reads +18 % and a 256-row `cat1` −22 %, their bandwidth
-already near the flat peak) and the largest `transpose_outer` (where the work is divided
-differently, −12 %).
+**§6 accuracy.** RMS **6.1 %**, mean −0.0 %, range −22.8…+18.2 %, over 203 measurements, 15 beyond
+±10 %.
+
+| op | n | RMS % | mean % | err range | >10 % |
+|---|---:|---:|---:|---|---:|
+| `transpose` | 36 | 1.4 | −0.5 | −5.0…+1.8 | 0 |
+| `transpose_outer` | 85 | 7.4 | −0.3 | −22.8…+11.1 | 11 |
+| `cat0` | 46 | 6.7 | +0.3 | −9.0…+18.2 | 3 |
+| `cat1` | 36 | 4.7 | +0.7 | −21.8…+9.5 | 1 |
+| **all** | **203** | **6.1** | **−0.0** | **−22.8…+18.2** | **15** |
+
+`transpose` is essentially exact (±5 %, nothing over ±10 % in 36 points), and the section as a whole
+is unbiased. The residual sits where the derivation predicted: the smallest operands, whose
+bandwidth is already at the flat peak — a 512×512 `cat0` reads +18 % and a 256-row `cat1` −22 %,
+still the two worst non-`transpose_outer` points — and `transpose_outer`, which owns 11 of the 15
+outliers.
+
+The `M` axis behaves as the model claims **where the model claims it**. Grouping `transpose_outer`
+by its middle dimension:
+
+| M | 2 | 4 | 8 | 16 | 32 |
+|---|---:|---:|---:|---:|---:|
+| n | 3 | 8 | 9 | 4 | 3 |
+| mean err % | +4.0 | −5.5 | +1.9 | −3.9 | −12.7 |
+
+The modelled `M < 8` side and the `M = 8` reference all land within ~6 %. The worst group is
+**M = 32** — the `M > 8` side this section explicitly declined to model, because the data there
+contradicts itself across `(R,C)` cells and is confounded with a change in how the planner splits
+the work. It remains unmodelled, and it is the largest single contributor to the section's spread.
 Every measured shape (cores = 32, `transpose_outer` at M=8):
 
 | op | R×C | measured µs | predicted µs | err % |
@@ -1184,10 +1302,17 @@ forced `32×1` / `1×32` ends (long- and short-dim terms) — with balanced and 
 What remains is the most extreme wide-problem case (splitting a very long dimension ×32, last row):
 better than before but still under — the deep tail the two knees do not fully reach.
 
-**Part III accuracy — matmul, by regime** (power-of-2 shapes only). The **realistic** bulk is within a
-few percent; the **work-division extreme** (lopsided-split) rows are now modeled by §12; the
-**tensor-size extreme** (thin-K) and **tiny** (small-output) matmuls remain bounded, flagged residuals
-off the real-workload path.
+**Part III accuracy — matmul.** Over the **whole** scored `mmwd` population — all 318 in-scope
+split matmuls, every shape, not only the power-of-2 subset below — the model is **RMS 15.1 %, mean
+−0.3 %, range −48…+48 %, with 89 points beyond ±10 %**. That is the honest headline for matmul, and
+it is the weakest of the single-op sections. The mean of −0.3 % says the model is not biased; the
+±48 % spread says it is not yet *precise*, and the error is two-sided, so no single scaling
+correction can close it.
+
+The regime breakdown below is a curated 57-run subset (power-of-2 shapes only) used to show *where*
+the spread lives. The **realistic** bulk is within a few percent; the **work-division extreme**
+(lopsided-split) rows are now modeled by §12; the **tensor-size extreme** (thin-K) and **tiny**
+(small-output) matmuls remain bounded, flagged residuals off the real-workload path.
 
 | regime | n | RMS % | mean % | err range | status |
 |---|---:|---:|---:|---|---|
@@ -1389,8 +1514,11 @@ over 47 reps = 7 records) then reproduce **all four** measured combos:
 Note the two operands are **not** interchangeable — A's penalty is the larger — so the classifier
 keeps them ordered. A single constant (the earlier version of this term) could only reproduce the
 both-default *sum*, which is why the mixed layouts were previously the worst-predicted points in the
-whole model. The term is **provably gold-safe**: 0 change on all 1612 records outside the gated
-batched-matmul set (max |Δ| = 0.000000 µs), so plain 2-D matmul is byte-identical.
+whole model. The term is **provably gold-safe**, re-verified against the current database by
+perturbing its three constants and recording which predictions move: **1565 of the 1748 scored
+records do not change at all** (max |Δ| = 0.000000), and every one of the 183 that does move is a
+batched matmul (`bmm_layout`, `bmm_wd`, `bmm_k_tiling`, `bmm_nested_b_k`). Plain 2-D matmul and
+every memory-bound op are byte-identical.
 
 **Two honest qualifications on that table.** First, the ratio above is *close to* one but not equal
 to it: against a measured run-to-run floor of about 0.2 %, nine of the eleven quads fall below one,
@@ -1455,6 +1583,37 @@ Two interactions are recorded so they are not later double-counted. A **lopsided
 pays §12 on top of the floor, so a short-dim-fanned bmm is worse again (up to ~15×). And **forcing the
 batch across cores** — which the planner never does — is catastrophic (~11× for the full bmm), because
 every core then reloads a full weight per batch; it is a guard case, not something to model.
+
+**§13 accuracy over the whole population.** Across all 239 in-scope batched-matmul measurements the
+model is **RMS 27.3 %, mean −12.7 %, range −92…+40 %** — by a wide margin the weakest single-op
+section, and consistently *under*-predicting:
+
+| op | n | RMS % | mean % | err range | >10 % |
+|---|---:|---:|---:|---|---:|
+| `bmm_wd` | 64 | 41.8 | −26.4 | −92.2…+40.3 | 35 |
+| `bmm_wd_3d2d` | 37 | 15.7 | −5.7 | −53.0…+9.5 | 5 |
+| `bmm_layout` | 138 | 20.2 | −8.3 | −68.4…+40.3 | 34 |
+| **all** | **239** | **27.3** | **−12.7** | **−92.2…+40.3** | **74** |
+
+That headline is misleading on its own, because most of this population is deliberately *bad*
+layouts — they exist as evidence for the layout term, not as work anyone would run. Splitting the
+layout experiment by the two operands' device tile orders separates the two:
+
+| A / B tile order | n | RMS % | mean % | >10 % |
+|---|---:|---:|---:|---:|
+| `1,0,2` / `1,0,2` (**both fast** — the target) | 13 | **5.9** | −1.9 | 1 |
+| `1,0,2` / `0,1,2` | 15 | 14.3 | −5.9 | 3 |
+| `0,1,2` / `1,0,2` | 13 | 15.9 | −5.7 | 2 |
+| `0,1,2` / `0,1,2` (both default) | 13 | 14.4 | −4.2 | 1 |
+| layout not recorded (older logs) | 84 | 23.7 | −10.7 | 27 |
+
+**On the layout that matters the model is inside the bar** — 5.9 % RMS, essentially unbiased. The
+default and mixed orders sit at 14–16 %, which is the cost of the additive term reproducing four
+rates from three constants. The largest single block of error is the 84 rows whose logs predate
+layout recording, so their tile order cannot be reconstructed and the term cannot be checked
+against them; re-measuring those configurations with layout metadata would remove the biggest
+unexplained group in this section. `bmm_wd` is the remaining genuine problem at −26 % mean, and it
+is not a layout artifact — it is discussed above.
 
 **Accuracy with the layout-keyed term.** Every repeat-backed batched-matmul run the term applies to
 (B ≥ 4, at least 8 cores), one row per distinct layout-combination / shape / batch, measurements taken
