@@ -1,0 +1,63 @@
+==== COARSE RE-READ LADDER  Mon Aug  3 21:13:14 UTC 2026 ====
+git: 217d8c2   M=4096 K=2048 reps=5
+fixed M,K; N varies B=K*N; cores varies rows/core; L is the loop trip
+
+---- cores=32 N=512  (B = 2.0 MB) ----
+  L=1  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=1 lx=1 io_hbm_bytes=23068672 kernel_us=206.611 pred_us=241.443 err_pct=+16.9 bw_gbps=111.7 memset_us=102.623 other_dev_us=400.542 total_dev_us=709.776 kernel_us_min=203.515 kernel_us_median=206.611 kernel_us_mean=206.560 kernel_us_std=1.831 kernel_us_cv=0.89 reps=5
+  L=4  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=4 lx=1 io_hbm_bytes=23068672 kernel_us=206.645 pred_us=250.805 err_pct=+21.4 bw_gbps=111.6 memset_us=61.667 other_dev_us=417.149 total_dev_us=685.461 kernel_us_min=205.032 kernel_us_median=206.645 kernel_us_mean=206.418 kernel_us_std=0.784 kernel_us_cv=0.38 reps=5
+  L=8  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=8 lx=1 io_hbm_bytes=23068672 kernel_us=274.959 pred_us=250.805 err_pct=-8.8 bw_gbps=83.9 memset_us=60.358 other_dev_us=418.093 total_dev_us=753.410 kernel_us_min=273.864 kernel_us_median=274.959 kernel_us_mean=274.841 kernel_us_std=0.714 kernel_us_cv=0.26 reps=5
+  L=16  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=16 lx=1 io_hbm_bytes=23068672 kernel_us=413.719 pred_us=250.805 err_pct=-39.4 bw_gbps=55.8 memset_us=77.710 other_dev_us=510.441 total_dev_us=1001.870 kernel_us_min=412.148 kernel_us_median=413.719 kernel_us_mean=413.394 kernel_us_std=0.965 kernel_us_cv=0.23 reps=5
+
+---- cores=32 N=1024  (B = 4.0 MB) ----
+  L=1  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=1 lx=1 io_hbm_bytes=29360128 kernel_us=417.189 pred_us=433.953 err_pct=+4.0 bw_gbps=70.4 memset_us=83.263 other_dev_us=648.679 total_dev_us=1149.131 kernel_us_min=411.347 kernel_us_median=417.189 kernel_us_mean=416.760 kernel_us_std=4.825 kernel_us_cv=1.16 reps=5
+  L=4  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=4 lx=1 io_hbm_bytes=29360128 kernel_us=433.455 pred_us=383.874 err_pct=-11.4 bw_gbps=67.7 memset_us=72.695 other_dev_us=597.931 total_dev_us=1104.081 kernel_us_min=429.146 kernel_us_median=433.455 kernel_us_mean=433.209 kernel_us_std=2.402 kernel_us_cv=0.55 reps=5
+  L=8  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=8 lx=1 io_hbm_bytes=29360128 kernel_us=439.454 pred_us=383.874 err_pct=-12.6 bw_gbps=66.8 memset_us=78.661 other_dev_us=585.004 total_dev_us=1103.119 kernel_us_min=438.022 kernel_us_median=439.454 kernel_us_mean=438.978 kernel_us_std=0.777 kernel_us_cv=0.18 reps=5
+  L=16  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=16 lx=1 io_hbm_bytes=29360128 kernel_us=660.506 pred_us=383.874 err_pct=-41.9 bw_gbps=44.5 memset_us=115.285 other_dev_us=641.688 total_dev_us=1417.479 kernel_us_min=658.199 kernel_us_median=660.506 kernel_us_mean=660.232 kernel_us_std=1.205 kernel_us_cv=0.18 reps=5
+
+---- cores=32 N=2048  (B = 8.0 MB) ----
+  L=1  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=1 lx=1 io_hbm_bytes=41943040 kernel_us=839.035 pred_us=781.224 err_pct=-6.9 bw_gbps=50.0 memset_us=111.482 other_dev_us=1166.750 total_dev_us=2117.267 kernel_us_min=832.980 kernel_us_median=839.035 kernel_us_mean=838.361 kernel_us_std=3.145 kernel_us_cv=0.38 reps=5
+  L=4  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=4 lx=1 io_hbm_bytes=41943040 kernel_us=679.774 pred_us=684.621 err_pct=+0.7 bw_gbps=61.7 memset_us=101.909 other_dev_us=1182.313 total_dev_us=1963.996 kernel_us_min=677.451 kernel_us_median=679.774 kernel_us_mean=679.948 kernel_us_std=1.903 kernel_us_cv=0.28 reps=5
+  L=8  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=8 lx=1 io_hbm_bytes=41943040 kernel_us=874.944 pred_us=684.621 err_pct=-21.8 bw_gbps=47.9 memset_us=98.095 other_dev_us=1147.551 total_dev_us=2120.590 kernel_us_min=869.214 kernel_us_median=874.944 kernel_us_mean=874.357 kernel_us_std=2.918 kernel_us_cv=0.33 reps=5
+  L=16  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=16 lx=1 io_hbm_bytes=41943040 kernel_us=1307.694 pred_us=684.621 err_pct=-47.6 bw_gbps=32.1 memset_us=99.031 other_dev_us=1178.101 total_dev_us=2584.826 kernel_us_min=1301.511 kernel_us_median=1307.694 kernel_us_mean=1308.434 kernel_us_std=4.572 kernel_us_cv=0.35 reps=5
+
+---- cores=32 N=4096  (B = 16.0 MB) ----
+  L=1  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=1 lx=1 io_hbm_bytes=67108864 kernel_us=1572.785 pred_us=1450.599 err_pct=-7.8 bw_gbps=42.7 memset_us=149.145 other_dev_us=3401.672 total_dev_us=5123.602 kernel_us_min=1565.154 kernel_us_median=1572.785 kernel_us_mean=1572.162 kernel_us_std=5.094 kernel_us_cv=0.32 reps=5
+  L=4  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=4 lx=1 io_hbm_bytes=67108864 kernel_us=1513.584 pred_us=1341.427 err_pct=-11.4 bw_gbps=44.3 memset_us=168.443 other_dev_us=3372.462 total_dev_us=5054.489 kernel_us_min=1498.490 kernel_us_median=1513.584 kernel_us_mean=1510.547 kernel_us_std=6.507 kernel_us_cv=0.43 reps=5
+  L=8  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=8 lx=1 io_hbm_bytes=67108864 kernel_us=1445.069 pred_us=1305.665 err_pct=-9.6 bw_gbps=46.4 memset_us=119.826 other_dev_us=3441.987 total_dev_us=5006.882 kernel_us_min=1440.269 kernel_us_median=1445.069 kernel_us_mean=1445.774 kernel_us_std=3.639 kernel_us_cv=0.25 reps=5
+  L=16  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=32 tiles=16 lx=1 io_hbm_bytes=67108864 kernel_us=2249.271 pred_us=1305.665 err_pct=-42.0 bw_gbps=29.8 memset_us=124.066 other_dev_us=3421.127 total_dev_us=5794.464 kernel_us_min=2246.904 kernel_us_median=2249.271 kernel_us_mean=2252.237 kernel_us_std=5.516 kernel_us_cv=0.24 reps=5
+
+---- cores=16 N=512  (B = 2.0 MB) ----
+  L=1  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=1 lx=1 io_hbm_bytes=23068672 kernel_us=355.879 pred_us=362.094 err_pct=+1.7 bw_gbps=64.8 memset_us=64.742 other_dev_us=430.681 total_dev_us=851.302 kernel_us_min=352.715 kernel_us_median=355.879 kernel_us_mean=356.375 kernel_us_std=2.301 kernel_us_cv=0.65 reps=5
+  L=4  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=4 lx=1 io_hbm_bytes=23068672 kernel_us=309.271 pred_us=336.573 err_pct=+8.8 bw_gbps=74.6 memset_us=61.934 other_dev_us=465.996 total_dev_us=837.201 kernel_us_min=308.927 kernel_us_median=309.271 kernel_us_mean=309.313 kernel_us_std=0.278 kernel_us_cv=0.09 reps=5
+  L=8  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=8 lx=1 io_hbm_bytes=23068672 kernel_us=348.453 pred_us=336.573 err_pct=-3.4 bw_gbps=66.2 memset_us=78.910 other_dev_us=418.360 total_dev_us=845.723 kernel_us_min=348.123 kernel_us_median=348.453 kernel_us_mean=348.428 kernel_us_std=0.298 kernel_us_cv=0.09 reps=5
+  L=16  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=16 lx=1 io_hbm_bytes=23068672 kernel_us=480.419 pred_us=336.573 err_pct=-29.9 bw_gbps=48.0 memset_us=87.081 other_dev_us=488.837 total_dev_us=1056.337 kernel_us_min=478.833 kernel_us_median=480.419 kernel_us_mean=480.514 kernel_us_std=1.235 kernel_us_cv=0.26 reps=5
+
+---- cores=16 N=1024  (B = 4.0 MB) ----
+  L=1  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=1 lx=1 io_hbm_bytes=29360128 kernel_us=704.828 pred_us=670.585 err_pct=-4.9 bw_gbps=41.7 memset_us=96.018 other_dev_us=628.625 total_dev_us=1429.471 kernel_us_min=703.461 kernel_us_median=704.828 kernel_us_mean=705.337 kernel_us_std=1.724 kernel_us_cv=0.24 reps=5
+  L=4  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=4 lx=1 io_hbm_bytes=29360128 kernel_us=609.921 pred_us=609.569 err_pct=-0.1 bw_gbps=48.1 memset_us=96.664 other_dev_us=564.755 total_dev_us=1271.340 kernel_us_min=607.907 kernel_us_median=609.921 kernel_us_mean=609.932 kernel_us_std=1.713 kernel_us_cv=0.28 reps=5
+  L=8  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=8 lx=1 io_hbm_bytes=29360128 kernel_us=665.208 pred_us=609.569 err_pct=-8.4 bw_gbps=44.1 memset_us=108.637 other_dev_us=611.031 total_dev_us=1384.876 kernel_us_min=663.536 kernel_us_median=665.208 kernel_us_mean=665.813 kernel_us_std=1.870 kernel_us_cv=0.28 reps=5
+  L=16  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=16 lx=1 io_hbm_bytes=29360128 kernel_us=911.000 pred_us=609.569 err_pct=-33.1 bw_gbps=32.2 memset_us=116.880 other_dev_us=651.944 total_dev_us=1679.824 kernel_us_min=905.139 kernel_us_median=911.000 kernel_us_mean=911.019 kernel_us_std=4.516 kernel_us_cv=0.50 reps=5
+
+---- cores=16 N=2048  (B = 8.0 MB) ----
+  L=1  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=1 lx=1 io_hbm_bytes=41943040 kernel_us=1180.259 pred_us=1267.182 err_pct=+7.4 bw_gbps=35.5 memset_us=77.683 other_dev_us=1212.721 total_dev_us=2470.663 kernel_us_min=1175.301 kernel_us_median=1180.259 kernel_us_mean=1178.793 kernel_us_std=2.884 kernel_us_cv=0.24 reps=5
+  L=4  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=4 lx=1 io_hbm_bytes=41943040 kernel_us=1186.955 pred_us=1177.018 err_pct=-0.8 bw_gbps=35.3 memset_us=113.884 other_dev_us=1177.551 total_dev_us=2478.390 kernel_us_min=1179.025 kernel_us_median=1186.955 kernel_us_mean=1185.771 kernel_us_std=4.922 kernel_us_cv=0.42 reps=5
+  L=8  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=8 lx=1 io_hbm_bytes=41943040 kernel_us=1219.704 pred_us=1155.560 err_pct=-5.3 bw_gbps=34.4 memset_us=113.995 other_dev_us=1141.450 total_dev_us=2475.149 kernel_us_min=1217.438 kernel_us_median=1219.704 kernel_us_mean=1219.880 kernel_us_std=2.188 kernel_us_cv=0.18 reps=5
+  L=16  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=16 lx=1 io_hbm_bytes=41943040 kernel_us=1363.901 pred_us=1155.560 err_pct=-15.3 bw_gbps=30.8 memset_us=128.122 other_dev_us=1240.439 total_dev_us=2732.462 kernel_us_min=1363.552 kernel_us_median=1363.901 kernel_us_mean=1364.789 kernel_us_std=1.354 kernel_us_cv=0.10 reps=5
+
+---- cores=16 N=4096  (B = 16.0 MB) ----
+  L=1  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=1 lx=1 io_hbm_bytes=67108864 kernel_us=2597.957 pred_us=2410.549 err_pct=-7.2 bw_gbps=25.8 memset_us=123.742 other_dev_us=3427.861 total_dev_us=6149.560 kernel_us_min=2591.084 kernel_us_median=2597.957 kernel_us_mean=2597.871 kernel_us_std=5.621 kernel_us_cv=0.22 reps=5
+  L=4  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=4 lx=1 io_hbm_bytes=67108864 kernel_us=2569.423 pred_us=2319.068 err_pct=-9.7 bw_gbps=26.1 memset_us=122.943 other_dev_us=3421.100 total_dev_us=6113.466 kernel_us_min=2562.632 kernel_us_median=2569.423 kernel_us_mean=2569.766 kernel_us_std=6.805 kernel_us_cv=0.26 reps=5
+  L=8  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=8 lx=1 io_hbm_bytes=67108864 kernel_us=2550.857 pred_us=2279.730 err_pct=-10.6 bw_gbps=26.3 memset_us=162.698 other_dev_us=3422.084 total_dev_us=6135.639 kernel_us_min=2538.156 kernel_us_median=2550.857 kernel_us_mean=2547.465 kernel_us_std=7.187 kernel_us_cv=0.28 reps=5
+  L=16  SUMMARY op=matmul_row_tiling rows=4096 cols=2048 cores=16 tiles=16 lx=1 io_hbm_bytes=67108864 kernel_us=2521.491 pred_us=2247.544 err_pct=-10.9 bw_gbps=26.6 memset_us=121.554 other_dev_us=3410.854 total_dev_us=6053.899 kernel_us_min=2517.873 kernel_us_median=2521.491 kernel_us_mean=2523.259 kernel_us_std=4.234 kernel_us_cv=0.17 reps=5
+
+==== HOW TO READ IT ====
+  For each (cores, N) cell compute s = (T(L) - T(1)) / (L - 1) at L = 8 and 16.
+  Then compare s ACROSS N at fixed cores:
+    s roughly doubles when N doubles -> the B re-read is real and HBM-priced.
+    s barely moves when N doubles    -> it is a fixed per-iteration cost; do NOT
+                                        add re-read bytes, add a per-iteration term.
+    s grows sub-linearly             -> partial residency; report s / (B/BW) as the
+                                        measured HBM fraction of each re-read.
+  Compare s ACROSS cores at fixed N to attribute any residual to per-tile underfill.
+  Fold with: python3 notes/parse_sweep_logs.py, then re-run
+  python3 notes/test_loop_invariant_reread.py to re-score with real B variation.
