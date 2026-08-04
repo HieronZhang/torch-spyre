@@ -19,7 +19,7 @@ whole model, then the Parts for why each piece takes the form it does.
 
 ### The data every number here is scored against
 
-**2748 measurements recorded, 2030 in scope, 1748 scoreable.** Every accuracy figure in this report
+**2780 measurements recorded, 2038 in scope, 1756 scoreable.** Every accuracy figure in this report
 is recomputed from the live model against `notes/sweep_records.json` — nothing is hand-typed.
 Regenerate the per-section accuracy lines and tables with `python3 notes/report_tables.py`, and the
 figures with `python3 notes/plot_report.py`.
@@ -43,6 +43,7 @@ this report always refers to the same population:
 | fewer than 8 cores | never a target regime, and the few points were confounded — core count moved together with per-core area and split fanout, so they could only have been fitted, not explained |
 | a fused reduction narrower than 1024 columns | the reduced-axis length dominates that rate; the short-row corner is a different regime and drags the shape term toward a case we do not care about |
 | two early logs with corrupted features | the same measured configuration is recorded with a 16× different per-core row count than in every later log. The *measurements* agree to 0.8 %, so only the features drifted — such rows cannot judge the model in either direction |
+| a coarse-tiled matmul whose work division is 16×2 or 2×16 | we do not choose that split — the coarse-tiling hint makes the planner pick it, and it sits far outside the point where the matmul/bmm compute rate was calibrated (one split, 4×8). Plain `mm` at the same splits is modelled well (10.6 %) and is deliberately kept |
 
 **Accuracy of the single-op model today** (Parts I–III; the coarse-tiling model of Part IV is
 mid-revision and is reported separately):

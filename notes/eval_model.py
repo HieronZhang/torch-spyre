@@ -246,6 +246,28 @@ def features_for(rec, default_params, tol=0.02):
 # for the additive layout model even though only the fast layout is a target.
 _MIN_CORES = 8
 _MIN_FUSED_REDUCTION_COLS = 1024
+# 4. Extreme lopsided work-division splits (16x2 / 2x16) ON THE COARSE-TILING OPS ONLY.
+#    Those splits are not chosen by us there -- the coarse-tiling hint makes the planner
+#    pick them, and they land far outside the calibration point of the matmul/bmm compute
+#    rate, which the report already flags as fitted at ONE split (4x8) and cores=32.
+#    Evidence it is the SPLIT, not the tiling: a PLAIN (non-coarse) bmm forced to 16x2
+#    reads -53.2 %, essentially the same as coarse-tiled bmm at 16x2 (-54.1 %), while
+#    plain bmm at 4x8 is -7.4 % over 213 rows.
+#    DELIBERATELY NOT applied to plain mm/bmm: `mmwd` at 16x2 (n=26, 10.6 % RMS) and
+#    2x16 (n=24, 10.7 %) is modelled WELL, and those rows are the evidence that the mm
+#    rate generalises across split geometry. Excluding them would discard good data and
+#    make matmul_split look worse (15.1 -> 15.8) purely by dropping easy points.
+#    This scopes out a regime we do not run; it does NOT excuse the bmm rate, whose
+#    split confound is tracked separately.
+_EXCLUDED_SPLITS = {(16, 2), (2, 16)}
+_COARSE_OPS = {
+    "matmul_row_tiling",
+    "matmul_k_tiling",
+    "mm_nested_m_k",
+    "bmm_k_tiling",
+    "bmm_nested_b_k",
+    "bmm_3d2d_k_tiling",
+}
 # 3. Logs written at these SHAs carry CORRUPT features, not merely stale ones. Proof:
 #    the same measured config (bmm_k_tiling B=4 1024x2048x1024 cores=32, untiled) is
 #    recorded at rows_per_core=4 with m_split/n_split=None here, versus rows_per_core=64
@@ -272,6 +294,13 @@ def in_scope(rec) -> bool:
         cols = rec.get("cols")
         if isinstance(cols, int) and cols < _MIN_FUSED_REDUCTION_COLS:
             return False
+    if op in _COARSE_OPS:
+        for f in rec.get("feats") or []:
+            if not f.get("is_matmul"):
+                continue
+            m, n = f.get("matmul_m_split"), f.get("matmul_n_split")
+            if (m, n) in _EXCLUDED_SPLITS:
+                return False
     return True
 
 

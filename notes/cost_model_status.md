@@ -192,10 +192,157 @@ falls and saturates at ~0.56 of its L=1 value (cores 32, N 2048). And `_lx_spill
 LX term at all. That is the next piece, and it is the same gap the LX-information section below
 describes.
 
+**UPDATE (2026-08-03, re-run with `feats`).** The fixed script produced 32 rows with features and
+**B genuinely varying** (2/4/8/16 MB), so the model side is testable on unaliased data at last.
+
+**α = 1.0 is now confirmed THREE independent ways:**
+
+1. Raw marginal vs a full HBM pass over B: **0.90–1.24** at cores = 32.
+2. It gives the **flattest per-L error profile** in the model (L4/L8/L16 = +12.9/+19.5/+18.3).
+3. **Per-cell slope match** — comparing the model's own `(pred(16) − pred(8))/8` with measurement:
+   **1.01 / 1.02 / 1.13** at cores = 32 for N = 1024/2048/4096.
+
+The residual scales correctly too: at α = 1.0 the error by operand size is +20.6 / +12.7 / +16.7 /
++17.5 % for B = 2/4/8/16 MB — **flat in B**, so the `(L−1)·B` form is right.
+
+**What is left is a LEVEL error, not a slope error.** At cores = 32 the model sits **19–35 % too
+high** on tiled runs (`pred/meas` at L=8: 1.26 / 1.31 / 1.19 / 1.35) while reproducing the
+per-iteration slope. Cell-normalised, the tiling-specific factor is **0.866 ± 0.092** and has **no
+structural driver** — every candidate correlates weakly on 24 points (log2 N −0.45, cores −0.31,
+log2 L −0.17, tile rows/core +0.02, out-tile KB/core −0.14). Fitting a term to that would be
+curve-fitting, so nothing more is being fitted until the dense ladder lands.
+
+**One real mis-application found on the way.** `coarse_underfill_eff = min(cap, (rows/13)^0.68)`
+with `cap = 0.95` is a **softmax-calibrated** term, and on every one of these matmul rows
+`tile_rows_per_core` is **32–512** — far above the knee of 13 — so it *only ever returns its cap*,
+charging a flat 5 % memory penalty to tiled matmul while modelling nothing. Its sibling
+`_lx_spill_bw_derate` is already gated off for matmul for exactly this reason. Removing the cap
+gives RMS 18.2 → **16.6**, mean +12.8 → +11.3. Worth doing, but it is a *fraction* of the level gap,
+so it is recorded rather than shipped alone.
+
+**Why α = 0.5 must NOT be shipped even though it scores best** (RMS 10.5, mean 0.0): it averages
+two opposing mechanisms with one number. At cores = 32 N = 2048 the L=1→16 *average* marginal is
+468.7/15 = 31.2 µs = **0.56** of a full re-read while the L=8→16 *local* marginal is 54.1 µs =
+**0.97**. Both are correct measurements of different things; a single α splits the difference and
+ties one coefficient to two physical effects — the exact failure the outlier attack exists to avoid.
+
 **NOT yet done: the extractor's per-arg `loop_factor`.** Activating it flips `matmul_row_tiling`
 from −14.7 % to +10.8 % mean (RMS 22.6 → 17.5, but >10 % 48 → 62) because the other coarse terms
 were silently absorbing the missing traffic. Land it together with the LX-benefit term and re-fit
 the pair, on a re-run that carries `feats` — not before.
+
+### 🐛 `SPYRE_DUMP_IR=1` WAS BROKEN — it ABORTED THE COMPILE (fixed 2026-08-04)
+
+Every previous attempt to dump the nested ops produced a ~51-line "stub", and the reason was not
+that the dump failed to fire — **it killed the build**:
+
+```text
+File "torch_spyre/_inductor/dump_loop_ir.py", line 48, in dump_loop_ir
+    from .passes import _format_operations
+InductorError: ImportError: cannot import name '_format_operations'
+```
+
+Two defects, the second making the first fatal:
+
+1. The formatter moved to **`pass_utils.format_operations`**; `passes._format_operations` no longer
+   exists (verified: 0 definitions in `passes.py`).
+2. The import sat **outside** the `try/except` whose stated contract is *"a debug dump must never
+   break compilation"* — so the `ImportError` escaped and aborted every run with the flag set.
+
+Both fixed: import corrected and moved inside the guard. **This had been silently blocking all IR
+capture**, which is why the nested-loop redesign never had evidence. Needs one run to confirm
+end-to-end (cannot be executed locally without `_C`; statically verified).
+
+`pass_utils.format_operations` prints exactly what the redesign needs: `layout`, **`allocation`**
+(the LX residency dict), `op_it_space_splits`, `dim_hints`, `loop_info`, and `op.data` (the
+`inner_fn` with its per-load index expressions).
+
+Capture script: **`docs/source/user_guide/examples/run_nested_ir_capture.sh`** — 7 compiles,
+reps=1. It refuses to run if the fix is absent, and **verifies each dump actually contains
+`loop_info`**, failing loudly instead of shipping stubs (the check the earlier capture lacked).
+It starts with a `matmul_row_tiling` t=4 CONTROL whose answer we already know.
+
+### ⚠️ CORRECTED (2026-08-04): the bad bmm rows are a SPLIT problem, not coarse tiling and not a bmm baseline
+
+Three claims made and then disproved by measurement — recorded so they are not re-derived:
+
+| claim | verdict |
+|---|---|
+| "`bmm_k_tiling` inherits an untiled-bmm baseline error" | **FALSE.** Plain `bmm_wd` at the identical shape is **−0.2 %** (meas 1843, pred 1838.6). There is no baseline error. |
+| "the features are identical, so the model cannot tell them apart" | **FALSE.** They differ (`rows/core` 64 vs 256, `m_split` 16 vs 4). Only the *predictions* coincide. |
+| "it is a split-shape gap, not bmm-specific" | **FALSE.** `mmwd` at 16×2 is **10.6 %**; `bmm` at 16×2 is **55.0 %**. It IS bmm-specific. |
+
+What is actually true: applying the coarse-tiling hint makes the planner choose a **lopsided 16×2**
+work division instead of the balanced **4×8**, and the hardware runs that **2.06×** slower
+(3790 vs 1843 µs, same shape, same per-core area 32768, same cores). The error follows the SPLIT,
+not the tiling — a **plain, non-coarse** bmm forced to 16×2 reads **−53.2 %**, matching the coarse
+one (−54.1 %). So coarse tiling is the *trigger*, not the defect; the bmm compute rate is, and the
+report already flags it as *"calibrated at one split (4×8) and cores = 32"*. bmm accuracy peaks at
+rows/core 128–256 (−3.1 / −9.8 %) — the 4×8 neighbourhood — and falls away in both directions
+(64 → −42.6 %, 512 → −22.0 %, 1024 → −68.8 %).
+
+**Four candidate fixes killed by testing**, so they are not retried:
+
+1. *Split-aware operand traffic* (`n·|A| + m·|B|`) — refuted on **258 `mmwd` rows across 12
+   splits**: residual vs un-charged traffic r = **+0.126**, flat while the traffic ratio spans
+   2.67×–25.8×. Operands are shared; `|A|+|B|` is correct.
+2. *Relaxing §12's area gate* — `bmm_k_tiling` 55.0 → 52.9 % while `mmwd` regresses 15.1 → 21.4 %.
+3. *§12 re-scaled* — even fully ungated it supplies **85.9 µs of the 1947 µs gap (4.4 %)**. It is
+   additive and area-proportional; the real effect is multiplicative and area-independent. Wrong
+   functional form, not a wrong coefficient.
+4. *Array fill / rows-per-core* — `mm` at rows/core = 64 is **16.8 %**, `bmm` at 64 is **56.5 %**.
+   Same rows/core, so it is not `pt_eff`.
+
+**What would fix it:** make `_matmul_mac_peak` depend on split geometry as well as layout,
+calibrated by a bmm split sweep at fixed shape/batch/cores and a **pinned fast layout** (the layout
+constants 650/368/517 were also fitted at 4×8, so varying both leaves them confounded).
+
+**Also worth raising as a COMPILER issue independent of the model:** 4×8 exists, is available, and
+is 2.06× faster than the 16×2 the hinted path selects.
+
+### 📊 COARSE TILING — every tested case, scored against the LIVE model (2026-08-03)
+
+In-scope, scoreable, `kernel_us`. Regenerate with the snippet in `notes/report_tables.py`'s
+population loader.
+
+| op | tiling | n | RMS % | mean % | worst | >10 % | unscoreable | status |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| `matmul_k_tiling` | reduction (K) | 34 | **7.9** | −5.8 | −13.3 | 6 | 0 | **best coarse op**; near the bar |
+| `softmax_noexp_row_tiling` | output (rows) | 3 | **5.3** | +5.3 | +5.9 | 0 | 0 | fine, but n=3 |
+| `ctsum` | output (rows) | 2 | **6.0** | +1.9 | +7.6 | 0 | 26 | fine; 26 rows unscoreable |
+| `softmax_row_tiling` | output (rows) | 80 | 13.1 | −4.3 | −42.8 | 20 | 13 | shipped elem-throughput floor; residual is the cores 8/16 roofline |
+| `bmm_3d2d_k_tiling` | reduction (K) | 8 | 18.0 | −17.1 | −26.0 | 7 | 0 | two-rate step shipped; still under |
+| `matmul_row_tiling` | output (M) | 128 | 21.8 | −13.7 | −64.8 | 64 | 42 | **mechanism solved** (invariant-B re-read, α=1.0 confirmed 3×); fix staged, level residual ~13 % open |
+| `mm_nested_m_k` | nested (M+K) | 28 | 41.4 | −32.9 | −71.8 | 18 | 0 | same sign as row-tiling but the row-tiling rule makes it WORSE — needs its own IR |
+| `bmm_k_tiling` | reduction (K) | 17 | 55.0 | −54.1 | −67.9 | 17 | 0 | **NOT a coarse defect** — its UNTILED rows are already −38…−52 %; it inherits the bmm baseline error |
+| `bmm_nested_b_k` | nested (B+K) | 7 | 59.7 | **+26.3** | +94.3 | 7 | 0 | two opposite errors: the same −50 % bmm baseline at L=1, plus a model that grows ~4× too steeply with L |
+| `flash_attn` | fused attention | 7 | **3521** | +3386 | +4431 | 7 | 0 | ~35× over-prediction; blocked behind coarse tiling by design |
+| `ctamax` / `ctamin` | output (rows) | 0 | — | — | — | — | 4 + 4 | no scoreable rows |
+| `softmax_unrolled` | output (rows) | 0 | — | — | — | — | — | entirely out of scope (runs at cores=1 by design, < the cores ≥ 8 rule) |
+| **ALL COARSE** | | **314** | **526** | +62.5 | +4431 | **146** | | dominated by flash |
+
+**Reading it.** Excluding flash, coarse tiling is **~25 % RMS over 307 points with 139 beyond
+±10 %** — the weakest part of the model, and the reason it is the prerequisite for flash.
+Three things stand out:
+
+1. **The two bad bmm rows are NOT coarse-tiling failures — check the UNTILED row first.**
+   `bmm_k_tiling` at `tiles=1` is already **−51.5 / −38.8 / −51.6 / −49.3 / −50.6 %**, i.e. ~−50 %
+   before any tiling exists, whereas `matmul_k_tiling` at `tiles=1` is **+1.2 / −7.5 / +2.3 / +2.6
+   / +1.7 / +2.9 %**. Same tiling mode, and the difference is entirely in the *baseline*. Both bmm
+   coarse ops inherit the untiled-bmm error behind `bmm_wd`'s −26.4 % mean; tiling adds ~15 pp on
+   top. **Fixing coarse tiling will not fix them.** Diagnose per op by reading its `tiles=1` row
+   before attributing anything to the loop.
+2. **`bmm_nested_b_k` over-predicts because two opposite errors superimpose.** Measured grows
+   **1.9×** from L=1→16 (3794.8 → 7138.3 µs) while the model grows **7.3×** (1838.6 → 13414.5). At
+   L=1 it is the same −51.5 % baseline as `bmm_k_tiling` — identical config, identical prediction.
+   The steepness cannot be the compute term (`matmul_macs` *shrinks* with L here, per-tile), so it
+   is memory-side; `eff` falling with tile height is the leading candidate, unconfirmed. Note
+   L = tiles² here (nested B×K), so it moves faster than any other op.
+3. Two coarse cohorts pulling in opposite directions is exactly why the γ re-fit was refused
+   earlier — they cannot both be arbiters, and now we know at least one of them is not really a
+   coarse measurement at all.
+4. **42 of 170 `matmul_row_tiling` rows are unscoreable**, along with 26 `ctsum` and 13
+   `softmax_row_tiling`. That is a data-hygiene gap independent of any model term.
 
 ### 🔎 IS B IN LX? NO — settled two independent ways (2026-08-03)
 
@@ -284,7 +431,17 @@ verification is doing real work here.
 
 ### Known scoring gaps found while re-scoring (2026-08-03)
 
-- **`kernel_us` is the canonical measured field** (present on all 2030 in-scope rows and used by
+- ⚠️ **`sweep_records.json` IS PRIMARY DATA — never rebuild it by re-parsing `haoyang_logs/*`.**
+  **10 of the 51 curated logs no longer exist on disk, and 189 records survive only inside the
+  JSON.** A blanket re-parse silently drops them and simultaneously re-admits ~31 superseded /
+  duplicate logs the curation had excluded (five `new_experiments_20260721_*` at 143 rows each,
+  repeated `outlier_*` attempts, …), which is how the file went 2748 → 4237 on 2026-08-03. The
+  correct update is always **fold the NAMED new log only**:
+  `python3 notes/parse_sweep_logs.py haoyang_logs/<the-new-log>.log` — the parser merges keyed by
+  `log_file:lineno`, so this is idempotent and touches nothing else. Back the file up before any
+  bulk operation. Current curated state: **2780 records / 51 logs / 2062 in scope / 1780
+  scoreable**.
+- **`kernel_us` is the canonical measured field** (present on all 2038 in-scope rows and used by
   `eval_model.py`). `kernel_us_min` exists on only 45 % (repeat-backed rows) and runs a median
   0.77 % below it. Any ad-hoc analysis must use `kernel_us` or its `n` will silently be a
   repeat-biased subset.
@@ -1263,7 +1420,7 @@ coordinated Part III rework (cats 3+4+6) fits on clean data. Report-ready prose 
   accuracy number — filter to matched conditions". That is no longer true. The standing scope
   decisions are now enforced inside `eval_model.in_scope()` (cores ≥ 8; fused reductions ≥ 1024
   columns; two corrupt-feature SHAs dropped), so **`eval_model.py --all` IS the accuracy number**
-  and every quoted figure refers to the same population (2030 in scope, 1748 scoreable). Per-section report tables come
+  and every quoted figure refers to the same population (2038 in scope, 1756 scoreable). Per-section report tables come
   from `notes/report_tables.py`. Score on `kernel_us`, **not** `kernel_us_min` — the latter exists
   on only ~45 % of rows, so using it silently reduces any population to a repeat-backed subset.
 - Sweep scripts: `docs/source/user_guide/examples/run_outlier_sweep.sh` (the superset, 9 sections,
@@ -1273,7 +1430,7 @@ coordinated Part III rework (cats 3+4+6) fits on clean data. Report-ready prose 
 
 > ⚠️ **The accuracy numbers in this list are 2026-07-24 vintage and are NOT current** — they
 > predate the scope decisions, so they were computed over a different population. For live figures
-> run `python3 notes/report_tables.py`. Today (1748 scoreable records): broadcast/write **5.7 %**,
+> run `python3 notes/report_tables.py`. Today (1756 scoreable records): broadcast/write **5.7 %**,
 > transport **6.1 %**, reduction **7.2 %**, single pointwise **3.6 %**, matmul split **15.1 %**,
 > batched matmul **27.3 %** (but **5.9 %** on the fast tile order — the layout we actually target).
 > One item below is now outright wrong: transport's `M ≠ 8` is **no longer** unmodelled — the

@@ -20,7 +20,7 @@ and environment-variable contract.
 The dump is wired into ``CustomPreSchedulingPasses`` at two points: before any
 Spyre pre-scheduling pass runs, and after all of them, so the two records can
 be diffed to see what the middle-end did. The rendering reuses
-``passes._format_operations`` so there is a single source of truth.
+``pass_utils.format_operations`` so there is a single source of truth.
 
 Note that HBM ``pool`` allocations are assigned later (at the post-fusion
 ``memory_planning`` pass), so they are not yet present in the "after" record;
@@ -43,12 +43,18 @@ def dump_loop_ir(
     """
     if not dump_enabled():
         return
-    # Lazy import to avoid an import cycle (passes imports this module) and to
-    # reuse the existing formatter rather than duplicating it.
-    from .passes import _format_operations
-
     try:
-        body = _format_operations(operations)
+        # Lazy import to avoid an import cycle (passes imports this module) and to
+        # reuse the existing formatter rather than duplicating it. It MUST stay
+        # inside the try: this import previously sat outside it and named a
+        # function that no longer exists (`passes._format_operations`, moved to
+        # `pass_utils.format_operations`), so the ImportError escaped and killed
+        # the compile -- SPYRE_DUMP_IR=1 aborted every run instead of dumping.
+        # An instrumentation hook must not be able to fail the build, so the
+        # import is guarded exactly like the formatting it enables.
+        from .pass_utils import format_operations
+
+        body = format_operations(operations)
         emit(f"{banner(label)}\n{body}[{len(operations)} ops]\n")
     except Exception as exc:  # noqa: BLE001 - instrumentation must not raise
         emit(f"[SPYRE_DUMP_IR] failed to dump LoopLevel IR: {exc!r}")

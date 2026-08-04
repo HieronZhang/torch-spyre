@@ -655,19 +655,31 @@ def underfill_eff(
     return min(1.0, (rows_per_core / r_full) ** p.underfill_exponent)
 
 
-def coarse_underfill_eff(rpc: float, params: CostParams | None = None) -> float:
+def coarse_underfill_eff(
+    rpc: float, params: CostParams | None = None, cap: float | None = None
+) -> float:
     """Pipeline-fill efficiency for a COARSE-tiled (fused pointwise / softmax) kernel whose
     per-core tile is ``rpc`` rows tall (rpc = ROWS/(cores*tiles)). DISTINCT from the matmul
     pt_eff (``underfill_eff``): re-fit on the softmax rpc sweep, where efficiency plateaus
     at ``coarse_underfill_cap`` (~0.95) around rpc 16-32 and derates as
     ``(rpc/r_full)**exp`` below (rpc4~0.45, rpc2~0.28). The cross-COLS control proved this
     keys on ROWS (rpc), not tile bytes. ``rpc<=0`` (unknown/untiled) -> 1.0 (no derate).
-    (A mild efficiency decline above rpc~32 is a known, unmodeled residual.)"""
+    (A mild efficiency decline above rpc~32 is a known, unmodeled residual.)
+
+    ``cap`` overrides the plateau. The 0.95 plateau is a SOFTMAX measurement; there is no
+    matmul measurement supporting it, and on a tiled matmul the tile is almost always far
+    above the knee (``tile_rows_per_core`` 32-1024, median 64, vs ``r_full`` = 13), so the
+    term would contribute ONLY its cap -- a flat 5 % memory penalty that models nothing.
+    The caller passes ``cap=1.0`` for matmul so the SHAPE part (the knee, which does fire
+    on 30 of 175 tiled-matmul rows and is a real short-tile effect) is kept while the
+    softmax-specific plateau is not applied where it was never calibrated. Same reasoning
+    already applied to the sibling ``_lx_spill_bw_derate``, which is gated off for matmul.
+    """
     p = params or CostParams()
     if rpc <= 0:
         return 1.0
     return min(
-        p.coarse_underfill_cap,
+        p.coarse_underfill_cap if cap is None else cap,
         (rpc / p.coarse_underfill_rfull) ** p.coarse_underfill_exp,
     )
 
@@ -1301,6 +1313,14 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     eff = 1.0
     for o in ops:
         if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
+            # NOTE (2026-08-03): passing `cap=1.0` here for matmul is the RIGHT change on
+            # its own terms -- the 0.95 plateau is a softmax measurement and a tiled
+            # matmul's tile is far above the knee, so the term contributes only a flat 5 %
+            # that models nothing. It is NOT applied yet because it is entangled with the
+            # loop-invariant re-read: alone it makes the model faster while `matmul_row`
+            # already UNDER-predicts, so it regresses (RMS 21.8 -> 22.5, mean -13.7 ->
+            # -14.8). Together with the re-read at alpha=1 it helps (RMS 18.2 -> 16.6).
+            # Ship the PAIR, once the extractor sets per-arg `loop_factor`.
             eff = min(eff, coarse_underfill_eff(o.tile_rows_per_core, p))
     # LX-SPILL bandwidth derate: a coarse-tiled kernel whose per-core working set (~2 live
     # intermediate tiles) overflows LX spills to HBM, and that spilled traffic runs slower
