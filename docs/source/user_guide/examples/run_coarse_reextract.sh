@@ -111,7 +111,7 @@ for t in 1 4 8 16; do run_one matmul_row_tiling 2048 "$t"; done
 
 for N in 1024 4096; do
   echo "# --- matmul_row_tiling N=$N DENSE L (benefit saturation) ---" | tee -a "$LOG"
-  for t in 1 2 3 4 6 8 12 16 24 32; do run_one matmul_row_tiling "$N" "$t"; done
+  for t in 1 2 4 8 16 32; do run_one matmul_row_tiling "$N" "$t"; done   # divisors of M only: coarse_tile requires even divisibility
 done
 
 {

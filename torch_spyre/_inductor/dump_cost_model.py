@@ -202,15 +202,24 @@ def _tiled_symbols_per_level(op):
     levels = []
     for lv in range(n_levels):
         syms = set()
+        declared = 0
         for h in out_lv[lv] if lv < len(out_lv) else []:
+            declared += 1
             p = out_map.get(_int(h, -1))
             if p is not None and p < len(it_syms):
                 syms.add(it_syms[p])
         for h in red_lv[lv] if lv < len(red_lv) else []:
+            declared += 1
             p = red_map.get(_int(h, -1))
             if p is not None and p < len(it_syms):
                 syms.add(it_syms[p])
-        levels.append((max(1, _int(counts[lv], 1) if lv < len(counts) else 1), syms))
+        trip = max(1, _int(counts[lv], 1) if lv < len(counts) else 1)
+        # ``declared`` is kept separate from ``syms`` so the two ways a level can end up
+        # with no symbols are not conflated: an op that tiles NOTHING at this level
+        # (declared == 0) is loop-invariant there and every arg repeats, whereas a level
+        # whose declared dims could not be resolved to symbols is unknown and must not
+        # be guessed. See _loop_factor_for_index.
+        levels.append((trip, syms, declared))
     return levels
 
 
@@ -236,8 +245,17 @@ def _loop_factor_for_index(index, levels) -> int:
     except Exception:  # noqa: BLE001
         return 1
     factor = 1
-    for trip, syms in levels:
-        if syms and not (syms & free):
+    for trip, syms, declared in levels:
+        if declared == 0:
+            # This op tiles NOTHING at this level, so it is loop-invariant here and
+            # EVERY arg repeats -- the `coarse_tile_fill` / `coarse_tile_combine` case,
+            # whose accumulators are re-touched once per iteration. An earlier version
+            # skipped every symbol-less level and under-counted one K-tiled bundle's
+            # traffic 552 MB -> 216 MB, moving the control op from -6.3 % to -64.2 %.
+            factor *= trip
+        elif syms and not (syms & free):
+            # Declared AND resolved, and this arg's index does not carry them -> repeats.
+            # (Declared but UNRESOLVED is deliberately left at 1: unknown, not guessed.)
             factor *= trip
     return factor
 

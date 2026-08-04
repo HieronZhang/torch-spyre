@@ -231,6 +231,58 @@ from −14.7 % to +10.8 % mean (RMS 22.6 → 17.5, but >10 % 48 → 62) because 
 were silently absorbing the missing traffic. Land it together with the LX-benefit term and re-fit
 the pair, on a re-run that carries `feats` — not before.
 
+### 🔬 RE-EXTRACT RUN (2026-08-04) — factors land; ONE BUG IN MY IMPLEMENTATION, caught by the control
+
+`haoyang_logs/coarse_reextract_20260804_004110.log`, 24/32 runs. The 8 failures were **my sweep
+design error**: L = 3/6/12/24 with M = 4096, and `coarse_tile` requires even divisibility
+(`range 4096 is not divisible by loop_count 3`). Use divisors of M. The dense ladder still
+yields L = 1,2,4,8,16,32 per N.
+
+**The per-level factors land correctly on real IR** — all 24 rows: `matmul_k_tiling` out=t/A=1/B=1,
+`matmul_row_tiling` out=1/A=1/B=t, `mm_nested_m_k` out=t/A=1/**B=2** (not the total L).
+
+**THE CONTROL CAUGHT A BUG IN `_loop_factor_for_index`.** `matmul_k_tiling` moved from −6.3 % to
+**−64.2 %**. Cause: the guard `if syms and not (syms & free)` **skipped every level with no tiled
+symbols**. But an op that tiles NOTHING at a level is *loop-invariant* there, so ALL its args
+repeat — the `coarse_tile_fill` / `coarse_tile_combine` case, which the original per-op rule got
+right and its docstring stated. Under-counted one K-tiled bundle 552 MB → 216 MB.
+
+Fixed by tracking `declared` separately from `syms`, so the two ways a level can have no symbols
+are not conflated: `declared == 0` ⇒ invariant ⇒ multiply by trip; declared-but-unresolved ⇒
+unknown ⇒ leave at 1. **Unit test extended to 13 cases** (adding combine, fill, and
+declared-but-unresolved) — 13/13.
+
+**Contamination: 6 of 24 rows**, exactly the bundles containing fill/combine ops
+(`matmul_k_tiling` and `mm_nested_m_k` at t=2/4/8). `matmul_row_tiling` is a **single-op bundle
+with no fill/combine, so all 16 of its rows are clean and usable.** Re-run the 6.
+
+**FIRST REAL RESULT — the re-read term is live and the entanglement is confirmed.** On the 16 clean
+rows, `matmul_row_tiling` goes **RMS 21.8 % → 18.3 %** and the mean **flips −13.7 % → +12.9 %**:
+correct traffic is now charged, and the terms that had been silently absorbing it now over-charge —
+precisely the prediction. Adding the underfill-cap half gives **16.8 %**, mean +11.2 %.
+
+Residual per tile count (cap applied): t1 −3.7, t2 −2.4, t4 +8.2, t8 **+26.3**, t16 +19.2,
+t32 +16.9 — the model is systematically TOO SLOW once tiling starts, i.e. the hardware gains
+something from small tiles that the model does not have. `coarse_underfill_eff` returns 1.0 on
+every one of these rows (`rows/core` 32–1024 against a knee of 13) and `_lx_spill_bw_derate` is
+gated off for matmul, so **no tile-size term is active at all**.
+
+**The benefit term is NOT fitted, because the data cannot identify it.** The residual correlates
+with tile size (|r| ≈ 0.75 against `log2 rows/core`, `log2 working set` and `log2 t`) — but all
+three are ALIASED, because **every row measured so far has M = 4096**, which pins
+`rows/core = M/(t·row_split)`. And at nominally matched conditions the residual does not even
+agree: at `t=4, rows/core=128` the two points read **+4.5 % and +17.4 %** (12.9 pts apart); at
+`t=8, rows/core=64`, **+28.4 % vs +17.1 %**. Fitting through that would be fitting the aliasing —
+the same trap that produced the wrong α = 0.5 earlier.
+
+**Deciding experiment written: `docs/source/user_guide/examples/run_coarse_tilesize_grid.sh`.**
+The missing axis is M: varying M at FIXED t moves `rows/core` without touching the tile count.
+A 4×4 grid (M ∈ 2048…16384, t ∈ 1,4,8,16, N and cores fixed) puts the same `rows/core` at three
+different t — e.g. 256 at (2048,1), (8192,4), (16384,8) — which is the separation the current data
+lacks. Read DOWN a column (fixed t, M varies) for the new information, subtracting each M's t=1
+anchor first. If the residual tracks `rows/core`, the fix belongs in `_lx_spill_bw_derate` (the
+existing coarse residency term, currently matmul-gated) rather than in a new per-iteration term.
+
 ### ✅ PER-LEVEL `loop_factor` — DERIVED FROM THE NEW IR AND IMPLEMENTED (2026-08-04)
 
 The capture ran (all 7 dumps carry `loop_info`; the `matmul_row_tiling` t=4 control reproduces the
