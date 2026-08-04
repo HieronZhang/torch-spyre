@@ -151,6 +151,97 @@ def _loop_features(op):
     )
 
 
+def _tiled_symbols_per_level(op):
+    """Per NESTING LEVEL, the set of loop symbols that level tiles.
+
+    ``CoarseTileInfo`` stores the tiled dims as HOST-RANGE indices, one list per level
+    (``loop_tiled_dims`` for output dims, ``loop_tiled_reduction_dims`` for reduction
+    dims), while the index expressions are written in iteration-space symbols. The
+    iteration space SKIPS unit-size ranges, so a host index must be mapped through the
+    non-unit ranges to reach the right symbol -- the same ``host_to_it`` correction
+    ``spyre_kernel.py`` applies when it builds ``tiled_syms``.
+
+    Returns ``[(trip, {symbols}), ...]`` outermost-first, or ``[]`` when the op is not
+    coarse-tiled.
+
+    IR-verified on ``mm_nested_m_k`` (M outer, K inner)::
+
+        loop_count               = [2, 4]
+        loop_tiled_dims          = [[0], []]      # level 0 tiles output dim 0 -> i0
+        loop_tiled_reduction_dims= [[],  [0]]     # level 1 tiles reduction dim 0 -> r0_0
+    """
+    li = getattr(op, "loop_info", None)
+    if li is None:
+        return []
+    counts = list(getattr(li, "loop_count", None) or [])
+    out_lv = list(getattr(li, "loop_tiled_dims", None) or [])
+    red_lv = list(getattr(li, "loop_tiled_reduction_dims", None) or [])
+    n_levels = max(len(out_lv), len(red_lv))
+    if not n_levels:
+        return []
+    try:
+        data = op.data
+        ranges = list(getattr(data, "ranges", []) or [])
+        rranges = list(getattr(data, "reduction_ranges", []) or [])
+        it_syms = list(iteration_space_from_op(op).keys())
+    except Exception:  # noqa: BLE001 - best-effort feature extraction
+        return []
+
+    # host-range index -> iteration-space position, skipping unit-size ranges.
+    def _host_to_it(rs, offset):
+        m, pos = {}, offset
+        for host_idx, r in enumerate(rs):
+            if _int(r, 1) != 1:
+                m[host_idx] = pos
+                pos += 1
+        return m, pos
+
+    out_map, n_out = _host_to_it(ranges, 0)
+    red_map, _ = _host_to_it(rranges, n_out)
+
+    levels = []
+    for lv in range(n_levels):
+        syms = set()
+        for h in out_lv[lv] if lv < len(out_lv) else []:
+            p = out_map.get(_int(h, -1))
+            if p is not None and p < len(it_syms):
+                syms.add(it_syms[p])
+        for h in red_lv[lv] if lv < len(red_lv) else []:
+            p = red_map.get(_int(h, -1))
+            if p is not None and p < len(it_syms):
+                syms.add(it_syms[p])
+        levels.append((max(1, _int(counts[lv], 1) if lv < len(counts) else 1), syms))
+    return levels
+
+
+def _loop_factor_for_index(index, levels) -> int:
+    """How many times traffic at ``index`` is transferred over the whole loop nest.
+
+    An operand is re-transferred at a level whose tiled symbols do NOT appear in its
+    index (it is re-entered at the same address each iteration of that level), and is
+    walked -- transferred once in total -- at a level whose tiled symbol it does carry.
+    So the multiplier is the PRODUCT over levels::
+
+        factor = prod( trip[L] if index has no tiled symbol of level L else 1 )
+
+    A single per-op scalar cannot express this: ``mm_nested_m_k``'s OUTPUT advances at
+    level 0 (its index has ``i0``) and repeats at level 1 (no ``r0_0``), giving 1*4 = 4,
+    while its B operand does the opposite, giving 2*1 = 2. IR-verified factors for that
+    op at t=4 are out=4, A=1, B=2 -- the extractor previously emitted 1/1/1.
+    """
+    if not levels:
+        return 1
+    try:
+        free = set(getattr(index, "free_symbols", None) or ())
+    except Exception:  # noqa: BLE001
+        return 1
+    factor = 1
+    for trip, syms in levels:
+        if syms and not (syms & free):
+            factor *= trip
+    return factor
+
+
 def _row_split(op, default: int) -> int:
     """Core split of the ROW (partition) device dim = the output var with the largest
     write-index coefficient (the outer/row dim; the stick dim has the smallest). Used so
@@ -183,7 +274,11 @@ def _row_split(op, default: int) -> int:
 
 
 def _matmul_features(
-    op, out_elems: int, dtype_bytes: int, loop_trip: int = 1, tiles_red_dim: bool = False
+    op,
+    out_elems: int,
+    dtype_bytes: int,
+    loop_trip: int = 1,
+    tiles_red_dim: bool = False,
 ):
     """(macs, rows_per_core, cols_per_core, a_bytes, b_bytes, k_split, m_split, n_split).
 
@@ -247,7 +342,9 @@ def _matmul_features(
                             n_sym = s
                 if m_sym is None or n_sym is None:
                     ordered = sorted(out_vars, key=lambda t: t[0])  # ascending by coeff
-                    mn = ordered[:2]  # two smallest = (N, M); larger-coeff vars are batch
+                    mn = ordered[
+                        :2
+                    ]  # two smallest = (N, M); larger-coeff vars are batch
                     m_sym = mn[-1][1]
                     n_sym = mn[0][1] if len(mn) >= 2 else None
                 m_size = _int(it_space[m_sym], 1)
@@ -266,7 +363,16 @@ def _matmul_features(
         rows_per_core = cols_per_core = 0.0
         a_bytes = b_bytes = 0
         k_split = m_split = n_split = 1
-    return macs, rows_per_core, cols_per_core, a_bytes, b_bytes, k_split, m_split, n_split
+    return (
+        macs,
+        rows_per_core,
+        cols_per_core,
+        a_bytes,
+        b_bytes,
+        k_split,
+        m_split,
+        n_split,
+    )
 
 
 def _hbm_pattern(op, is_reduction: bool, out_dims) -> str:
@@ -400,12 +506,31 @@ def extract_op_features(op) -> OpFeatures:
             rows = rows / loop_trip
         tile_rows_per_core = rows / _row_split(op, cores)
 
-    # Output advances (factor 1) when this op tiles an output dim (pointwise tiling
-    # writes the result tile by tile); fixed (factor L) for a reduction's per-tile
-    # partial or a combine's accumulator (re-written at one address each iteration).
-    out_factor = 1 if tiles_out_dim else loop_trip
-    # Inputs advance (factor 1) when the op tiles an output dim (all pointwise inputs)
-    # or a reduction dim (the reduced input); else fixed accumulators (factor L).
+    # PER-ARG, PER-LEVEL loop factors. An operand is re-transferred at a nesting level
+    # whose tiled symbol its index does NOT contain, and walked (transferred once) at a
+    # level whose symbol it does; the multiplier is the product over levels. See
+    # `_loop_factor_for_index`.
+    #
+    # This replaces two PER-OP scalars that could not express the nested case:
+    #     out_factor = 1 if tiles_out_dim else loop_trip
+    #     in_factor  = 1 if (tiles_out_dim or is_tiled_red) else loop_trip
+    # IR-verified consequences at 4096x2048x2048, t=4 (out / A / B):
+    #     matmul_k_tiling    4 / 1 / 1   -- old rule already correct (and it is the
+    #                                      best-scoring coarse op, 7.9 % RMS)
+    #     matmul_row_tiling  1 / 1 / 4   -- old rule gave B=1; B is invariant in M
+    #     mm_nested_m_k      4 / 1 / 2   -- old rule gave 1/1/1. The OUTPUT advances at
+    #                                      level 0 (index has i0) and repeats at level 1
+    #                                      (no r0_0) => 1*4; B does the opposite => 2*1.
+    _levels = _tiled_symbols_per_level(op)
+    try:
+        _rw = op.get_read_writes()
+        _write_index = next(iter(_rw.writes)).index
+    except Exception:  # noqa: BLE001 - best-effort feature extraction
+        _write_index = None
+    if _levels and _write_index is not None:
+        out_factor = _loop_factor_for_index(_write_index, _levels)
+    else:  # no loop_info (or unreadable index) -> the pre-existing behaviour
+        out_factor = 1 if tiles_out_dim else loop_trip
     in_factor = 1 if (tiles_out_dim or is_tiled_red) else loop_trip
 
     args: list = []
@@ -463,7 +588,12 @@ def extract_op_features(op) -> OpFeatures:
                 broadcast=broadcast,
                 dims=list(dims),
                 logical=list(in_logical) if in_logical else [],
-                loop_factor=in_factor,  # 1 if advancing, L if a fixed accumulator
+                # Per-arg: this read's OWN index decides which levels it repeats at.
+                loop_factor=(
+                    _loop_factor_for_index(index, _levels)
+                    if (_levels and index is not None)
+                    else in_factor
+                ),
             )
         )
 

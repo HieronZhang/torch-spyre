@@ -231,6 +231,59 @@ from −14.7 % to +10.8 % mean (RMS 22.6 → 17.5, but >10 % 48 → 62) because 
 were silently absorbing the missing traffic. Land it together with the LX-benefit term and re-fit
 the pair, on a re-run that carries `feats` — not before.
 
+### ✅ PER-LEVEL `loop_factor` — DERIVED FROM THE NEW IR AND IMPLEMENTED (2026-08-04)
+
+The capture ran (all 7 dumps carry `loop_info`; the `matmul_row_tiling` t=4 control reproduces the
+known answer exactly), and it settles the nested case.
+
+**`mm_nested_m_k` is `loop_count=[2, tiles]`** — M always split 2 (outer), K split by `tiles`
+(inner) — confirmed at t=2/4/8. So `L = 2 x tiles`. (An earlier note said `L = tiles^2`; that is
+WRONG — it matches only at tiles=2.)
+
+```text
+loop_info=CoarseTileInfo(loop_group_id=(0, 0), loop_count=[2, 4],
+                         loop_tiled_dims          = [[0], []],    # level 0 tiles M   -> i0
+                         loop_tiled_reduction_dims= [[],  [0]])   # level 1 tiles K   -> r0_0
+tmp0 = ops.load(arg0_1, r0_0 + 2048 * i0)     # A
+tmp1 = ops.load(arg1_1, i1   + 2048 * r0_0)   # B
+```
+
+**The rule** — an operand repeats at a level whose tiled symbol its index does NOT contain, and is
+walked at a level whose symbol it does:
+
+```text
+factor(arg) = PRODUCT over levels L of ( loop_count[L] if index has no tiled symbol of L else 1 )
+```
+
+**IR-derived vs what the extractor emitted** (4096x2048x2048, t=4, out / A / B):
+
+| op | truth | extractor emitted | |
+|---|---|---|---|
+| `matmul_k_tiling` | 4 / 1 / 1 | 4 / 1 / 1 | already correct |
+| `matmul_row_tiling` | 1 / 1 / **4** | 1 / 1 / **1** | B under-counted |
+| `mm_nested_m_k` | **4** / 1 / **2** | **1** / 1 / **1** | out and B under-counted |
+
+Two independent cross-checks. (1) `matmul_k_tiling` is the ONLY coarse op whose factors were
+already right — and it is the best-scoring coarse op (7.9 % RMS). (2) `matmul_b_bytes` is `B/4` for
+`mm_nested_m_k` (B sliced by K) but the FULL B for `matmul_row_tiling` (not sliced): a different
+recorded field encoding the same advance/repeat structure.
+
+`mm_nested_m_k`'s OUTPUT is the case a scalar cannot express — it advances at level 0 (index has
+`i0`) and repeats at level 1 (no `r0_0`), so 1*4 = 4. And its B is 2*1 = 2, **not** the total
+L = 8: applying the flat single-level rule charges 8, a 4x over-count, which is exactly the
+RMS 46.0 % -> 142.8 % blow-up seen earlier.
+
+**IMPLEMENTED** in `dump_cost_model.py`: `_tiled_symbols_per_level` (maps per-level host-range dims
+to iteration-space symbols, mirroring `spyre_kernel.py`'s `host_to_it`) and
+`_loop_factor_for_index`, wired per arg for both the write and every read. Falls back to the old
+per-op scalars when there is no `loop_info`. **Unit-verified 10/10 against the IR-derived factors
+above**; `ruff` clean; offline scores unchanged (existing rows score from their recorded `feats`,
+so the change is inert until a re-extraction).
+
+**Not yet re-measured.** The new factors only take effect on a fresh run. Expect
+`matmul_row_tiling` and `mm_nested_m_k` to move; land together with the underfill-cap change and
+re-fit as a pair, per the entanglement noted below.
+
 ### 🐛 `SPYRE_DUMP_IR=1` WAS BROKEN — it ABORTED THE COMPILE (fixed 2026-08-04)
 
 Every previous attempt to dump the nested ops produced a ~51-line "stub", and the reason was not
