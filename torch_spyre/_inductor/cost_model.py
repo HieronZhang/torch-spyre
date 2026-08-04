@@ -98,7 +98,8 @@ below (rpc4~0.45, rpc2~0.28). KNOWN residuals: a mild efficiency decline above r
 practically available LX (~512 KB/core) the intermediates SPILL to HBM. The extractor already
 counts those spilled bytes as HBM (they show up read+written), so it is NOT a byte miss -- but
 that spilled traffic runs SLOWER than the modeled rate, so the effective bandwidth is DERATED
-(``_lx_spill_bw_derate``: BW *= (cap/ws)**0.15 for ws>cap). Softmax-calibrated (11.0%->5.7% RMS),
+(``_lx_spill_bw_derate``: BW *= (cap/ws)**0.15 for ws>cap). Softmax-calibrated
+(10.7%->6.0% RMS on softmax_row_tiling, 32 cores, tiles>=2, n=60),
 gated to non-matmul coarse tiling. See report S14.
 
 ACCESS-PATTERN effective-BW overrides (db_sweep; fold turnaround into one measured rate).
@@ -351,9 +352,22 @@ class CostParams:
     # (they show up read+written), so this is NOT a byte miss -- but that spilled traffic runs
     # SLOWER than the modeled rate, so the effective bandwidth is derated:
     #   BW *= min(1, (lx_spill_cap / ws_per_core) ** lx_spill_exp),  ws > cap only.
-    # Softmax-calibrated (11.0% -> 5.7% RMS); gated to non-matmul coarse tiling.
+    # Softmax-calibrated: 10.7 -> 6.0 % RMS, worst -39.8 -> -17.8 %, on
+    # softmax_row_tiling / 32 cores / tiles>=2 / in-scope (n=60). NOTE 512 KB is NOT a
+    # documented capacity -- this repo documents 2 MB physical and ~1.6 MB allocatable
+    # per core. The value is fitted; do not describe it as matching the hardware.
     lx_spill_cap_bytes: float = 524288.0  # ~512 KB/core practically available LX
     lx_spill_exp: float = 0.15
+    # Matmul-specific spill calibration (see _lx_spill_bw_derate). Defaults make the
+    # term fire only on the largest matmul tiles (it acts on 19 in-scope rows).
+    # The cap is only weakly identified: 1 MB..infinity spans 0.44 pp of RMS.
+    # 2 MB = the FULL per-core LX. softmax's practical limit is lower (512 KB) because a
+    # fused reduction holds several live intermediates at once, whereas a coarse matmul
+    # tile is a single working set and can use the whole scratchpad before it spills.
+    # The EXPONENT is unchanged from the softmax fit (0.15) -- same physical form, only
+    # the capacity threshold differs.
+    mm_spill_ws_cap_bytes: float = 2097152.0
+    mm_spill_ws_exp: float = 0.15
     # MATMUL compute term. T_matmul = compute + HBM - gamma*min(compute, HBM), where
     # compute = MACs/cores/(mac_peak*pt_eff). mac_peak=1140 (sustained) fit on the
     # compute-DOMINANT low-core runs (cores 4-8, compute 80-90% of the kernel; the old
@@ -365,6 +379,39 @@ class CostParams:
     # (A coarse-tiled matmul's per-tile array underfill is NOT modeled -- data too thin;
     # tiled matmuls take pt_eff=1. See predict_ops and report Part IV.)
     overlap_gamma: float = 0.46  # compute/HBM overlap: min(compute,HBM) partly hidden
+    # EMPIRICAL imbalance correction for COARSE-TILED matmul. NOT a physical overlap law
+    # -- an adversarial review refuted that framing and the refutation is recorded here so
+    # it is not re-invented:
+    #   * 26 of 125 affected rows individually require a hidden fraction > 1.0 (up to
+    #     1.29), which no overlap can do. Something is over-charged, not under-hidden.
+    #   * A free re-fit puts the endpoint at 1.27 (bootstrap 95 % CI [1.12, 1.45],
+    #     P(>1.0) = 1.00). 1.0 is a CAP the data push against, not a limit they approach.
+    #   * rho, the re-read share and log2(tile rows/core) are mutually aliased
+    #     (|r| = 0.82-0.90). rho's regression coefficient collapses to t = +0.1 once the
+    #     re-read share is included, so AT MOST HALF the effect is attributable to rho.
+    #   * It is not population-invariant: un-looped mmwd fits a different exponent
+    #     (1.5 vs 0.75) and shows only ~62 % hiding at rho ~ 0.16, not ~100 %.
+    #   * KNOWN REGRESSION: the near-balanced band (rho >= 0.9) goes RMS 9.6 -> 11.5,
+    #     because sqrt has infinite slope at rho = 1 (gamma(0.90) = 0.63, not 0.46).
+    # It is kept because it is the best correction found (leave-one-shape-out CV 8.5 vs
+    # 9.9 for a pure re-read rescale and 12.7 for a looped constant), and it is fitted
+    # JOINTLY with `loop_reread_scale` since the two are confounded. Deciding experiment:
+    # sweep at fixed re-read share varying rho, and vice versa (trade K against N at fixed
+    # M/L, including N in {512, 1024}), then re-fit g = a + b*sqrt(1-rho) + c*reread_share
+    # -- today a/b/c = 0.336 / 0.557 (t=4.0) / 0.611 (t=3.1).
+    overlap_gamma_unbal: float = 1.0
+    # 0.60, not 0.5: the sqrt form has infinite slope at rho=1 and measurably regressed
+    # the near-balanced band (rho>=0.9 went RMS 9.6 -> 11.5). 0.60 recovers part of that
+    # (-> 10.7) while keeping every coarse matmul point inside +/-20 %. Chosen against
+    # THREE criteria (overall RMS, worst-case, and the balanced band), not RMS alone --
+    # RMS alone hid the regression.
+    overlap_gamma_exp: float = 0.60
+    # Scale on the loop-invariant re-read. 1.0 = a full HBM pass per iteration. Fitted
+    # JOINTLY with the overlap shape because the two are confounded (r = -0.90 between
+    # rho and the re-read share): an adversarial review showed 26/125 rows demanding an
+    # overlap fraction > 1.0, which is physically impossible and means the re-read is
+    # over-charged rather than the overlap under-modelled.
+    loop_reread_scale: float = 0.85
     # Matmul operand RE-READ (tile spill): the per-core OUTPUT-accumulator tile has area
     # (M/m)*(N/n); once it exceeds the on-chip capacity (~64K fp16 elems/core) it no longer
     # stays resident, so the operands are re-streamed from HBM. The re-read magnitude is the
@@ -701,12 +748,22 @@ def _lx_spill_bw_derate(ops: list, params: CostParams | None = None) -> float:
     ``BW *= (lx_spill_cap / ws)**lx_spill_exp`` for ``ws > cap``. Gated to non-matmul coarse
     tiling (softmax-calibrated); 1.0 when it does not apply."""
     p = params or CostParams()
-    if any(getattr(o, "is_matmul", False) for o in ops):
-        return 1.0
+    # Previously gated OFF for matmul entirely (the term was softmax-calibrated). But a
+    # coarse-tiled matmul spills for the same reason -- its per-core tile is the same
+    # kind of live working set -- and the large-tile end is where the model was most
+    # wrong: mean residual +4.0 / +0.4 / -5.4 / -12.1 % at M = 2048/4096/8192/16384, i.e.
+    # progressively UNDER-predicted as the tile grows. The derate is inert below the cap
+    # (1.000 at <=64 rows/core), so it only touches that end.
     ws = _lx_spill_working_set(ops)
-    if ws <= p.lx_spill_cap_bytes:
+    # Matmul gets its OWN cap/exponent. The softmax calibration (512 KB, 0.15) does not
+    # transfer: applied to matmul it over-derates the mid-range tiles (pushing the
+    # positive tail to +29 %) while still under-correcting the large end.
+    _cap, _exp = p.lx_spill_cap_bytes, p.lx_spill_exp
+    if any(getattr(o, "is_matmul", False) for o in ops):
+        _cap, _exp = p.mm_spill_ws_cap_bytes, p.mm_spill_ws_exp
+    if ws <= _cap:
         return 1.0
-    return (p.lx_spill_cap_bytes / ws) ** p.lx_spill_exp
+    return (_cap / ws) ** _exp
 
 
 def _bmm_layout_pair(o) -> tuple:
@@ -866,7 +923,8 @@ def _loop_reread_bytes(ops: list) -> float:
     it, and ``_input_residency_reason``'s first gate rejects any input whose
     ``_read_count`` (which excludes the unavoidable first read) is 0. The L iterations
     live INSIDE one op, so the allocator sees a single use and declines -- confirmed on
-    every record we hold: coarse-matmul input args are 684 HBM / 0 LX, while
+    every record we hold: coarse-matmul input args are 0 LX (several hundred
+    reads, all HBM; the exact count moves as the database grows), while
     ``softmax_row_tiling`` gets 1420 LX args, so the planner is working and simply does
     not apply here.
 
@@ -1228,7 +1286,7 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         )
         # The loop-invariant re-read is held OUT of this term and charged separately
         # below, at peak and outside the per-tile underfill derate (see `mem_t`).
-        r_base = r - _loop_reread_bytes(ops)
+        r_base = r - _loop_reread_bytes(ops)  # re-read charged separately below
         mem = (
             r_base / p.mm_bw_read_gbps
             + w / p.mm_bw_write_gbps
@@ -1338,7 +1396,7 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     # HBM pass over B at 150 GB/s (B = 2/4/8/16 MB -> 1.24/0.99/0.97/0.90), while the
     # marginal cost itself spans 5.8x -- so it scales with the operand, and is not a
     # fixed per-iteration overhead. 0 until the extractor sets per-arg `loop_factor`.
-    mem_t += _loop_reread_bytes(ops) / p.mm_bw_read_gbps
+    mem_t += p.loop_reread_scale * _loop_reread_bytes(ops) / p.mm_bw_read_gbps
     # MATMUL compute = MACs/cores derated by pt_eff (PT-array fill).
     compute = 0.0
     for o in ops:
@@ -1384,7 +1442,32 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     # smaller of the two is partly hidden (gamma=0.46). For a non-matmul bundle compute=0
     # -> min(0, mem_t)=0 -> t = mem_t (unchanged). The split re-read is charged AFTER the
     # overlap (it is not hidden by compute -- it is why the lopsided kernel runs long).
-    t = compute + mem_t - p.overlap_gamma * min(compute, mem_t) + split_ns
+    # Overlap. The hidden fraction of the SHORTER stream depends on how BALANCED the two
+    # streams are: when compute is far shorter than memory it hides almost completely,
+    # while comparable streams contend and only a fraction hides. rho = min/max.
+    # GATE, stated honestly. `loop_trip > 1` currently decides ZERO rows (it is implied
+    # by tiles_output_dim on every record we hold), so its "a loop can pipeline across
+    # iterations" rationale is UNTESTED -- it is kept only as a guard for future
+    # non-looped output-tiled ops. `tiles_output_dim` binds on just 8 rows
+    # (bmm_3d2d_k_tiling), which already under-predict ~17 %, so those rows cannot
+    # distinguish "reduction-tiled iterations are dependent" from "that op's memory term
+    # is too small". What IS established is only that SOME gate is needed: removing both
+    # regresses mmwd 15.1 -> 17.6 and bmm_layout 20.2 -> 25.5.
+    _lo, _hi = min(compute, mem_t), max(compute, mem_t)
+    _rho = (_lo / _hi) if _hi > 0 else 1.0
+    # ... and only when the loop iterates over INDEPENDENT work. Tiling an OUTPUT dim
+    # gives independent tiles that can be software-pipelined; tiling the REDUCTION dim
+    # accumulates into one output, so iteration i+1 depends on iteration i and cannot
+    # be hidden behind it. matmul_k_tiling / bmm_3d2d_k_tiling are the dependent case.
+    _looped = any(
+        (getattr(o, "loop_trip", 1) or 1) > 1 and o.tiles_output_dim for o in ops
+    )
+    _g = p.overlap_gamma
+    if _looped:
+        _g = p.overlap_gamma + (p.overlap_gamma_unbal - p.overlap_gamma) * (
+            (1.0 - _rho) ** p.overlap_gamma_exp
+        )
+    t = compute + mem_t - _g * _lo + split_ns
     # (A genuine-reduction cross-core ring-combine term once lived here; it is provably
     # bounded by ~cores * a tiny per-elem cost <= ~5 ns -- below run-to-run noise --
     # so it is dropped as inert. K is never split for matmul, so there is no matmul analogue.

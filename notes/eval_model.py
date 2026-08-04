@@ -276,6 +276,14 @@ _COARSE_OPS = {
 #    correct features yield -51 % on an identical kernel. Rows like that cannot judge the
 #    model in either direction.
 _CORRUPT_FEATURE_SHAS = {"7f37527", "f321503"}
+# 4. Rows extracted by the FIRST version of the per-level `loop_factor` code, whose
+#    guard `if syms and not (syms & free)` skipped every level with NO tiled symbols.
+#    An op that tiles NOTHING at a level is loop-INVARIANT there, so all its args
+#    repeat -- the coarse_tile_fill / coarse_tile_combine case. The bug under-counted
+#    one K-tiled bundle 552 MB -> 216 MB and moved the control op -6.3 % -> -64.2 %.
+#    Only bundles CONTAINING a fill/combine op are affected, which is why
+#    matmul_row_tiling (a single-op bundle) is unaffected and stays in scope.
+_BUGGY_LOOP_FACTOR_LOG = "coarse_reextract_20260804_004110.log"
 
 
 def in_scope(rec) -> bool:
@@ -294,6 +302,46 @@ def in_scope(rec) -> bool:
         cols = rec.get("cols")
         if isinstance(cols, int) and cols < _MIN_FUSED_REDUCTION_COLS:
             return False
+    # Ops whose recorded features PREDATE the corrected per-arg loop_factor and cannot be
+    # repaired offline: their bundles contain coarse_tile_fill / _combine ops whose args
+    # need loop_trip (matmul_k_tiling) or the K-split (mm_nested_m_k), and no recorded
+    # field pins those. Scoring a model against a wrong byte count is meaningless, so
+    # they are excluded until `run_coarse_final_reextract.sh` replaces them.
+    # matmul_row_tiling is NOT here: single-op bundle, repaired deterministically and
+    # validated 11/11 against fresh extractions.
+    if op in ("matmul_k_tiling", "mm_nested_m_k"):
+        for f in rec.get("feats") or []:
+            if f.get("is_matmul") and (f.get("tiles_reduction_dim") is None):
+                return False  # pre-fix extractor: field did not exist yet
+    # Feature-corrupt: fill/combine args mis-counted by the first per-level implementation.
+    # STALE PER-ARG loop_factor. A coarse-tiled MATMUL always has a loop-invariant
+    # operand (§14): row-tiling repeats B, K-tiling repeats the accumulator. So at
+    # tiles > 1 SOME arg must carry loop_factor > 1. If none does, the row was extracted
+    # before the per-arg fix and its byte count is wrong -- scoring any model against it
+    # is meaningless. Detected structurally rather than by log name so a future stale
+    # log cannot slip back in. NOT applied to the softmax ops: row-tiling a reduction
+    # tiles every tensor alike, so flat factors are CORRECT there (all 147 rows are flat,
+    # in every log, including the freshly re-extracted ones).
+    if op in ("matmul_row_tiling", "matmul_k_tiling", "mm_nested_m_k"):
+        try:
+            _t = int(rec.get("tiles") or 1)
+        except (TypeError, ValueError):
+            _t = 1
+        if _t > 1 and rec.get("feats"):
+            _mx = max(
+                (a.get("loop_factor") or 1)
+                for f in rec["feats"]
+                for a in (f.get("args") or [])
+            )
+            if _mx <= 1:
+                return False
+    if rec.get("log_file") == _BUGGY_LOOP_FACTOR_LOG:
+        for f in rec.get("feats") or []:
+            names = [a.get("name", "") for a in f.get("args") or []]
+            if any(
+                "coarse_tile_fill" in n or "coarse_tile_combine" in n for n in names
+            ):
+                return False
     if op in _COARSE_OPS:
         for f in rec.get("feats") or []:
             if not f.get("is_matmul"):

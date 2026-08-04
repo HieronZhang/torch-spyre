@@ -62,7 +62,11 @@ _LBL_BMNK_SPLIT = re.compile(
     r"\bb=(\d+)\s+m=(\d+)\s+n=(\d+)\s+k=(\d+)"
 )  # forced bmm split
 _LBL_LAYOUT = re.compile(
-    r"\blayoutA=([\d,]+)\s+layoutB=([\d,]+)"
+    # TWO label forms exist. The original sweeps wrote `layoutA=0,1,2 layoutB=1,0,2`;
+    # later ones write `A=0,1,2 B=0,1,2`. Matching only the first silently dropped the
+    # layout on 84 of 138 bmm_layout rows (61 %) -- the two NEWEST logs -- so any figure
+    # or fit keyed on layout quietly saw less than half the data.
+    r"\blayoutA=([\d,]+)\s+layoutB=([\d,]+)|\bA=(\d,\d,\d)\s+B=(\d,\d,\d)"
 )  # bmm_layout dim_orders
 _LBL_RPC = re.compile(r"rows/core=(\d+)")
 _LBL_FA = re.compile(  # flash_attn hint knobs from the label
@@ -197,7 +201,8 @@ def _derive(rec):
                 "k": int(g[4]),
             }
         if g := _LBL_LAYOUT.search(label):  # bmm_layout: the two operand dim_orders
-            rec["layout_a"], rec["layout_b"] = g[1], g[2]
+            # groups 1/2 = the `layoutA=`/`layoutB=` form, 3/4 = the newer `A=`/`B=` form
+            rec["layout_a"], rec["layout_b"] = (g[1], g[2]) if g[1] else (g[3], g[4])
     elif op == "flash_attn":
         # Multi-op coarse-tiled flash attention. The label carries the hint knobs; derive
         # the coarse loop trip count (h_tiles * q_tiles * k_tiles) and the ~2 matmul MACs.

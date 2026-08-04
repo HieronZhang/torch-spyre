@@ -245,17 +245,18 @@ def _loop_factor_for_index(index, levels) -> int:
     except Exception:  # noqa: BLE001
         return 1
     factor = 1
-    for trip, syms, declared in levels:
-        if declared == 0:
-            # This op tiles NOTHING at this level, so it is loop-invariant here and
-            # EVERY arg repeats -- the `coarse_tile_fill` / `coarse_tile_combine` case,
-            # whose accumulators are re-touched once per iteration. An earlier version
-            # skipped every symbol-less level and under-counted one K-tiled bundle's
-            # traffic 552 MB -> 216 MB, moving the control op from -6.3 % to -64.2 %.
-            factor *= trip
-        elif syms and not (syms & free):
-            # Declared AND resolved, and this arg's index does not carry them -> repeats.
-            # (Declared but UNRESOLVED is deliberately left at 1: unknown, not guessed.)
+    for trip, syms, _declared in levels:
+        # An arg REPEATS at a level whenever that level's tiled symbols are absent from
+        # its index -- for EITHER reason:
+        #   * the level tiles nothing this op has (`coarse_tile_fill` / `_combine`, whose
+        #     loop_info names a dim they do not iterate), or
+        #   * the level tiles a dim this arg's address does not depend on (matmul B under
+        #     M-tiling).
+        # Both mean the same physical thing: the op re-enters the same address each
+        # iteration of that level. An earlier version guarded this with `if syms`, which
+        # silently dropped the first case and under-counted one K-tiled bundle
+        # 552 MB -> 216 MB, moving the control op from -6.3 % to -64.2 %.
+        if not (syms & free):
             factor *= trip
     return factor
 
@@ -519,7 +520,19 @@ def extract_op_features(op) -> OpFeatures:
     # N/A -> no derate.
     tile_rows_per_core = 0.0
     if tiles_out_dim and loop_trip > 1 and cores > 0 and len(out_dims) >= 2:
-        rows = out_dims[-2]
+        # Row extent from the LOGICAL shape, not the device shape. ``out_dims[-2]`` is
+        # the row count only for a rank-2 tensor, whose device layout is rank-3. A
+        # rank-3 or rank-4 tensor has a rank-4/5 device layout in which [-2] is a
+        # degenerate or batch axis: a rank-4 flash tensor [1,4,1024,128] lays out as
+        # [4,1024,2,1,64], so [-2] is 1, and a rank-3 bmm output [2,1024,1024] lays out
+        # as [1024,16,2,64], so [-2] is the batch (2). Both then divide by loop_trip and
+        # the core split, producing sub-unity "rows per core" -- 0.008 on flash -- which
+        # drove coarse_underfill_eff to ~0.007 and inflated the memory term 60-248x.
+        # ``logical[-2]`` is the row extent at every rank. Verified equal to the old
+        # value on all 1177 recorded rank-2 tiled ops, so this changes nothing that was
+        # previously modelled; it only repairs rank>=3. Same class of mistake, and the
+        # same fix, as _matmul_features' batch-dim exclusion above.
+        rows = (out_size[-2] if len(out_size) >= 2 else 0) or out_dims[-2]
         if out_mem != "lx":  # full-buffer alloc: per-tile slice is rows / loop_trip
             rows = rows / loop_trip
         tile_rows_per_core = rows / _row_split(op, cores)

@@ -84,6 +84,7 @@ from .coarse_tile import coarse_tile
 from .dump_fx_graph import dump_fx_graph
 from .dump_loop_ir import dump_loop_ir
 from .dump_cost_model import dump_cost_model
+from .cost_model_pass import CostReport, cost_model_pass, verify_against_fused_nodes
 from .split_multi_ops import split_multi_ops, validate_ops
 
 
@@ -211,6 +212,7 @@ class CustomPostPasses(_SpyreGraphPassPipeline):
     """
     The list of custom passes to run
     """
+
     def __init__(self):
         super().__init__(
             [
@@ -253,6 +255,21 @@ class CustomPostFusionPasses(_SpyreNodePassPipeline):
     def __init__(self):
         # HBM-Pool Planning
         super().__init__([hbm_pool_planning, spyre_fuse_nodes])
+
+    def __call__(self, target: list[BaseSchedulerNode]) -> list[BaseSchedulerNode]:
+        nodes = super().__call__(target)
+        # Read-only cost check, run AFTER the real passes so it sees the bundles
+        # spyre_fuse_nodes formed. Deliberately not a member of self.passes: _uuid
+        # hashes each pass's source file into the Inductor cache key, and a reporting
+        # hook must not invalidate every cached graph when its formatting changes.
+        # It no-ops unless the cost model is in mode "2".
+        #
+        # The device guard is repeated here because the base __call__ returns early
+        # on a non-Spyre graph -- without it a CPU-only compilation would be priced
+        # as Spyre traffic and compared against a stale estimate.
+        if not self._has_spyre_device(nodes):
+            return nodes
+        return verify_against_fused_nodes(nodes)
 
 
 # Several pre-scheduling steps are config-gated or need arguments beyond the
@@ -327,6 +344,11 @@ class CustomPreSchedulingPasses:
     in order, and the inherited :meth:`uuid` keys the cache on their sources.
     """
 
+    #: Predicted runtime for the most recently compiled graph, or None when the
+    #: cost model is disabled (the default). Class-level so the attribute exists
+    #: even on an instance built without __init__ -- test_log_passes.py does that.
+    last_cost_report: CostReport | None = None
+
     def __init__(self):
         self.passes = [
             deadcode_elimination,
@@ -386,6 +408,13 @@ class CustomPreSchedulingPasses:
             logger.info("AFTER PRE-SCHEDULING\n%s", format_operations(graph.operations))
         dump_loop_ir(graph.operations, "LoopLevel IR - AFTER pre-scheduling passes")
         dump_cost_model(graph.operations)
+        # Predicted runtime for this graph, or None when config.cost_model is off.
+        # Kept OUTSIDE self.passes on purpose: it only reads the IR, so hashing it
+        # into the Inductor cache key (see _uuid) would invalidate caches for a
+        # report that cannot change the compiled result. Stored rather than only
+        # printed so another pass or an external tool can compare two plans by
+        # total_us without compiling and running either.
+        self.last_cost_report = cost_model_pass(graph)
 
     def uuid(self) -> Any | None:
         return _uuid(self.passes)
