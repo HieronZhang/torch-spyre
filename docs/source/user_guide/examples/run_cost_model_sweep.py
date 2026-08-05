@@ -47,7 +47,10 @@ import regex as re
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_HERE))))
 _TOOLS = os.path.join(_ROOT, "tools", "cost_model")
-_RECORDS = os.path.join(_TOOLS, "sweep_records.json")
+sys.path.insert(0, _TOOLS)
+from records import records_path  # noqa: E402
+
+_RECORDS = records_path()
 _HARNESS = os.path.join(_HERE, "profile_ops.py")
 
 # Needs an opt-in layout preference that is not part of this feature -- those rows are

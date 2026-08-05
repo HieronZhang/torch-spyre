@@ -186,21 +186,25 @@ BENCH_OP=bmm_k_tiling BENCH_B=4 BENCH_ROWS=1024 BENCH_COLS=2048 BENCH_N=1024 \
 ```
 
 ```text
-predicted total:     2999.9 us over 1 kernel(s), 3 op(s)
+predicted total:     2887.8 us over 1 kernel(s), 3 op(s)
 
       kernel   predicted us  ops
-           0         2999.9  3
-                     2918.8    loop 0, runs 8 times
-                     1945.9      Pointwise HBM  201.3 MB = 8 x 25.2 MB
-                      972.9      bmm       HBM  100.7 MB = 8 x 12.6 MB
-                       81.1    not in a loop, runs once
-                       81.1      Pointwise HBM    8.4 MB
+           0         2887.8  3
+                     2809.7    loop 0, runs 8 times
+                     1873.1      Pointwise HBM  201.3 MB = 8 x 25.2 MB
+                      936.6      bmm       HBM  100.7 MB = 8 x 12.6 MB
+                       78.0    not in a loop, runs once
+                       78.0      Pointwise HBM    8.4 MB
 ```
 
 The fill runs **once**, so its `8.4 MB` is all of its traffic; the matmul and combine above
 it run eight times. A kernel has no single iteration count, which is why the count sits on a
 block header rather than in a column — each block states it for the operations it governs
-and carries their subtotal, here `2918.8 µs` of `2999.9 µs`.
+and carries their subtotal, here `2809.7 µs` of `2887.8 µs`.
+
+This kernel is also a reminder that the numbers are relative: it measures 6090 µs, so the
+prediction is 53 % low. Batched matmul is the worst case for the missing overlap residual —
+see [limitations](#two-limitations-worth-knowing).
 
 Operations land in **separate** kernels only when something between them cannot be fused.
 The program total is the sum over kernels.
@@ -231,7 +235,7 @@ operations do not yet carry the tiling the estimate depends on. The report is al
 | `CostReport.groups` | one entry per kernel, in program order (only the printout sorts by cost) |
 | `GroupCost.predicted_us` | that kernel's predicted time |
 | `GroupCost.loop_group_ids` | the coarse-tiling loops inside this kernel, for labelling |
-| `GroupCost.ops` | per-operation attribution, not independent predictions — see [limitations](#one-limitation-worth-knowing) |
+| `GroupCost.ops` | per-operation attribution, not independent predictions — see [limitations](#two-limitations-worth-knowing) |
 | `GroupCost.loop_trip` | the **deepest** loop in this kernel, not a count that applies to every operation in it — read `OpCost.trip` per operation |
 | `OpCost.hbm_bytes` | main-memory traffic across the **whole** loop |
 | `OpCost.trip` | how many times **this** operation runs; `1` for one placed outside the loop |
@@ -267,7 +271,24 @@ no reordering. The pass applies that same rule, with two differences:
 
 `loop_group_id` labels the loop structure inside a kernel; it does not decide boundaries.
 
-## One limitation worth knowing
+## Two limitations worth knowing
+
+**Compute and memory do not combine by any form we can justify.** A matmul has an arithmetic
+cost and a memory cost, and the kernel is charged `max(compute, memory)` — the two overlap,
+so it takes the longer. That is the mechanism, but it is not the measurement: it under-charges
+by 22–31 % on the mean across every matmul family, because part of the shorter stream fails to
+hide behind the longer and nothing charges for it. Adding the two instead over-predicts by a
+similar margin. Neither form is right, and no mechanism is known for what sits between them —
+a fitted fraction closes the gap numerically but its value is unstable across populations, so
+it was removed rather than shipped.
+
+This is the largest single source of error in the model. It is confined to matmul — it is why
+`matmul, split` reads 29.8 % and `bmm` up to 40.0 % above, while pointwise, broadcast,
+reduction and transport all sit under 10 %. (Softmax's 21.1 % has a different cause: a
+per-core throughput floor that used to cover partial-machine runs was removed for the same
+reason, having no settled mechanism.) The bias runs one way, so a predicted time for a
+matmul-heavy graph is a lower bound rather than an estimate. Ranking is unaffected — see the
+note under [Accuracy](#accuracy).
 
 **Per-operation times are an attribution, not predictions.** Each kernel is priced once, as
 a whole; the per-op column then splits that total by each operation's share of the
@@ -286,12 +307,18 @@ states how well each is understood:
 
 | category | RMS | category | RMS |
 |---|---:|---|---:|
-| broadcast | 5.7 % | matmul, row-tiled | 7.7 % |
-| transport | 6.1 % | softmax | 12.9 % |
-| reduction | 7.2 % | matmul, split | 15.1 % |
-| pointwise | 8.5 % | bmm | 18.0–34.5 % |
+| broadcast | 5.0 % | softmax | 21.1 % |
+| transport | 6.1 % | matmul, row-tiled | 25.1 % |
+| reduction | 7.2 % | matmul, split | 29.8 % |
+| pointwise | 8.5 % | bmm | 26.5–40.0 % |
 
-Flash attention is not modelled correctly and is excluded from these figures.
+The right column carries a **systematic under-prediction**, not scatter: compute and memory
+are charged as `max(compute, memory)`, and nothing charges for the part of the shorter stream
+that fails to hide behind the longer. Ordering survives it — rank correlation with measured
+runs +0.875 to +0.998 across every category — so the model is usable for choosing between
+plans and not for predicting a wall-clock number.
+
+Two op families are excluded from these figures because nothing models them: flash attention, and the `write` outer product (`b[1,C] + c[R,1]`), whose fitted surface was removed as an unexplained black box.
 
 ## Measuring, scoring and refreshing the model
 
@@ -302,7 +329,7 @@ reproduce or refresh that is in the tree.
 |---|---|
 | the measurement harness — runs one op under the PyTorch profiler and prints a parseable summary | `docs/source/user_guide/examples/profile_ops.py` |
 | re-measure **every** configuration in the database on this machine | `docs/source/user_guide/examples/run_cost_model_sweep.py` |
-| the database itself — one record per measured kernel | `tools/cost_model/sweep_records.json` |
+| the database itself — one record per measured kernel | fetched, not committed — see `tools/cost_model/records.py` |
 | score the model against the database, offline, with no hardware | `tools/cost_model/eval_model.py` |
 | fold a sweep log back into the database | `tools/cost_model/parse_sweep_logs.py` |
 | regenerate the report's figures and tables | `tools/cost_model/plot_report.py`, `report_tables.py`, `part_tables.py`, `coarse_tables.py` |
@@ -313,6 +340,18 @@ Measure one configuration:
 BENCH_OP=softmax_row_tiling BENCH_ROWS=4096 BENCH_COLS=2048 BENCH_TILES=8 \
   python3 docs/source/user_guide/examples/profile_ops.py
 ```
+
+**The measurement database is not in the repository.** It is ~14 MB of JSON that grows with
+every re-sweep, so committing it would dominate the history for a file no diff can usefully
+show. Point the tools at a copy, or let them fetch and cache one:
+
+```bash
+export SPYRE_COST_MODEL_RECORDS=/path/to/sweep_records.json   # a local copy
+export SPYRE_COST_MODEL_RECORDS_URL=<url>                     # or fetch it once
+```
+
+Every tool below resolves it the same way through `tools/cost_model/records.py`, and prints
+these instructions if it cannot find one.
 
 Score the model without touching hardware — this is the loop to use when changing a term,
 since it re-costs the stored measurements rather than re-running them:
@@ -358,9 +397,9 @@ BENCH_OP=matmul_row_tiling BENCH_ROWS=4096 BENCH_COLS=2048 BENCH_N=1024 \
 
 ```text
       kernel   predicted us  ops
-           0          472.2  1
-                      472.2    loop 0, runs 8 times
-                      472.2      mm HBM   58.7 MB = 8 x 7.3 MB   re-fetch 29.4 MB
+           0          423.1  1
+                      423.1    loop 0, runs 8 times
+                      423.1      mm HBM   58.7 MB = 8 x 7.3 MB   re-fetch 29.4 MB
 ```
 
 The three tensors total 29.4 MB — A is 16.8, the output 8.4, B only 4.2 — yet the loop

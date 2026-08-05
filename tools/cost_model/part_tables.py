@@ -41,7 +41,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import eval_model as em  # noqa: E402
 
 cm = em.cm
-RECORDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sweep_records.json")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from records import records_path  # noqa: E402
+
+RECORDS = records_path()
 
 # Which ops belong to which Part. Names are the harness's; the report's prose uses plain
 # language, so the table below carries a translation column.
@@ -169,7 +172,7 @@ def realistic(part, rows):
     ]
     if (
         part == 3
-    ):  # matmul: the balanced division only; lopsided ones are §13's evidence
+    ):  # matmul: the balanced division only; lopsided ones are §12's evidence
         out = [d for d in out if d["split"] in ("-", "4×8", "8×4")]
     # at most a handful per operation, spread across the shape range
     byop = collections.defaultdict(list)

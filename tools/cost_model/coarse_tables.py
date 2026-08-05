@@ -42,7 +42,10 @@ import eval_model as em  # noqa: E402
 import regex as re  # noqa: E402
 
 cm = em.cm
-RECORDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sweep_records.json")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from records import records_path  # noqa: E402
+
+RECORDS = records_path()
 
 COARSE_OPS = [
     "matmul_row_tiling",
@@ -136,17 +139,6 @@ def emit_params():
             "systolic-array rate",
         ),
         (
-            "gamma (balanced)",
-            f"{p.overlap_gamma}",
-            "compute/memory overlap at rho -> 1",
-        ),
-        (
-            "gamma (unbalanced)",
-            f"{p.overlap_gamma_unbal}",
-            "overlap at rho -> 0 (EMPIRICAL, see caveats)",
-        ),
-        ("gamma exponent", f"{p.overlap_gamma_exp}", "shape of gamma(rho)"),
-        (
             "re-read scale",
             f"{p.loop_reread_scale}",
             "fraction of a full HBM pass per repeat",
@@ -157,11 +149,6 @@ def emit_params():
             "per-core LX before the tile spills",
         ),
         ("matmul spill exp", f"{p.mm_spill_ws_exp}", "spilled-traffic derate"),
-        (
-            "fused elem rate",
-            f"{p.fused_elem_rate_per_core}",
-            "per-core element throughput floor (softmax)",
-        ),
         (
             "coarse underfill",
             f"r_full={p.coarse_underfill_rfull:.0f}, exp={p.coarse_underfill_exp}, cap={p.coarse_underfill_cap}",

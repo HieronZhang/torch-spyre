@@ -48,7 +48,10 @@ import eval_model as em  # noqa: E402
 
 cm = em.cm
 
-RECORDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sweep_records.json")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from records import records_path  # noqa: E402
+
+RECORDS = records_path()
 
 # section key -> (title, ops). Ops are the harness op names, so the population is
 # explicit and auditable rather than implied by a category mapping.
@@ -56,12 +59,12 @@ SECTIONS: dict[str, tuple[str, list[str]]] = {
     "1-3": ("Part I - single pointwise", ["neg", "add", "mul", "exp", "gelu"]),
     "3": ("§3 - chained adds (out of scope by design)", ["add3", "add4"]),
     "4": (
-        "§4 - broadcast operands and the outer-product write",
-        ["bcast", "bcastcol", "mulbcast", "copy", "write"],
+        "§4 - broadcast operands",
+        ["bcast", "bcastcol", "mulbcast", "copy"],
     ),
     "5": ("§5 - reduction", ["read", "sumrow", "sumcol", "sumall", "amax", "mean"]),
     "6": ("§6 - transport", ["transpose", "transpose_outer", "cat0", "cat1"]),
-    "7-11": ("§7-11 - plain matmul", ["mm"]),
+    "7-11": ("§7-10 - plain matmul", ["mm"]),
     "12": ("§12 - matmul split shape", ["mmwd"]),
     "13": ("§13 - batched matmul", ["bmm_wd", "bmm_wd_3d2d", "bmm_layout"]),
 }
