@@ -1256,13 +1256,36 @@ cores identically. The magnitudes are also plausible: the fitted rate correspond
 it at every stage. Since LX traffic is itself proportional to the element count, the two
 stories share a functional form and the current data cannot separate them.
 
-**Deciding experiment.** Vary the number of fused stages at a fixed element count, fixed HBM
-traffic and a low core count, with repeats. More stages mean more LX traffic and the same
-elements: if time tracks the stage count it is LX bandwidth, if it stays flat it is per-core
-element throughput. The one cell in the database that varies stage count sits at 32 cores,
-where the floor never binds, and its 6-stage arm is a single run — it cannot settle this.
+**The deciding experiment, run.** Vary the number of fused stages at a fixed element count
+and fixed HBM traffic, at a low core count where the floor binds. More stages mean more LX
+traffic and more per-element work; the element count does not move, so the current form
+predicts no change at all. Softmax over 2048 × 512 at 8 tiles, sigmoid stages inserted
+between the two reductions, 7 repeats
+(`docs/source/user_guide/examples/run_stage_sweep.sh`):
 
-**Model.** A fused reduction cannot finish faster than its elements allow:
+| chain | HBM (MB) | 1 core (µs) | 2 cores (µs) |
+|---:|---:|---:|---:|
+| 5 | 6.3 | 591 | 304 |
+| 7 | 7.3 | 829 | 428 |
+| 9 | 8.4 | 1056 | 554 |
+| 13 | 10.5 | 1522 | 803 |
+
+**Time scales with the chain, and the element-only form is wrong.** From 5 to 13 stages the
+time grows **2.57×** at one core and **2.64×** at two, against a chain-length ratio of 2.60
+and an element-only prediction of 1.00. Some HBM traffic does leak — 0.52 MB per stage
+against a 4.2 MB full round trip, 12 % of one — but that cannot be the driver: the HBM bytes
+grow only 1.67× while the time grows 2.57×. Time tracks the chain length to within 1–2 %,
+not the bytes.
+
+This does **not** name the mechanism. LX traffic and per-element work through more stages are
+both proportional to `elements × stages`, so the sweep separates the *form* from the
+element-only one without separating those two from each other.
+
+At 32 cores the time grows 5.57×, faster than the chain, and none of the three forms fits.
+The floor does not bind there, so that regime is governed by other terms.
+
+**Model, and what is now known to be wrong with it.** As shipped, a fused reduction cannot
+finish faster than its elements allow:
 
 ```text
 time ≥ elements / (cores × 1.51 elements per nanosecond per core)
@@ -1271,6 +1294,13 @@ time ≥ elements / (cores × 1.51 elements per nanosecond per core)
 taken as a floor under the byte-based estimate, where `elements` is the largest operand the
 chain touches. One parameter, fitted over 97 repeat-backed runs. It closes the shape above
 from −86 % to **+6.5 %**.
+
+The experiment above shows this form is mis-keyed: it has no chain-length term, so it holds a
+13-stage chain to the same floor as a 5-stage one and under-predicts the long chain by a
+factor of 2.6. Every run it was fitted on is a 5-stage softmax, so the chain length is
+silently folded into the constant — `1.51` is really a per-stage rate divided by five. The
+correction is not applied here: it would need a re-fit across the coarse categories, and the
+floor never binds at 32 cores, so nothing in the target configuration moves either way.
 
 **How well understood is this term?** *The form is empirical; the mechanism is open.* That
 the cost is not the HBM byte count is settled — the byte-only model is 5× low before tiling
