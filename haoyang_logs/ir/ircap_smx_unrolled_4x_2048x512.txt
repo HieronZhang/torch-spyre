@@ -1,2 +1,0 @@
-SUMMARY op=softmax_unrolled rows=2048 cols=512 tiles=4 cores=32 layoutA= kernel_us=1.0
-op_it_space_splits: {d0: 1, d1: 32}

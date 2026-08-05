@@ -63,9 +63,7 @@ class _FakeOp:
 
 def _patch(monkeypatch, it_space, split_map):
     monkeypatch.setattr(dcm, "iteration_space_from_op", lambda op: it_space)
-    monkeypatch.setattr(
-        dcm, "apply_splits_from_index_coeff", lambda *a, **k: split_map
-    )
+    monkeypatch.setattr(dcm, "apply_splits_from_index_coeff", lambda *a, **k: split_map)
 
 
 def test_bmm_b_ge_2_excludes_batch_from_m(monkeypatch):

@@ -1,1 +1,0 @@
-SUMMARY op=cat1 rows=256 cols=2048 cores=32 TO_MID=8 kernel_us=1.0

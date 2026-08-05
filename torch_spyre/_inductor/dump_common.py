@@ -12,28 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared sink for the opt-in pipeline dumps (``dump_fx_graph``, ``dump_loop_ir``).
+"""Shared output sink for the cost-model dumps.
 
-All dumping is gated by the ``SPYRE_DUMP_IR`` environment variable; when it is
-unset the dump entry points are no-ops, so they are safe to leave wired into
-the pass pipeline permanently. Output goes to stderr by default, or is appended
-to the file named by ``SPYRE_DUMP_IR_FILE`` when that variable is set.
+Used by ``dump_cost_model`` (the per-op feature dump) and ``cost_model_pass`` (the
+per-kernel report). Both are gated by ``config.cost_model``; this module only decides
+WHERE the text goes -- stderr, or the file named by ``SPYRE_DUMP_COST_FILE``.
 """
 
 import os
 import sys
 
-_TRUTHY = {"1", "true", "yes", "on"}
-
-
-def dump_enabled() -> bool:
-    """Return True when SPYRE_DUMP_IR requests dumping."""
-    return os.environ.get("SPYRE_DUMP_IR", "").strip().lower() in _TRUTHY
-
 
 def emit(text: str) -> None:
     """Write one dump record to the configured sink (file or stderr)."""
-    dest = os.environ.get("SPYRE_DUMP_IR_FILE")
+    dest = os.environ.get("SPYRE_DUMP_COST_FILE")
     if dest:
         with open(dest, "a", encoding="utf-8") as f:
             f.write(text)

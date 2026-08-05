@@ -78,7 +78,7 @@ output-tile area (M/m)*(N/n) past the on-chip capacity ~64K elems). Fanout is NO
 identified (the falsification sweeps were confounded). K is
 always kept whole (WD_K=1) so the K-split psum ring term is 0. Fit on the db_sweep +
 decouple/re-read sweeps: ~8% RMS across cores 4->32, MNK 2e9..3.4e10. Isolation order and
-per-term derivation: notes/cost_model_report.md.
+per-term derivation: docs/source/compiler/cost_model_report.md.
 
 COARSE-TILING (fused kernel, e.g. ``softmax_row_tiling``): a coarse-tiled op is ONE fused
 kernel with intermediates kept in LX -- NOT a sum of per-op kernels. Two things follow.
@@ -243,7 +243,7 @@ def op_to_dict(op: "OpFeatures") -> dict:
     This is the model's INPUT feature vector. Dumped next to the measured kernel time so
     a NEW model version can be scored OFFLINE (predict_ops on the stored features) without
     re-running on hardware -- the measurement is version-independent, only the prediction
-    changes. See notes/eval_model.py.
+    changes. See tools/cost_model/eval_model.py.
     """
     return dataclasses.asdict(op)
 
@@ -435,7 +435,7 @@ class CostParams:
     # cannot express it.
     #   split = cL*max(0,area-area0)*max(0,log2(fan_long/8)) + cS*max(0,area-area0)*max(0,log2(fan_short/16))
     #   area = (M/m)*(N/n);  fan_long = m if M>=N else n;  fan_short = the other split count
-    # Zero for balanced splits (both fanouts small) and for small tiles. See §12, notes/fit_split_shape.py.
+    # Zero for balanced splits (both fanouts small) and for small tiles. See §12, the offline fitting tools.
     mm_split_reread_us_per_elem: float = 2.62e-3  # cL: long-dim split coefficient
     mm_split_short_us_per_elem: float = 2.88e-3  # cS: short-dim split coefficient
     mm_split_area0: float = 131072.0  # per-core tile elems below which no split re-read
@@ -476,7 +476,7 @@ class CostParams:
     # LAYOUT IS NOT MODELLED, deliberately. A faster device tile order exists: with both
     # rank-3 operands on [1,0,2] (batch outermost) a bmm runs 2.82x faster at byte-identical
     # traffic, measured over 138 runs and 17 shapes. It is reachable only by setting
-    # `matmul_preferred_layout` ("" by default), so nothing the compiler emits today uses it.
+    # an opt-in layout preference the compiler does not enable by default, so nothing the compiler emits today uses it.
     # Pricing all four operand combinations cost three constants and an additive form for
     # configurations that never ship; that was removed in favour of the single default-layout
     # rate above. The measurement stands and is kept as evidence in the report's §14
@@ -1349,7 +1349,7 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         # than its byte count because the intermediate is written then read back through HBM --
         # a READ-AFTER-WRITE dependency ACROSS op boundaries (§3). That is a program-level /
         # coarse-tiling effect, NOT a single-op cost, so it is deliberately NOT modeled here.
-        # `add_n` is not a native op; the single-op model stays pure. See notes/new_experiments_plan.md
+        # `add_n` is not a native op; the single-op model stays pure. See the report
         # ("Next model") for the byte-keyed read-after-write term to unify with the coarse §18 spill.
     # `write` outer-product re-read: empirical extra HBM traffic, super-linear in the
     # output shape (both operands broadcast, no full input). Charged at bw_peak.
@@ -1578,9 +1578,9 @@ def explain(ops: list, params: CostParams | None = None) -> str:
             )
             split_us += area_exc * (
                 p.mm_split_reread_us_per_elem
-                * max(0.0, math.log2(max(1, lf) / p.mm_split_long_knee))
+                * max(0.0, math.log2(max(1, int(lf)) / p.mm_split_long_knee))
                 + p.mm_split_short_us_per_elem
-                * max(0.0, math.log2(max(1, sf) / p.mm_split_short_knee))
+                * max(0.0, math.log2(max(1, int(sf)) / p.mm_split_short_knee))
             )
     if split_us > 0:
         lines.append(

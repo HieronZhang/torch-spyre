@@ -39,8 +39,6 @@ moves or computes — only how it is packaged into kernels.
                           ═══════════ IR IS FINAL HERE ═══════════
                           bytes, tiling and core division all settled
                                               │
-                            dump_loop_ir  ◀───┤
-                                              │
                           cost_model_pass ◀───┘   off unless config.cost_model
                                   │                is set — otherwise it returns
                                   │                before touching the graph
@@ -283,7 +281,7 @@ not free.
 
 ## Accuracy
 
-RMS error by category, scored in `notes/cost_model_report.md`, which derives every term and
+RMS error by category, scored in `docs/source/compiler/cost_model_report.md`, which derives every term and
 states how well each is understood:
 
 | category | RMS | category | RMS |
@@ -291,9 +289,49 @@ states how well each is understood:
 | broadcast | 5.7 % | matmul, row-tiled | 7.7 % |
 | transport | 6.1 % | softmax | 12.9 % |
 | reduction | 7.2 % | matmul, split | 15.1 % |
-| pointwise | 8.5 % | bmm | 18.0–34.6 % |
+| pointwise | 8.5 % | bmm | 18.0–34.5 % |
 
 Flash attention is not modelled correctly and is excluded from these figures.
+
+## Measuring, scoring and refreshing the model
+
+The model is calibrated against a database of measured kernels, and everything needed to
+reproduce or refresh that is in the tree.
+
+| what | where |
+|---|---|
+| the measurement harness — runs one op under the PyTorch profiler and prints a parseable summary | `docs/source/user_guide/examples/profile_ops.py` |
+| re-measure **every** configuration in the database on this machine | `docs/source/user_guide/examples/run_cost_model_sweep.py` |
+| the database itself — one record per measured kernel | `tools/cost_model/sweep_records.json` |
+| score the model against the database, offline, with no hardware | `tools/cost_model/eval_model.py` |
+| fold a sweep log back into the database | `tools/cost_model/parse_sweep_logs.py` |
+| regenerate the report's figures and tables | `tools/cost_model/plot_report.py`, `report_tables.py`, `part_tables.py`, `coarse_tables.py` |
+
+Measure one configuration:
+
+```bash
+BENCH_OP=softmax_row_tiling BENCH_ROWS=4096 BENCH_COLS=2048 BENCH_TILES=8 \
+  python3 docs/source/user_guide/examples/profile_ops.py
+```
+
+Score the model without touching hardware — this is the loop to use when changing a term,
+since it re-costs the stored measurements rather than re-running them:
+
+```bash
+python3 tools/cost_model/eval_model.py
+```
+
+When the hardware or the compiler changes, re-measure everything and re-score. The sweep
+takes its configuration list from the database, so it covers whatever the database covers:
+
+```bash
+python3 docs/source/user_guide/examples/run_cost_model_sweep.py --dry-run   # what it would run
+python3 docs/source/user_guide/examples/run_cost_model_sweep.py             # ~1200 configs
+python3 tools/cost_model/eval_model.py                                      # re-score
+```
+
+The derivation of every term, with the measurements behind it, is in
+[the cost model report](cost_model_report.md).
 
 ## Implementation
 

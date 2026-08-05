@@ -141,7 +141,7 @@ _TRANSPORT = {
     "cat0": lambda x: torch.cat([x, x], dim=0),  # append rows (non-stick dim)
     "cat1": lambda x: torch.cat([x, x], dim=1),  # append cols (stick dim -> interleave)
 }
-# Coarse-tiled dim0 reductions (mirror coarse_tile/run_{sum,amax,amin}_dim0_tiled.py):
+# Coarse-tiled dim0 reductions (mirror the coarse-tiling harness{sum,amax,amin}_dim0_tiled.py):
 # reduce a [B=ROWS, D=COLS] tensor over B, tiling B into BENCH_TILES chunks. With
 # BENCH_TILES>=2 a spyre_hint wraps it in a K-iteration loop (fill + K x reduce/combine)
 # BENCH_TILES<=1 is the plain untiled baseline. Run each under LX_PLANNING=0/1.
@@ -155,7 +155,7 @@ _PREPARE = None
 
 
 def _ct_workload(rtype: str):
-    """Coarse-tiled dim0 reduction, mirroring coarse_tile/run_*_dim0_tiled.py + utils.py
+    """Coarse-tiled dim0 reduction, mirroring the coarse-tiling harness*_dim0_tiled.py + utils.py
     ``_compile_and_run``: a CPU input (sum scaled 0.1 as the example does), eager
     ``declare_tensor_dim``, ``name_tensor_dims`` + ``spyre_hint`` inside fn, an eager
     reference call of fn, then a dynamo/Fx cache reset right before compile.
@@ -198,7 +198,7 @@ def _ct_workload(rtype: str):
 
 
 def _softmax_row_tiling():
-    """Softmax over dim=-1, row-tiled over NROW (mirrors coarse_tile/run_softmax_row_
+    """Softmax over dim=-1, row-tiled over NROW (
     tiling.py + the new_coarse_tiling IR): the 5 softmax ops (max, sub, exp, sum, div)
     fuse into ONE NROW-tiled loop with the intermediates LX-resident. BENCH_TILES>=2
     tiles NROW into that many chunks; else untiled. Measured via the harness AIU
@@ -394,8 +394,7 @@ def _softmax_noexp_row_tiling():
 
 def _matmul_row_tiling():
     """Matmul ``a @ b`` COARSE-TILED over the M (row) dim via
-    spyre_hint(num_tiles_per_dim={"M": TILES}) -- mirrors
-    coarse_tile/run_matmul_row_tiling.py. DISTINCT from `mmwd`, which forces a
+    spyre_hint(num_tiles_per_dim={"M": TILES}) DISTINCT from `mmwd`, which forces a
     work-division CORE split: this creates a sequential M-tile LOOP. M=ROWS, K=COLS,
     N=BENCH_N; BENCH_TILES>=2 tiles M, else untiled. Measured via the AIU profiler."""
     import torch_spyre._inductor.propagate_named_dims as pnd
@@ -436,8 +435,7 @@ def _matmul_row_tiling():
 
 def _matmul_k_tiling():
     """`a @ b` [M,K]@[K,N] COARSE-TILED over the K (reduction) dim via
-    spyre_hint(num_tiles_per_dim={"K": TILES}) -- mirrors coarse_tile/run_matmul_k_tiled.py
-    and run_mm_k_tiled.py. M=ROWS, K=COLS, N=BENCH_N; TILES>=2 tiles K, else untiled."""
+    spyre_hint(num_tiles_per_dim={"K": TILES}) and run_mm_k_tiled.py. M=ROWS, K=COLS, N=BENCH_N; TILES>=2 tiles K, else untiled."""
     import torch_spyre._inductor.propagate_named_dims as pnd
     from torch._inductor.codecache import FxGraphCache
     from torch_spyre._inductor import spyre_hint
@@ -475,8 +473,7 @@ def _matmul_k_tiling():
 
 
 def _mm_nested_m_k():
-    """torch.mm [M,K]@[K,N] with NESTED tiling -- outer M x2, inner K x TILES -- mirrors
-    coarse_tile/run_mm_nested_outer_M_inner_K.py. M=ROWS, K=COLS, N=BENCH_N."""
+    """torch.mm [M,K]@[K,N] with NESTED tiling -- outer M x2, inner K x TILES M=ROWS, K=COLS, N=BENCH_N."""
     import torch_spyre._inductor.propagate_named_dims as pnd
     from torch._inductor.codecache import FxGraphCache
     from torch_spyre._inductor import spyre_hint
@@ -532,7 +529,7 @@ def _to_dev(t: torch.Tensor, layout_spec):
 
 
 def _bmm_workload(kind: str):
-    """Batched matmul -- mirrors coarse_tile/run_bmm_*.py. B=BENCH_B, M=ROWS, K=COLS,
+    """Batched matmul *.py. B=BENCH_B, M=ROWS, K=COLS,
     N=BENCH_N; TILES>=2 tiles K (else untiled). ``kind``:
       "k"      -> torch.bmm(a[B,M,K], b[B,K,N])       tiled over K
       "3d2d"   -> torch.matmul(a[B,M,K], b[K,N])      2-D weight shared over the batch
@@ -617,8 +614,7 @@ def _bmm_workload(kind: str):
 
 def _softmax_unrolled():
     """Manual softmax chain (amax/sub/exp/sum/div) over [B,D]=[ROWS,COLS], tiled over B
-    with the tile loop UNROLLED (config.unroll_loops=True, sencores=1) -- mirrors
-    coarse_tile/run_softmax_unrolled.py. The unrolled IR has NO CoarseTileInfo (tiling
+    with the tile loop UNROLLED (config.unroll_loops=True, sencores=1) The unrolled IR has NO CoarseTileInfo (tiling
     shows only as dim_hints), so it exercises the extractor's non-loop coarse path."""
     import torch_spyre._inductor.propagate_named_dims as pnd
     from torch._inductor.codecache import FxGraphCache
@@ -977,7 +973,7 @@ def _print_model(feats: list) -> float:
     # Machine-readable feature vector (the model's INPUT) so a NEW model version can be
     # scored OFFLINE against the stored measured time -- no hardware re-run. Prefixed
     # `MODEL ` so the sweeps' `^MODEL ` grep already captures it; parse_sweep_logs.py
-    # pulls it into the record's `feats`. See notes/eval_model.py. Best-effort: a
+    # pulls it into the record's `feats`. See tools/cost_model/eval_model.py. Best-effort: a
     # serialization hiccup must NEVER fail the run (the kernel_us is what matters).
     try:
         print(f"MODEL FEATS {cost_model.ops_to_json(feats)}")

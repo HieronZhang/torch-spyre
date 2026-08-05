@@ -1,1 +1,0 @@
-SUMMARY op=flash_attn rows=4096 cols=128 cores=32 wd=Lq:4,Lk:2 kernel_us=1.0
