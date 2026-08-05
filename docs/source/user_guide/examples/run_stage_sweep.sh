@@ -54,13 +54,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 OUT="${OUT:-stage_sweep_$(date +%Y%m%d_%H%M%S).log}"
-ROWS="${ROWS:-4096}"   # 8.4 M elements -- the shape §19 is calibrated on
-COLS="${COLS:-2048}"
+# SHAPE AND TILING ARE LOAD-BEARING. The intermediates only live in LX if the chain is
+# coarse-tiled AND the per-tile buffer is small enough that a LONGER chain still fits.
+# 2048x512 at 8 tiles is 0.26 MB per buffer against a ~1.6 MB/core budget, so even a
+# 13-stage chain stays resident. The first attempt at 4096x2048 UNTILED spilled every
+# stage to HBM (+33.55 MB each) and failed its own control.
+ROWS="${ROWS:-2048}"
+COLS="${COLS:-512}"
+TILES="${TILES:-8}"
 
 echo "writing to $OUT"
 {
   echo "# stage sweep: does the fused-chain floor scale with LX traffic?"
-  echo "# shape ${ROWS}x${COLS}, sigmoid stages inserted between the two reductions"
+  echo "# shape ${ROWS}x${COLS}, ${TILES} tiles, sigmoid stages between the two reductions"
   echo "# CONTROL: HBM bytes must NOT move with BENCH_STAGES"
 } | tee "$OUT"
 
@@ -73,6 +79,7 @@ for CORES in 1 2 32; do
     SENCORES="$CORES" \
     BENCH_OP=softmax_stages \
     BENCH_ROWS="$ROWS" BENCH_COLS="$COLS" \
+    BENCH_TILES="$TILES" \
     BENCH_STAGES="$STAGES" \
     BENCH_REPS="${REPS:-7}" \
     SPYRE_DUMP_COST=1 \

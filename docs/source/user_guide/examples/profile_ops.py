@@ -260,11 +260,22 @@ def _softmax_stages():
     CHECK THE CONTROL when reading results -- if HBM bytes move with BENCH_STAGES the
     intermediates have spilled and the comparison is confounded.
     """
+    import torch_spyre._inductor.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
     nrow, ncol = ROWS, COLS
     x_cpu = torch.randn(nrow, ncol, dtype=torch.float16)
     extra = max(0, STAGES)
 
-    def fn(x):
+    def _declare():
+        pnd.declare_tensor_dim("NROW", nrow)
+        pnd.declare_tensor_dim("NCOL", ncol)
+
+    _declare()
+
+    def _chain(x):
         m = torch.amax(x, dim=-1, keepdim=True)
         y = x - m
         for _ in range(extra):
@@ -273,8 +284,24 @@ def _softmax_stages():
         s = torch.sum(e, dim=-1, keepdim=True)
         return e / s
 
+    # COARSE TILING IS REQUIRED, not optional. Untiled, every intermediate is the FULL
+    # tensor (16.8 MB at 4096x2048) and cannot be LX-resident, so each added stage does a
+    # full HBM round trip instead -- which moves the HBM traffic and destroys the control.
+    # Tiling is what makes the intermediates per-tile and LX-resident in the first place.
+    if TILES >= 2:
+
+        def fn(x):
+            pnd.name_tensor_dims(x, ["NROW", "NCOL"])
+            with spyre_hint(num_tiles_per_dim={"NROW": TILES}):
+                return _chain(x)
+
+        _PREPARE = _declare
+    else:
+        fn = _chain
+
     fn(x_cpu)  # eager reference call
     torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
     return torch.compile(fn), (x_cpu.to(DEVICE),)
 
 
