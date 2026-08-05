@@ -92,6 +92,8 @@ from .constants import DEVICE_NAME
 from .deadcode_elimination import deadcode_elimination
 from .dedup_constants import dedup_and_promote_constants
 from .wsr.coarse_tile import coarse_tile_post_stickify, coarse_tile_pre_stickify
+from .dump_cost_model import dump_cost_model
+from .cost_model_pass import CostReport, cost_model_pass
 from .split_multi_ops import split_multi_ops, validate_ops
 
 
@@ -226,6 +228,10 @@ class CustomPostPasses(_SpyreGraphPassPipeline):
     """
     This inductor extension point enables Spyre-specific passes to run on the
     post-grad FX graph late in the sequence defined in `post_grad.post_grad_passes`.
+    """
+
+    """
+    The list of custom passes to run
     """
 
     def __init__(self):
@@ -421,6 +427,11 @@ class CustomPreSchedulingPasses:
     in order, and the inherited :meth:`uuid` keys the cache on their sources.
     """
 
+    #: Predicted runtime for the most recently compiled graph, or None when the
+    #: cost model is disabled (the default). Class-level so the attribute exists
+    #: even on an instance built without __init__ -- test_log_passes.py does that.
+    last_cost_report: CostReport | None = None
+
     def __init__(self):
         self.passes = [
             deadcode_elimination,
@@ -500,6 +511,14 @@ class CustomPreSchedulingPasses:
 
         if logger.isEnabledFor(logging.INFO):
             logger.info("AFTER PRE-SCHEDULING\n%s", format_operations(graph.operations))
+        dump_cost_model(graph.operations)
+        # Predicted runtime for this graph, or None when config.cost_model is off.
+        # Kept OUTSIDE self.passes on purpose: it only reads the IR, so hashing it
+        # into the Inductor cache key (see _uuid) would invalidate caches for a
+        # report that cannot change the compiled result. Stored rather than only
+        # printed so another pass or an external tool can compare two plans by
+        # total_us without compiling and running either.
+        self.last_cost_report = cost_model_pass(graph)
 
     def uuid(self) -> Any | None:
         return _uuid(self.passes)
