@@ -345,13 +345,16 @@ BENCH_OP=softmax_row_tiling BENCH_ROWS=4096 BENCH_COLS=2048 BENCH_TILES=8 \
 every re-sweep, so committing it would dominate the history for a file no diff can usefully
 show. Point the tools at a copy, or let them fetch and cache one:
 
+By default the tools fetch it once, from the branch the measurements were collected on, and
+cache it beside `tools/cost_model/`. Override either half if you have it already or it moves:
+
 ```bash
-export SPYRE_COST_MODEL_RECORDS=/path/to/sweep_records.json   # a local copy
-export SPYRE_COST_MODEL_RECORDS_URL=<url>                     # or fetch it once
+export SPYRE_COST_MODEL_RECORDS=/path/to/sweep_records.json   # use a local copy
+export SPYRE_COST_MODEL_RECORDS_URL=<url>                     # fetch from elsewhere
 ```
 
-Every tool below resolves it the same way through `tools/cost_model/records.py`, and prints
-these instructions if it cannot find one.
+Every tool resolves it the same way through `tools/cost_model/records.py`, and prints these
+instructions if it cannot find one.
 
 Score the model without touching hardware — this is the loop to use when changing a term,
 since it re-costs the stored measurements rather than re-running them:

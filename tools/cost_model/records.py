@@ -24,7 +24,8 @@ Resolution order, first hit wins:
 1. an explicit path passed by the caller (``--records``)
 2. ``$SPYRE_COST_MODEL_RECORDS`` -- a path to a local copy
 3. ``sweep_records.json`` beside this file, if a previous run already downloaded it
-4. a download from ``$SPYRE_COST_MODEL_RECORDS_URL``, cached to (3)
+4. a download from ``$SPYRE_COST_MODEL_RECORDS_URL``, or ``DEFAULT_URL`` below,
+   cached to (3) so it happens once
 
 Nothing here needs hardware; the database holds measured times, and re-scoring only
 re-runs the model over them.
@@ -36,13 +37,24 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(_HERE, "sweep_records.json")
 
+#: Where the database is fetched from when nothing local is set. This points at the
+#: branch the measurements were collected on, which is public but is NOT part of this
+#: repository's history -- if it is ever deleted or rewritten, set
+#: ``SPYRE_COST_MODEL_RECORDS_URL`` to wherever the data lives instead. A release asset
+#: is the more durable home if this becomes load-bearing.
+DEFAULT_URL = (
+    "https://raw.githubusercontent.com/HieronZhang/torch-spyre/"
+    "prepare_pr/tools/cost_model/sweep_records.json"
+)
+
 _HELP = f"""\
 The cost-model measurement database was not found.
 
 Point at a local copy:
     export SPYRE_COST_MODEL_RECORDS=/path/to/sweep_records.json
 
-or let it download and cache to {CACHE}:
+or point the download somewhere else (it defaults to the branch the
+measurements were collected on) and it will cache to {CACHE}:
     export SPYRE_COST_MODEL_RECORDS_URL=<url of sweep_records.json>
 
 or rebuild it on Spyre hardware, which takes a few hours:
@@ -70,7 +82,7 @@ def records_path(explicit=None, download=True):
     if os.path.exists(CACHE):
         return CACHE
 
-    url = os.environ.get("SPYRE_COST_MODEL_RECORDS_URL")
+    url = os.environ.get("SPYRE_COST_MODEL_RECORDS_URL", DEFAULT_URL)
     if url and download:
         import urllib.request
 
