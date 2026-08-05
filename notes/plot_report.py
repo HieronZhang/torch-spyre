@@ -272,6 +272,11 @@ def fig_pointwise_vcurve(_recs):
     for r in recs:
         m = r.get("model") or {}
         R, W = m.get("R"), m.get("W")
+        # Drop KNOWN partial-machine runs (leaving unrecorded core counts alone): they
+        # land at 16-77 GB/s and the y-limit below silently clips them, so they would be
+        # in the population without being visible. This curve is the full-machine one.
+        if isinstance(r.get("cores"), int) and r["cores"] != 32:
+            continue
         # ROWS=2048 (pipeline-filled) and lx=0 (canonical): single ops have no intermediate,
         # so scratchpad is irrelevant -- but one old overnight lx=1 sweep measured `add` slow.
         if not R or not W or r.get("rows") != 2048 or r.get("lx") not in (0, None):
@@ -656,7 +661,18 @@ def fig_reduction(_recs):
     for op in ops:
         pts = {}
         for r in recs:
-            if r["op"] == op and r.get("io_hbm_bytes") and (r.get("cols") == 2048):
+            # cores MUST be filtered: this curve is the FULL-machine rate (the
+            # core-count effect is a separate paragraph in the section). Partial-machine
+            # runs sit at 14-80 GB/s, and averaging them in dragged the 4096- and
+            # 8192-row means to ~71-79 GB/s -- which set_ylim then clipped off the
+            # bottom, so four of the five ops silently vanished at those two row counts
+            # while the figure still claimed all five trace one curve.
+            if (
+                r["op"] == op
+                and r.get("io_hbm_bytes")
+                and r.get("cols") == 2048
+                and r.get("cores") == 32
+            ):
                 pts.setdefault(r.get("rows") or 0, []).append(
                     int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"]
                 )
@@ -1268,199 +1284,6 @@ def fig_matmul_split(_recs):
     _save(fig, "fig12_matmul_split")
 
 
-def fig_matmul_bmm(_recs):
-    # §14: measured/predicted vs B for a balanced (4x8) batched matmul. A plain 2-D matmul
-    # (a single batch) is accurate (~1.0, the anchor at B=1). The FULL bmm (a distinct weight
-    # per batch, solid) plateaus at 2-4.6x; the SHARED-weight projection [B,M,K]@[K,N] (dashed)
-    # plateaus far lower. Both flat in B. Only shapes with a full B-sweep are shown.
-    import collections
-
-    import statistics as _st
-
-    bp = _base_matmul_params()
-    acc = collections.defaultdict(list)  # (op, shape) -> {B: [ratios]}
-    lines = collections.defaultdict(dict)  # (op, shape) -> {B: ratio}
-    anchor_acc = collections.defaultdict(list)  # shape -> [ratios]
-    mm_anchor = {}  # shape -> ratio of the plain 2-D matmul (the "1 batch" reference)
-    for r in _load(current_only=False):
-        s = r.get("split_forced") or {}
-        if s.get("m") != 4 or s.get("n") != 8 or not r.get("kernel_us"):
-            continue
-        pred = _pred_live(r, bp)
-        if not pred:
-            continue
-        sh = f"{r['M']}×{r['K']}×{r['N']}"
-        if r["op"] == "mmwd":
-            anchor_acc[sh].append(r["kernel_us"] / pred)
-        elif (
-            str(r.get("log_file", "")).startswith("overnight_")
-            and r["op"] in ("bmm_wd", "bmm_wd_3d2d")
-            and s.get("b") == 1
-            and r.get("B", 1) >= 2
-        ):
-            acc[(r["op"], sh, r["B"])].append(r["kernel_us"] / pred)
-    # POOL repeats by median. Assigning in the loop was last-wins: whichever record the
-    # database happened to list last silently became the plotted point.
-    for sh, v in anchor_acc.items():
-        mm_anchor[sh] = _st.median(v)
-    for (op, sh, B), v in acc.items():
-        lines[(op, sh)][B] = _st.median(v)
-    # keep only shapes with a real sweep (>=3 B points) for BOTH full and 3d2d
-    shapes = sorted(
-        {
-            sh
-            for (op, sh), d in lines.items()
-            if len(d) >= 3
-            and ("bmm_wd", sh) in lines
-            and len(lines.get(("bmm_wd_3d2d", sh), {})) >= 3
-        }
-    )
-    colors = {sh: c for sh, c in zip(shapes, ["#1f77b4", "#d62728", "#2ca02c"])}
-
-    fig, ax = plt.subplots(figsize=(6.2, 4.2))
-    ax.axhline(1.0, color="0.6", lw=1.0, zorder=1)
-    for sh in shapes:
-        col = colors[sh]
-        for op, style, lab in [
-            ("bmm_wd", "-o", "full bmm"),
-            ("bmm_wd_3d2d", "--s", "shared-weight (3d2d)"),
-        ]:
-            d = lines.get((op, sh), {})
-            xs = sorted(d)
-            ax.plot(
-                xs,
-                [d[b] for b in xs],
-                style,
-                color=col,
-                lw=1.8 if op == "bmm_wd" else 1.2,
-                ms=5,
-                markerfacecolor=col if op == "bmm_wd" else "white",
-                label=f"{lab}  {sh}",
-            )
-            # tag each point with its multiplier; full above the marker, 3d2d below
-            up = op == "bmm_wd"
-            for b in xs:
-                ax.annotate(
-                    f"{d[b]:.1f}×",
-                    (b, d[b]),
-                    textcoords="offset points",
-                    xytext=(0, 6 if up else -12),
-                    ha="center",
-                    fontsize=FS_ANNOT - 2,
-                    color=col,
-                    zorder=5,
-                )
-        if sh in mm_anchor:  # the plain 2-D matmul, plotted at B=1
-            ax.plot(
-                [1],
-                [mm_anchor[sh]],
-                "*",
-                color=col,
-                ms=13,
-                zorder=4,
-                markeredgecolor="0.3",
-                markeredgewidth=0.5,
-            )
-    ax.plot(
-        [],
-        [],
-        "*",
-        color="0.4",
-        ms=12,
-        markeredgecolor="0.3",
-        label="plain 2-D matmul (1 batch) ≈ 1",
-    )
-    ax.set_xscale("log", base=2)
-    ax.set_xticks([1, 2, 4, 8, 16])
-    ax.get_xaxis().set_major_formatter(plt.matplotlib.ticker.ScalarFormatter())
-    _style(
-        ax,
-        "§14  Without a batched-matmul term, a batched multiply runs 1.8–4.7× its\n"
-        "prediction — rising to 4 batches, then level",
-        "number of batches",
-        "measured time ÷ predicted time",
-    )
-    ax.legend(
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.14),
-        ncol=2,
-        fontsize=FS_LEGEND - 1,
-        frameon=False,
-        handletextpad=0.3,
-        columnspacing=1.2,
-    )
-    _save(fig, "fig13_matmul_bmm")
-
-
-def fig_matmul_bmm_control(_recs):
-    # §14: the shared-weight control. Full bmm and the shared-weight projection have IDENTICAL
-    # MACs (same x), but the full bmm's per-batch excess (kernel-pred)/B is ~10x the shared
-    # one -- so the miss is NOT compute-rate (equal MACs would give equal excess); it is the
-    # per-batch weight re-read (memory). Matched (shape, B), balanced 4x8, b=1.
-    full, d2d = {}, {}
-    for r in _load(current_only=False):
-        if not str(r.get("log_file", "")).startswith("overnight_") or not r.get(
-            "kernel_us"
-        ):
-            continue
-        s = r.get("split_forced") or {}
-        if s.get("b") != 1 or s.get("m") != 4 or s.get("n") != 8 or r.get("B", 1) < 2:
-            continue
-        key = (r["M"], r["K"], r["N"], r["B"])
-        macs = r["M"] * r["K"] * r["N"] * r["B"]
-        _p = _pred_live(r, _base_matmul_params())
-        if not _p:
-            continue
-        exc = (r["kernel_us"] - _p) / r["B"]  # per-batch excess
-        (full if r["op"] == "bmm_wd" else d2d)[key] = (macs, exc)
-    fig, ax = plt.subplots(figsize=(6.0, 4.0))
-    for d, col, mk, lab in [
-        (full, "#d62728", "o", "a separate weight matrix per batch"),
-        (d2d, "#1f77b4", "s", "one weight matrix shared by all batches"),
-    ]:
-        pts = sorted(d.values())
-        ax.scatter(
-            [p[0] / 1e9 for p in pts],
-            [p[1] for p in pts],
-            color=col,
-            marker=mk,
-            s=42,
-            zorder=3,
-            edgecolors="white",
-            linewidths=0.5,
-            label=lab,
-        )
-    # connect matched pairs to show equal-MACs, unequal-excess
-    for k in sorted(set(full) & set(d2d)):
-        ax.plot(
-            [full[k][0] / 1e9] * 2,
-            [full[k][1], d2d[k][1]],
-            color="0.7",
-            lw=0.8,
-            zorder=1,
-        )
-    ax.axhline(0, color="0.6", lw=0.9)
-    ax.set_xscale("log", base=2)
-    _style(
-        ax,
-        "§14  Same arithmetic, very different cost — so the extra time is not\n"
-        "arithmetic; it is re-reading the weights",
-        "multiply-accumulate operations, in billions",
-        "unexplained time per batch  (µs)",
-    )
-    _coverage(
-        ax,
-        "Each grey line joins two runs doing identical\n"
-        "arithmetic. Median gap 4.1×, range 3.0–13.9×.\n"
-        "11 matched pairs, 32 cores.",
-        "upper left",
-    )
-    ax.legend(
-        loc="upper left", bbox_to_anchor=(0.02, 0.80), fontsize=7.6, framealpha=0.9
-    )
-    _save(fig, "fig13b_matmul_bmm_control")
-
-
 def fig_matmul_bmm_layout(_recs):
     """§14: the batched-matmul penalty is set by how each operand is laid out in memory.
 
@@ -1866,7 +1689,7 @@ def fig_matmul_overlap(_recs):
 
 
 # ============================================================================
-# §16 -- coarse tiling LX-spill: the spilled bytes ARE counted (HBM), but the
+# §15 -- coarse tiling LX-spill: the spilled bytes ARE counted (HBM), but the
 # EFFECTIVE BANDWIDTH falls once the per-core working set overflows LX (~512 KB).
 # Measured effBW = (R+W)/time per config; the model derates BW past the knee.
 # ============================================================================
@@ -1902,7 +1725,7 @@ def fig_coarse_spill(_recs):
         Rb, Wb = cm._fused_hbm_bytes(ops)
         effbw = (Rb + Wb) / 1e3 / r["kernel_us"]  # GB/s
         ws = 2 * (R / t / 32) * C * 2 / 1e6  # MB/core
-        if ws < 0.25:  # short-tile underfill regime -- that is §18's figure, not this
+        if ws < 0.25:  # short-tile underfill regime -- that is §17's figure, not this
             continue
         col = palette.get((R, C), "0.4")
         ax.scatter(
@@ -1934,7 +1757,7 @@ def fig_coarse_spill(_recs):
     ax.set_xlim(0.22, 10)
     _style(
         ax,
-        "§19  The bytes are all counted — a bigger per-core tile just moves them slower",
+        "§18  The bytes are all counted — a bigger per-core tile just moves them slower",
         "per-core working set  (MB)",
         "effective bandwidth  (R+W)/time  (GB/s)",
     )
@@ -1983,14 +1806,14 @@ def fig_coarse_spill(_recs):
     )
     _coverage(
         ax,
-        "softmax_row_tiling, 32 cores, tiles ≥ 2.\nShorter tiles are §18.",
+        "softmax_row_tiling, 32 cores, tiles ≥ 2.\nShorter tiles are §17.",
         "upper right",
     )
     _save(fig, "fig12_coarse_spill")
 
 
 # ============================================================================
-# §17 -- coarse underfill `eff`: a short per-core tile (rpc rows) never fills the
+# §16 -- coarse underfill `eff`: a short per-core tile (rpc rows) never fills the
 # streaming pipeline. Softmax effective BW climbs with rpc to a plateau; the model
 # eff = min(0.95, (rpc/13)^0.68) (calibrated) captures the rise. Above rpc~32 a
 # mild decline is unmodeled.
@@ -1998,6 +1821,14 @@ def fig_coarse_spill(_recs):
 def fig_coarse_eff(_recs):
     # One marker per CONFIG (not averaged): color = ROWS×COLS shape, label = tile count.
     # x = per-core tile height h = ROWS/(cores·tiles); LX-fitting points only.
+    #
+    # POPULATION must match the one §17 scores, or the curve reads as an upper envelope
+    # over a cloud. Two families used to be drawn here that the report excludes from every
+    # number: runs below 32 cores (their effective BW tracks the core count -- median
+    # 11/21/41/63/79 GB/s at 1/2/4/8/16 cores -- which is aggregate bandwidth, not
+    # underfill), and reductions narrower than 1024 columns (a different regime, see the
+    # permanent exclusions). Together they were 73 of 131 points and 60 of the 60 that sat
+    # far below the curve. On the scored population, no point falls 25 % below it.
     from collections import defaultdict
 
     recs = _load(current_only=False)
@@ -2012,9 +1843,11 @@ def fig_coarse_eff(_recs):
         R, C, t = r.get("rows"), r.get("cols"), r.get("tiles")
         if not (R and C and t) or t < 2:
             continue
-        h = R / t / 32
+        if r.get("cores") != 32 or C < 1024:
+            continue  # the scored population -- see the note above
+        h = R / t / (r.get("cores") or 32)
         ws = 2 * h * C * 2 / 1e6
-        if ws > 1.2:  # LX-fitting only (isolate underfill from §16 spill)
+        if ws > 1.2:  # LX-fitting only (isolate underfill from §15 spill)
             continue
         pts[(R, C)].append((h, int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"], t))
     plateau = max(e for v in pts.values() for _, e, _ in v)  # filled-pipeline effBW
@@ -2062,14 +1895,19 @@ def fig_coarse_eff(_recs):
     )
     ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
     ax.set_title(
-        "§18  Underfill `eff`: BW climbs with the per-core tile, then plateaus"
+        "§17  Underfill `eff`: BW climbs with the per-core tile, then plateaus"
     )
-    ax.legend(loc="lower right", fontsize=7.0, framealpha=0.9)
+    # Outside the axes: at 32 cores the points run from h=2 up the climb, straight
+    # through where a lower-right legend used to sit.
+    ax.legend(
+        loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=7.0, framealpha=0.9
+    )
+    fig.subplots_adjust(right=0.68)
     _save(fig, "fig13_coarse_eff")
 
 
 def fig_coarse_designspace(_recs):
-    # §19: tile count is a design-space knob. For a FIXED problem the model tracks the
+    # §18: tile count is a design-space knob. For a FIXED problem the model tracks the
     # measured cost vs tile count (relative), so it picks a near-optimal tile size. Left:
     # measured (solid) vs predicted (dashed) normalized to each problem's best, for a few
     # softmax shapes. Right: the model-chosen tile's measured cost / the true best (regret).
@@ -2177,8 +2015,6 @@ _FIGS = {
     "matmul_hbm": fig_matmul_hbm,
     "matmul_spill": fig_matmul_spill,
     "matmul_split": fig_matmul_split,
-    "matmul_bmm": fig_matmul_bmm,
-    "matmul_bmm_control": fig_matmul_bmm_control,
     "matmul_bmm_layout": fig_matmul_bmm_layout,
     "coarse_spill": fig_coarse_spill,
     "coarse_eff": fig_coarse_eff,

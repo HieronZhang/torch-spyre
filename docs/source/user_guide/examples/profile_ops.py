@@ -71,6 +71,9 @@ TILES = int(os.environ.get("BENCH_TILES", "0"))  # coarse-tile dim0 into K (>=2 
 LX = os.environ.get("LX_PLANNING", "1")  # scratchpad planning on(1)/off(0); SUMMARY tag
 NCOLS = int(os.environ.get("BENCH_N", str(COLS)))  # matmul N dim (M=ROWS, K=COLS, N)
 BB = int(os.environ.get("BENCH_B", "8"))  # batch dim for bmm ops (a[B,M,K] @ b[B,K,N])
+STAGES = int(
+    os.environ.get("BENCH_STAGES", "0")
+)  # extra LX-resident pointwise stages for `softmax_stages` (see that op)
 TO_MID = int(
     os.environ.get("TO_MID", "8")
 )  # transpose_outer middle (outer-swap) dim M:
@@ -230,6 +233,48 @@ def _softmax_row_tiling():
     fn(x_cpu)  # eager reference call
     torch._dynamo.reset_code_caches()
     FxGraphCache.clear()
+    return torch.compile(fn), (x_cpu.to(DEVICE),)
+
+
+def _softmax_stages():
+    """Softmax with a CONTROLLED number of extra fused stages -- the §19 discriminator.
+
+    §19 charges a floor of ``elements / (cores * rate)``, keyed on the ELEMENT COUNT and
+    independent of how many stages the fused chain has. An LX-bandwidth explanation fits the
+    same calibration data equally well (whole-loop LX traffic is as tile-count-invariant as
+    the element count, and LX is per-core so it scales with cores identically), but it
+    predicts something different HERE: LX traffic is proportional to the number of stages.
+
+    Each extra stage reads its input from LX and writes its output to LX, so across
+    ``BENCH_STAGES`` the element count and the HBM traffic are unchanged while LX traffic
+    grows linearly. Run at a LOW core count, where the floor actually binds:
+
+      * time flat in BENCH_STAGES   -> the element-only form of the floor is right
+      * time grows with BENCH_STAGES -> the floor is MIS-KEYED and must scale with the
+        chain length. That does not by itself name the mechanism: LX traffic and
+        per-element work through more stages are both proportional to
+        ``elements * stages``, and this test does not separate them.
+
+    ``sigmoid`` is used rather than a scalar multiply on purpose: repeated ``y * c`` folds
+    to a single multiply, which would silently collapse every stage count to one kernel.
+    CHECK THE CONTROL when reading results -- if HBM bytes move with BENCH_STAGES the
+    intermediates have spilled and the comparison is confounded.
+    """
+    nrow, ncol = ROWS, COLS
+    x_cpu = torch.randn(nrow, ncol, dtype=torch.float16)
+    extra = max(0, STAGES)
+
+    def fn(x):
+        m = torch.amax(x, dim=-1, keepdim=True)
+        y = x - m
+        for _ in range(extra):
+            y = torch.sigmoid(y)  # LX -> LX, not algebraically foldable
+        e = torch.exp(y)
+        s = torch.sum(e, dim=-1, keepdim=True)
+        return e / s
+
+    fn(x_cpu)  # eager reference call
+    torch._dynamo.reset_code_caches()
     return torch.compile(fn), (x_cpu.to(DEVICE),)
 
 
@@ -735,6 +780,8 @@ def make_workload():
         return chain, tuple(_rand(ROWS, COLS) for _ in range(n))
     if OP in _CT_REDUCE:  # coarse-tiled dim0 reduction (BENCH_TILES, LX_PLANNING)
         return _ct_workload(_CT_REDUCE[OP])
+    if OP == "softmax_stages":  # §19 discriminator: LX traffic vs element count
+        return _softmax_stages()
     if OP == "softmax_row_tiling":  # softmax(dim=-1) NROW-tiled -> 5 ops fuse in LX
         return _softmax_row_tiling()
     if OP == "softmax_noexp_row_tiling":  # matched control: softmax structure, exp->mul
@@ -781,6 +828,7 @@ def make_workload():
             "add3_sep",
             "add4_sep",
             "softmax_row_tiling",
+            "softmax_stages",
             "softmax_noexp_row_tiling",
             "softmax_unrolled",
             "matmul_row_tiling",
@@ -1013,7 +1061,7 @@ def _run():
     )
     print(
         f"SUMMARY op={OP} rows={ROWS} cols={COLS} cores={cores_tag} "
-        f"tiles={TILES} lx={LX} io_hbm_bytes={io_hbm_bytes} "
+        f"tiles={TILES} stages={STAGES} lx={LX} io_hbm_bytes={io_hbm_bytes} "
         f"kernel_us={kernel:.3f} pred_us={pred_us:.3f} err_pct={err:+.1f} "
         f"bw_gbps={bw:.1f} memset_us={memset:.3f} "
         f"other_dev_us={other:.3f} total_dev_us={kernel + memset + other:.3f} "

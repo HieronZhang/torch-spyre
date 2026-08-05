@@ -7,6 +7,12 @@ cheaply enough to do it during compilation.
 
 It is **off by default** and adds nothing to a normal compile.
 
+Today, turning it on **prints** a prediction and does nothing else — it never changes what
+gets compiled. The estimate is also returned as a value, so a pass or a tool can read it
+during compilation and choose between two plans; see
+[Using it as an API during compilation](#using-it-as-an-api-during-compilation). Nothing in
+the compiler consumes it yet.
+
 > **Not to be confused with** `work_division.cost_model_matmul_division`, an unrelated
 > model that chooses a matmul work division. This page describes the whole-program
 > runtime model in `cost_model.py` and the reporting pass in `cost_model_pass.py`.
@@ -33,43 +39,41 @@ moves or computes — only how it is packaged into kernels.
                           ═══════════ IR IS FINAL HERE ═══════════
                           bytes, tiling and core division all settled
                                               │
-                            dump_loop_ir  ◀───┤   SPYRE_DUMP_IR
+                            dump_loop_ir  ◀───┤
                                               │
-                          cost_model_pass ◀───┤   SPYRE_DUMP_COST ── the switch
-                                  │           │   unset/"0" ▸ returns immediately,
-                                  │           │      no extraction, no cost
-                                  │           │   "1"       ▸ report
-                                  │           │   "2"       ▸ report + check below
-                                  │           │
-      ┌───────────────────────────┴──────┐    │
-      │ group ops into the kernels the   │    │
-      │ backend will fuse, then price    │    │
-      │ each ONCE with cost_model.py     │    │
-      └───────────────────────────┬──────┘    │
-                                  ▼           │
-                        ┌──────────────────┐  │
-                        │   CostReport     │  │      ┌─── printed breakdown
-                        │  .total_us   ────┼──┼─────▶│
-                        │  .groups[]       │  │      └─── returned to the caller:
-                        └──────────────────┘  │           stored as last_cost_report,
-                                  │           │           so another pass can compare
-                                  │           │           plan A vs plan B without
-                                  │           │           compiling or running either
-                                  ▼           ▼
+                          cost_model_pass ◀───┘   off unless config.cost_model
+                                  │                is set — otherwise it returns
+                                  │                before touching the graph
+      ┌───────────────────────────┴──────┐
+      │ group ops into the kernels the   │
+      │ backend will fuse, then price    │
+      │ each ONCE with cost_model.py     │
+      └───────────────────────────┬──────┘
+                                  ▼
+                        ┌──────────────────┐
+                        │   CostReport     │──────▶ printed breakdown
+                        │  .total_us       │
+                        │  .groups[]       │──────▶ returned to the caller,
+                        └──────────────────┘        stored as last_cost_report
+                                  ╎
+                                  ╎ compare plan A vs plan B without compiling
+                                  ╎ or running either — tile size, work division
+                                  ╎ and scratchpad placement are all chosen in
+                                  ╎ CustomPreSchedulingPasses, above
+                                  └╌╌╌╌╌╌╌╌╌╌╌╌╌╌▶ back to pre-scheduling
+
                               Inductor Scheduler
-                                              │
-                                              ▼
-                                      spyre_fuse_nodes        real kernels exist now
-                                              │
-                verify_against_fused_nodes ◀──┤  only at "2": re-price using the REAL
-                                              │  bundles and print the gap against the
-                                              ▼  estimate above
-                                          SuperDSC ──▶ DeepTools ──▶ device
+                                      │
+                                      ▼
+                              spyre_fuse_nodes
+                                      │
+                                      ▼
+                                  SuperDSC ──▶ DeepTools ──▶ device
 ```
 
-The switch is the whole design: at `""` or `"0"` the pass returns before touching the
-graph, so a normal compile pays one attribute read. Everything else — extraction, pricing,
-printing — happens only when it is asked for.
+The estimate returns to pre-scheduling because tile size, work division and scratchpad
+placement are all decided there, so a planner can price two candidate plans before
+committing to either.
 
 ## Turning it on
 
@@ -79,16 +83,15 @@ Set `SPYRE_DUMP_COST`, or patch the config directly:
 |---|---|
 | unset, `""`, `0`, `false`, `off` | disabled — the pass returns before touching the graph |
 | `1`, `true`, `yes`, `on` | print a per-kernel breakdown and the program total after pre-scheduling |
-| `2` | also re-score against the real fusion bundles and report the difference |
 
-> `SPYRE_DUMP_COST` is also read directly by the older per-operation dump in
-> `dump_cost_model.py`, which recognises only `1`/`true`/`yes`/`on`. At `2` this pass runs
-> but that dump does not — and `profile_ops.py` reads its output, so use `1` when running
-> the benchmark sweeps.
+Any example in `docs/source/user_guide/examples/` works. The smallest is a single
+activation:
 
 ```bash
-SPYRE_DUMP_COST=1 python my_model.py
+SPYRE_DUMP_COST=1 python docs/source/user_guide/examples/gelu.py
 ```
+
+Or in Python, which is also how tests reach it:
 
 ```python
 from torch_spyre._inductor import config
@@ -97,75 +100,176 @@ with config.patch({"cost_model": "1"}):
     compiled = torch.compile(model)
 ```
 
-## What it prints
+## What it prints when turned on
+
+### A plain kernel
+
+Softmax over a 4096 × 2048 tensor on 32 cores, not tiled:
+
+```bash
+BENCH_OP=softmax_row_tiling BENCH_ROWS=4096 BENCH_COLS=2048 BENCH_TILES=1 \
+  SPYRE_DUMP_COST=1 python docs/source/user_guide/examples/profile_ops.py
+```
+
+```text
+predicted total:      320.0 us over 1 kernel(s), 5 op(s)
+
+      kernel   predicted us  ops
+           0          320.0  5
+                      106.7    amax  HBM   16.8 MB   LX  524.3 KB
+                      106.7    sub   HBM   16.8 MB   LX   17.3 MB
+                      106.7    div   HBM   16.8 MB   LX   17.3 MB
+                        0.0    exp   HBM         -   LX   33.6 MB
+                        0.0    sum_1 HBM         -   LX   17.3 MB
+
+  Operations are grouped by the loop they run in; the count on each group
+  header is that loop's iterations.  HBM = main-memory traffic for the whole
+  loop, and '= T x B' breaks it into T iterations of B bytes.  LX = on-chip
+  scratchpad traffic, already ONE iteration (an LX buffer is allocated per
+  tile).  re-fetch = the part of HBM that is the same bytes read again on a
+  later iteration.
+  ...
+```
+
+The five operations fuse into one kernel: row `0` with `ops 5`, its operations indented
+below. Nothing loops here.
+
+`exp` and `sum_1` show **0 HBM I/O** — inputs and outputs both in LX, and LX I/O is charged
+0, so they take no share of the kernel's time. `amax` and `sub` read the 16.8 MB input,
+`div` writes the 16.8 MB result; none of the five both reads and writes HBM.
+
+### A coarse-tiled kernel
+
+The same softmax, now split into 8 tiles:
+
+```bash
+BENCH_OP=softmax_row_tiling BENCH_ROWS=4096 BENCH_COLS=2048 BENCH_TILES=8 \
+  SPYRE_DUMP_COST=1 python docs/source/user_guide/examples/profile_ops.py
+```
 
 ```text
 predicted total:      336.8 us over 1 kernel(s), 5 op(s)
 
-      kernel       loops   trip   predicted us  ops
-           0           0      8          336.8  5
-                                         112.3    amax (16.8 MB)
-                                         112.3    sub (16.8 MB)
-                                         112.3    div (16.8 MB)
-                                           0.0    exp (on-chip only, 4.2 MB)
-                                           0.0    sum_1 (on-chip only, 2.2 MB)
+      kernel   predicted us  ops
+           0          336.8  5
+                      336.8    loop 0, runs 8 times
+                      112.3      amax  HBM   16.8 MB = 8 x 2.1 MB   LX   65.5 KB
+                      112.3      sub   HBM   16.8 MB = 8 x 2.1 MB   LX    2.2 MB
+                      112.3      div   HBM   16.8 MB = 8 x 2.1 MB   LX    2.2 MB
+                        0.0      exp   HBM         -   LX    4.2 MB
+                        0.0      sum_1 HBM         -   LX    2.2 MB
 ```
 
-## Using the result
+The rows now report two scales at once:
 
-The pass returns a `CostReport` rather than only printing, so another pass or an external
-tool can compare plans:
+| what you see | what it is |
+|---|---|
+| `loop 0, runs 8 times` | the block below it runs eight times |
+| `336.8 µs` on that header | time for **all eight** iterations |
+| `HBM 16.8 MB` | HBM traffic across **all eight** |
+| `= 8 x 2.1 MB` | HBM traffic for **one** iteration |
+| `LX 2.2 MB` | LX traffic for **one** iteration |
+
+Nothing needs multiplying by the iteration count. The per-iteration figure is the one that
+decides whether a tile fits in LX, and the one re-tiling moves.
+
+The two memories are reported on different bases: an HBM operand is recorded at its untiled
+size and divided down, while an LX buffer is allocated per tile and is already one
+iteration.
+
+### A kernel with both
+
+Operations in one kernel need not run the same number of times. Under K-tiling the
+accumulator's fill op sits outside the loop:
+
+```bash
+BENCH_OP=bmm_k_tiling BENCH_B=4 BENCH_ROWS=1024 BENCH_COLS=2048 BENCH_N=1024 \
+  BENCH_TILES=8 SPYRE_DUMP_COST=1 python docs/source/user_guide/examples/profile_ops.py
+```
+
+```text
+predicted total:     2999.9 us over 1 kernel(s), 3 op(s)
+
+      kernel   predicted us  ops
+           0         2999.9  3
+                     2918.8    loop 0, runs 8 times
+                     1945.9      Pointwise HBM  201.3 MB = 8 x 25.2 MB
+                      972.9      bmm       HBM  100.7 MB = 8 x 12.6 MB
+                       81.1    not in a loop, runs once
+                       81.1      Pointwise HBM    8.4 MB
+```
+
+The fill runs **once**, so its `8.4 MB` is all of its traffic; the matmul and combine above
+it run eight times. A kernel has no single iteration count, which is why the count sits on a
+block header rather than in a column — each block states it for the operations it governs
+and carries their subtotal, here `2918.8 µs` of `2999.9 µs`.
+
+Operations land in **separate** kernels only when something between them cannot be fused.
+The program total is the sum over kernels.
+
+## Using it as an API during compilation
+
+The pass returns a `CostReport`, so another pass or a tool can compare plans. `graph` is the
+`GraphLowering` any pre-scheduling pass receives; the pass reads `graph.operations` and never
+mutates it:
 
 ```python
 from torch_spyre._inductor.cost_model_pass import cost_model_pass
 
-report = cost_model_pass(graph)          # None when disabled
-if report is not None and report.total_us < best_so_far:
-    ...
+
+def my_planning_pass(graph):          # a GraphLowering, as any pre-scheduling pass gets
+    report = cost_model_pass(graph)   # None when disabled
+    if report is not None and report.total_us < best_so_far:
+        ...
 ```
 
-It is also stored on the pipeline instance as `last_cost_report`, and in the module global
-`cost_model_pass.LAST_REPORT`.
+Call it after coarse tiling, work division and scratchpad placement — earlier, the
+operations do not yet carry the tiling the estimate depends on. The report is also stored as
+`last_cost_report` on the pipeline instance and in `cost_model_pass.LAST_REPORT`.
 
 | field | meaning |
 |---|---|
 | `CostReport.total_us` | predicted runtime for the whole graph — the number to compare |
 | `CostReport.groups` | one entry per kernel, in program order (only the printout sorts by cost) |
-| `CostReport.from_fused_nodes` | `True` when built from real post-fusion bundles |
 | `GroupCost.predicted_us` | that kernel's predicted time |
 | `GroupCost.loop_group_ids` | the coarse-tiling loops inside this kernel, for labelling |
-| `GroupCost.ops` | per-operation attribution — see the second limitation below |
+| `GroupCost.ops` | per-operation attribution, not independent predictions — see [limitations](#one-limitation-worth-knowing) |
+| `GroupCost.loop_trip` | the **deepest** loop in this kernel, not a count that applies to every operation in it — read `OpCost.trip` per operation |
+| `OpCost.hbm_bytes` | main-memory traffic across the **whole** loop |
+| `OpCost.trip` | how many times **this** operation runs; `1` for one placed outside the loop |
+| `OpCost.hbm_per_iter` | HBM traffic in **one** iteration of this operation — the working set |
+| `OpCost.lx_bytes` | on-chip traffic, **already** per-iteration (LX is allocated per tile) |
+| `OpCost.reread_bytes` | of `hbm_bytes`, the excess over a single pass — see the [appendix](#appendix-the-re-fetch-column) |
+
+`OpCost.trip * hbm_per_iter` reproduces `hbm_bytes` — exactly when the count divides the
+traffic, which holds on every recorded op, and otherwise short by under a byte per
+iteration. A planner comparing tile counts wants `hbm_per_iter`, since that is the figure
+re-tiling moves.
 
 ## How a kernel is priced
 
-`predict_ops` is defined over **one fused kernel** and is deliberately *not* additive over
-its operations: it de-duplicates external inputs shared inside a bundle, and its turnaround
-and overlap terms are `min`/`max` reductions over bundle totals. Across the 521 recorded
-multi-operation programs, pricing operations separately and summing differs from pricing
-the bundle by **−94 % to +33 %** — usually an *under*-count. Getting the grouping right is
-therefore not a presentation detail; it decides whether `total_us` means anything.
+A fused kernel is the only thing that can be measured — there is no per-operation timing
+inside one — so every coefficient in `cost_model.py` was fitted against whole kernels, and a
+prediction is comparable to a measurement only over that unit. The pass therefore
+reconstructs the kernels the backend will fuse before pricing anything.
 
-So the pass groups the way the backend fuses. `spyre_fuse_nodes` accumulates every
-*contiguous run* of Spyre nodes into one bundle with no size limit, and the pass mirrors
-that in three respects:
+`predict_ops` is **not additive** over the operations in a kernel: a shared input is charged
+once rather than once each, and the turnaround and overlap terms are taken over kernel
+totals. Per-operation prices do not sum to the kernel price, which is why the per-operation
+column is an attribution.
 
-- a run is broken by any operation **not on the Spyre device** — a CPU operation's buffer is
-  still a `ComputedBuffer`, so testing the type alone would both fail to break the kernel and
-  price CPU work as Spyre traffic;
-- a run is broken by any operation the extractor cannot model;
-- when `bundle_symbolic_args` is off the backend does **not fuse at all**, and neither does
-  the report — every operation becomes its own kernel.
+`spyre_fuse_nodes` fuses everything it can — contiguous Spyre nodes accumulate in order, and
+only a node that is not on the device starts a new bundle. No size limit, no cost heuristic,
+no reordering. The pass applies that same rule, with two differences:
 
-Coarse-tiling `loop_group_id` is read only to *label* the loop structure inside a kernel,
-not to decide boundaries.
+- it also breaks a kernel at an operation the extractor cannot model, where the backend
+  would not, so the report prices two smaller kernels where the device runs one;
+- with `bundle_symbolic_args` off the backend does not fuse at all, and neither does the
+  report — every operation becomes its own kernel.
 
-## Two limitations worth knowing
+`loop_group_id` labels the loop structure inside a kernel; it does not decide boundaries.
 
-**Kernel boundaries are an estimate.** Real bundles are formed later, by `spyre_fuse_nodes`,
-which sees scheduler nodes rather than IR operations. Contiguity is a close proxy, not a
-guarantee. Setting the flag to `2` measures the gap directly rather than assuming it is
-small: it re-scores after fusion, using the real bundles, and prints both totals and the
-difference.
+## One limitation worth knowing
 
 **Per-operation times are an attribution, not predictions.** Each kernel is priced once, as
 a whole; the per-op column then splits that total by each operation's share of the
@@ -174,24 +278,22 @@ separately meaningful. Two known distortions: the split carries no compute term,
 misattributes a compute-bound kernel; and the weights are per-operation while the total
 de-duplicates shared inputs, so a share can be off by up to a third of itself (measured on
 recorded softmax bundles: 33.3 % where a consistent split gives 25.0 %). An operation whose
-output stays on chip shows `0.0` because it adds no traffic of its own — it was fused away,
+output stays in LX shows `0.0` because it adds no HBM traffic of its own — it was fused away,
 not free.
 
 ## Accuracy
 
-The model is documented and scored in `notes/cost_model_report.md`, which derives every
-term and states how well each is understood. Current accuracy by category — pointwise
-8.3 %, broadcast 5.7 %, reduction 7.2 %, transport 6.1 %, matmul 15.1 %, coarse tiling
-7.4 % RMS.
+RMS error by category, scored in `notes/cost_model_report.md`, which derives every term and
+states how well each is understood:
 
-For plan *ranking* rather than absolute accuracy, see `notes/cost_model_directions.md`: over
-26 measured coarse-tiling ladders the model picks a tile count tied for best on 17, with a
-median regret of 0 %. That document also records where it is blind (tiled softmax, where
-the prediction stops depending on tile count) and where it is wrong (row-tiled matmul,
-where it turns up one rung too early).
+| category | RMS | category | RMS |
+|---|---:|---|---:|
+| broadcast | 5.7 % | matmul, row-tiled | 7.7 % |
+| transport | 6.1 % | softmax | 12.9 % |
+| reduction | 7.2 % | matmul, split | 15.1 % |
+| pointwise | 8.5 % | bmm | 18.0–34.6 % |
 
-Flash attention is **not** currently modelled correctly — it is mispredicted by more than
-an order of magnitude from a rank-4 extraction bug, diagnosed in the same document.
+Flash attention is not modelled correctly and is excluded from these figures.
 
 ## Implementation
 
@@ -202,5 +304,33 @@ an order of magnitude from a rank-4 extraction bug, diagnosed in the same docume
 | `cost_model_pass.py` | the pass: grouping, per-group pricing, the report |
 | `tests/inductor/test_cost_model_pass.py` | grouping, attribution and disabled-path guards |
 
-The pass never raises. Instrumentation that can break a compilation is worse than no
-instrumentation, so every entry point catches broadly and logs instead.
+The pass never raises: every entry point catches and logs instead.
+
+## Appendix: the `re-fetch` column
+
+Most operands a loop touches are read once overall — each iteration takes a fresh slice and
+the slices cover the tensor once. A row-tiled matmul is different: it splits the output rows
+across iterations, but every iteration needs the **whole** B matrix. `re-fetch` reports what
+that costs.
+
+```bash
+BENCH_OP=matmul_row_tiling BENCH_ROWS=4096 BENCH_COLS=2048 BENCH_N=1024 \
+  BENCH_TILES=8 SPYRE_DUMP_COST=1 python docs/source/user_guide/examples/profile_ops.py
+```
+
+```text
+      kernel   predicted us  ops
+           0          472.2  1
+                      472.2    loop 0, runs 8 times
+                      472.2      mm HBM   58.7 MB = 8 x 7.3 MB   re-fetch 29.4 MB
+```
+
+The three tensors total 29.4 MB — A is 16.8, the output 8.4, B only 4.2 — yet the loop
+moves 58.7 MB. A and the output are read and written once between them. B is read eight
+times, 33.6 MB out of a 4.2 MB tensor, and the 29.4 MB of `re-fetch` is the seven extra
+passes. It is the smallest tensor and the largest cost.
+
+The column appears only for an input of a matmul whose loop tiles an **output** dimension,
+and takes its figure from `cost_model._loop_reread_bytes`. Under **reduction** tiling the same access pattern means
+the opposite — each iteration consumes a fresh slice of K, so those operands are read once
+and nothing is re-fetched.

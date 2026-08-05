@@ -84,7 +84,7 @@ from .coarse_tile import coarse_tile
 from .dump_fx_graph import dump_fx_graph
 from .dump_loop_ir import dump_loop_ir
 from .dump_cost_model import dump_cost_model
-from .cost_model_pass import CostReport, cost_model_pass, verify_against_fused_nodes
+from .cost_model_pass import CostReport, cost_model_pass
 from .split_multi_ops import split_multi_ops, validate_ops
 
 
@@ -255,21 +255,6 @@ class CustomPostFusionPasses(_SpyreNodePassPipeline):
     def __init__(self):
         # HBM-Pool Planning
         super().__init__([hbm_pool_planning, spyre_fuse_nodes])
-
-    def __call__(self, target: list[BaseSchedulerNode]) -> list[BaseSchedulerNode]:
-        nodes = super().__call__(target)
-        # Read-only cost check, run AFTER the real passes so it sees the bundles
-        # spyre_fuse_nodes formed. Deliberately not a member of self.passes: _uuid
-        # hashes each pass's source file into the Inductor cache key, and a reporting
-        # hook must not invalidate every cached graph when its formatting changes.
-        # It no-ops unless the cost model is in mode "2".
-        #
-        # The device guard is repeated here because the base __call__ returns early
-        # on a non-Spyre graph -- without it a CPU-only compilation would be priced
-        # as Spyre traffic and compared against a stale estimate.
-        if not self._has_spyre_device(nodes):
-            return nodes
-        return verify_against_fused_nodes(nodes)
 
 
 # Several pre-scheduling steps are config-gated or need arguments beyond the

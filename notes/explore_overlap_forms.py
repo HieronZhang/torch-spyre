@@ -76,9 +76,6 @@ def _predict(feats, **over):
 # ignores the plain peak entirely, which silently dropped 170 records (the whole bmm population).
 _PEAK_KILL = {
     "mac_peak_per_core_ns": 1e12,
-    "bmm_layout_peak_fast_ns": 1e12,
-    "bmm_layout_peak_a_default_ns": 1e12,
-    "bmm_layout_peak_b_default_ns": 1e12,
     "bmm_default_mac_peak_per_core_ns": 1e12,
 }
 # The real split coefficients.  `CostParams` is a plain (non-frozen, non-slots) dataclass, so a
@@ -171,9 +168,15 @@ FORMS = {
     "P  p-norm    (c^s+m^s)^1/s": (f_pnorm, [(1.0, 6.0, 0.05)]),
     "S  sharedport max(c,m,(c+m)/k)": (f_shared, [(1.0, 2.0, 0.01)]),
     "G  geometric max + a*lo^p*hi^(1-p)": (f_geom, [(0.1, 1.2, 0.05), (0.0, 2.0, 0.1)]),
-    "R  ratio     max + lo*(a+b*rho)": (f_ratio, [(-0.4, 1.0, 0.05), (-1.0, 1.0, 0.05)]),
+    "R  ratio     max + lo*(a+b*rho)": (
+        f_ratio,
+        [(-0.4, 1.0, 0.05), (-1.0, 1.0, 0.05)],
+    ),
     "SR sharedport+res": (f_shared_res, [(1.0, 2.0, 0.02), (0.0, 0.6, 0.02)]),
-    "C  cores     max + lo*(a+b/cores)": (f_cores, [(0.0, 0.8, 0.05), (-2.0, 8.0, 0.25)]),
+    "C  cores     max + lo*(a+b/cores)": (
+        f_cores,
+        [(0.0, 0.8, 0.05), (-2.0, 8.0, 0.25)],
+    ),
 }
 
 
@@ -249,11 +252,18 @@ def main():
     cohorts["ALL matmul-family"] = rows_all
 
     bad = verify_decomposition(recs)
-    print(f"decomposition self-check: {len(bad)} records fail to reconstruct the live model")
+    print(
+        f"decomposition self-check: {len(bad)} records fail to reconstruct the live model"
+    )
     if bad:
-        raise SystemExit("decomposition is WRONG -- fix before trusting any number below")
+        raise SystemExit(
+            "decomposition is WRONG -- fix before trusting any number below"
+        )
     from collections import Counter
-    print(f"decomposed {len(rows_all)} matmul-family records; dropped {len(dropped)}: {Counter(dropped)}")
+
+    print(
+        f"decomposed {len(rows_all)} matmul-family records; dropped {len(dropped)}: {Counter(dropped)}"
+    )
     for k, v in cohorts.items():
         print(f"   {k}: {len(v)}")
 

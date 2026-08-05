@@ -37,6 +37,7 @@ import pytest
 import torch_spyre._inductor.cost_model_pass as cmp
 from torch_spyre._inductor import config
 from torch_spyre._inductor.constants import DEVICE_NAME
+from torch_spyre._inductor import cost_model
 from torch_spyre._inductor.cost_model import ArgTraffic, OpFeatures
 
 
@@ -282,108 +283,34 @@ def test_one_unpriceable_kernel_does_not_lose_the_others(monkeypatch):
     assert report.total_us > 0.0
 
 
-# ----------------------------------------------------------------------- post-fusion
-
-
-class _FakeSchedulerNode:
-    def __init__(self, op):
-        self.node = op
-
-    def get_nodes(self):
-        return [self]
-
-
-class _FakeLoopNode:
-    """A CountedLoopSchedulerNode: node is None, real ops are one level down."""
-
-    def __init__(self, ops):
-        self.node = None
-        self._inner = [_FakeSchedulerNode(o) for o in ops]
-
-    def get_nodes(self):
-        return self._inner
-
-
-class _FakeFusedNode:
-    """A FusedSchedulerNode: get_nodes() does NOT recurse into its members."""
-
-    def __init__(self, members):
-        self.node = None
-        self._members = members
-
-    def get_nodes(self):
-        return self._members
-
-
-def test_post_fusion_recurses_into_loop_nodes(monkeypatch):
-    """A loop node nested in a fused node must not be silently dropped.
-
-    FusedSchedulerNode.get_nodes() returns its members without recursing, and a
-    CountedLoopSchedulerNode's own .node is None -- so a flat walk loses every
-    coarse-tiled op in the bundle.
-    """
-    monkeypatch.setattr(cmp, "extract_op_features", lambda op: op)
-    monkeypatch.setattr(cmp, "ComputedBuffer", OpFeatures)
-    node = _FakeFusedNode([_FakeLoopNode([_feats("tiled_a"), _feats("tiled_b")])])
-    report = cmp.build_report_from_nodes([node])
-    assert report.groups[0].op_names == ["tiled_a", "tiled_b"]
-    assert report.from_fused_nodes
-
-
-def test_post_fusion_prices_one_group_per_bundle(monkeypatch):
-    monkeypatch.setattr(cmp, "extract_op_features", lambda op: op)
-    monkeypatch.setattr(cmp, "ComputedBuffer", OpFeatures)
-    nodes = [
-        _FakeFusedNode(
-            [_FakeSchedulerNode(_feats("a")), _FakeSchedulerNode(_feats("b"))]
-        ),
-        _FakeSchedulerNode(_feats("c")),
-    ]
-    report = cmp.build_report_from_nodes(nodes)
-    assert [g.op_names for g in report.groups] == [["a", "b"], ["c"]]
-
-
-def test_verify_pass_returns_nodes_unchanged(monkeypatch):
-    """The post-fusion hook is a node pass: it must return the list it was given."""
-    nodes = [object(), object()]
-    for mode in ("", "1", "2"):
-        with config.patch({"cost_model": mode}):
-            assert cmp.verify_against_fused_nodes(nodes) is nodes
-
-
-def test_verify_pass_returns_nodes_even_when_scoring_fails(monkeypatch):
-    monkeypatch.setattr(
-        cmp,
-        "build_report_from_nodes",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-    nodes = [object()]
-    with config.patch({"cost_model": "2"}):
-        assert cmp.verify_against_fused_nodes(nodes) is nodes
-
-
 # ---------------------------------------------------------------------------- gating
 
 
 @pytest.mark.parametrize(
     "value,expected",
     [
-        ("", ""),
-        ("0", ""),
-        ("false", ""),
-        ("off", ""),
-        ("no", ""),
-        ("1", "1"),
-        ("true", "1"),
-        ("yes", "1"),
-        ("on", "1"),
-        ("2", "2"),
+        ("", False),
+        ("0", False),
+        ("false", False),
+        ("off", False),
+        ("no", False),
+        ("2", False),
+        ("banana", False),
+        ("1", True),
+        ("true", True),
+        ("yes", True),
+        ("on", True),
+        (" ON ", True),
     ],
 )
-def test_mode_parsing(value, expected):
-    """ "0" must mean OFF. Plain truthiness would enable the pass for SPYRE_DUMP_COST=0."""
+def test_gate_parsing(value, expected):
+    """ "0" must mean OFF. Plain truthiness would enable the pass for SPYRE_DUMP_COST=0.
+
+    "2" was a second verbosity that has been removed; it must now read as off rather
+    than silently behaving like "1".
+    """
     with config.patch({"cost_model": value}):
-        assert cmp._mode() == expected
+        assert cmp._enabled() is expected
 
 
 def test_disabled_returns_none_and_does_not_extract(monkeypatch):
@@ -407,13 +334,11 @@ def test_enabled_returns_a_report(monkeypatch):
     class _Graph:
         operations = [_feats("a")]
 
-    graph = _Graph()
     with config.patch({"cost_model": "1"}):
-        report = cmp.cost_model_pass(graph)
+        report = cmp.cost_model_pass(_Graph())
     assert report is not None
     assert report.total_us > 0.0
     assert cmp.LAST_REPORT is report
-    assert cmp.LAST_GRAPH_ID == id(graph)
 
 
 def test_pass_never_raises(monkeypatch):
@@ -440,7 +365,10 @@ def test_report_formats_without_error(monkeypatch):
     )
     text = cmp.build_report(ops).format()
     assert "predicted total" in text
-    assert "on-chip only" in text
+    # An op that writes only to on-chip memory still has to show its bytes, so its
+    # 0.0 share reads as "fused away", not "free".
+    assert "HBM" in text and "-" in text
+    assert "LX" in text
     assert "attribution" in text
 
 
@@ -453,3 +381,225 @@ def test_dataclasses_are_plain_values():
     assert dataclasses.is_dataclass(cmp.CostReport)
     assert dataclasses.is_dataclass(cmp.GroupCost)
     assert dataclasses.is_dataclass(cmp.OpCost)
+
+
+# -------------------------------------------------------------- per-iteration traffic
+
+
+def _looped(name, trip, args, matmul=False):
+    """OpFeatures for one op inside a coarse-tiling loop of ``trip`` iterations."""
+    f = OpFeatures(
+        name=name,
+        is_reduction=False,
+        out_elems=1024,
+        cores=32,
+        dtype_bytes=2,
+        args=args,
+        loop_trip=trip,
+        is_matmul=matmul,
+        tiles_output_dim=matmul,
+    )
+    f.get_device = lambda: _Device(DEVICE_NAME)
+    return f
+
+
+def _arg(name, role, elems, factor=1, mem="hbm"):
+    a = ArgTraffic(name, role, mem, elems, False, [], [])
+    a.loop_factor = factor
+    return a
+
+
+@pytest.mark.parametrize(
+    "label,factor",
+    [
+        # An operand that walks the tensor once. hbm_bytes is elems.
+        ("advancing", 1),
+        # One the loop holds fixed: hbm_bytes is elems * trip, so one iteration is
+        # still the operand's full size -- the SAME answer plain division gives.
+        ("fixed", 8),
+        # And the case that is neither. `mm` under mm_nested_m_k really carries
+        # 1 < loop_factor < trip, because the factor is a product over nesting
+        # levels; a rule that branched on "advancing or fixed" is wrong here.
+        ("nested", 2),
+    ],
+)
+def test_per_iteration_is_the_whole_loop_over_the_trip(label, factor):
+    f = _looped("k", 8, [_arg("arg0", "input", 4096, factor=factor)])
+    assert cmp._per_iteration(f)["hbm_per_iter"] == f.hbm_bytes() // 8
+    assert f.hbm_bytes() == 4096 * 2 * factor  # the premise: hbm_bytes folds the factor
+
+
+@pytest.mark.parametrize(
+    "label,args",
+    [
+        ("all advancing", [_arg("a", "input", 8 * 4096)]),
+        ("all fixed", [_arg("b", "input", 4096, factor=8)]),
+        ("nested", [_arg("c", "input", 4096, factor=2)]),
+        (
+            "mixed",
+            [
+                _arg("a", "input", 8 * 4096),
+                _arg("b", "input", 4096, factor=8),
+                _arg("c", "input", 4096, factor=2),
+                _arg("o", "output", 8 * 2048),
+            ],
+        ),
+    ],
+)
+def test_whole_loop_equals_trip_times_per_iteration(label, args):
+    """The identity the report prints as ``whole = trip x per-iteration``.
+
+    The nested rows are the ones that matter: they are the only inputs where a
+    branch on advancing-vs-fixed gives a different answer from plain division.
+    """
+    f = _looped("k", 8, args)
+    assert f.hbm_bytes() == 8 * cmp._per_iteration(f)["hbm_per_iter"]
+
+
+def test_on_chip_bytes_are_not_divided_again():
+    """An LX buffer is allocated per-tile, so lx_bytes is ALREADY one iteration.
+
+    Dividing it by the trip count would under-report the working set by that factor --
+    for the one number that decides whether a tile fits on chip.
+    """
+    f = _looped("k", 8, [_arg("buf", "output", 4096, mem="lx")])
+    assert "lx_per_iter" not in cmp._per_iteration(f)
+    op = cmp.OpCost(
+        name="k",
+        loop_group_id=None,
+        hbm_bytes=0,
+        lx_bytes=f.lx_bytes(),
+        predicted_us=0.0,
+        trip=8,
+        hbm_per_iter=0,
+    )
+    assert "8.2 KB" in cmp._traffic(op)  # 4096 * 2, undivided
+
+
+def test_untiled_op_has_no_split():
+    per = cmp._per_iteration(_looped("plain", 1, [_arg("arg0", "input", 4096)]))
+    assert per["trip"] == 1
+    assert per["hbm_per_iter"] == 4096 * 2
+    assert per["reread_bytes"] == 0
+
+
+@pytest.mark.parametrize(
+    "label,matmul,expected",
+    [
+        # An input of a matmul whose loop tiles an output dim: established re-fetch.
+        ("output-tiled matmul", True, 4096 * 2 * 7),
+        # The same loop_factor on anything else means something different -- under
+        # reduction tiling each iteration takes a fresh K-slice, so the input
+        # ADVANCES. Reporting it as re-fetched would be wrong, not just uncharged.
+        ("not a matmul", False, 0),
+    ],
+)
+def test_refetch_never_diverges_from_what_the_model_charges(label, matmul, expected):
+    f = _looped("k", 8, [_arg("arg0", "input", 4096, factor=8)], matmul=matmul)
+    assert cmp._per_iteration(f)["reread_bytes"] == expected
+    assert cmp._per_iteration(f)["reread_bytes"] == cost_model._loop_reread_bytes([f])
+
+
+def test_small_buffers_do_not_render_as_zero():
+    """Real intermediates are kilobytes; fixed MB formatting printed them as 0.0."""
+    op = cmp.OpCost(
+        name="k",
+        loop_group_id=None,
+        hbm_bytes=8192,
+        lx_bytes=0,
+        predicted_us=0.0,
+        trip=1,
+        hbm_per_iter=8192,
+    )
+    text = cmp._traffic(op)
+    assert "8.2 KB" in text
+    assert "0.0" not in text
+
+
+def test_long_op_names_keep_the_columns_aligned(monkeypatch):
+    """Real graphs carry names like constant_pad_nd_default; a fixed width breaks."""
+    ops = _ops([_feats("mm"), _feats("constant_pad_nd_default")], monkeypatch)
+    text = cmp.build_report(ops).format()
+    body = [ln for ln in text.splitlines() if "MB" in ln]
+    assert len(body) == 2
+    assert len({ln.index("HBM") for ln in body}) == 1
+
+
+def test_per_iteration_flows_through_build_report(monkeypatch):
+    """End to end: the fields the printout reads are populated by the real path."""
+    ops = _ops(
+        [
+            _looped(
+                "mm",
+                8,
+                [
+                    _arg("arg0", "input", 8 * 4096),
+                    _arg("arg1", "input", 4096, factor=8),
+                    _arg("out", "output", 8 * 2048),
+                ],
+                matmul=True,
+            )
+        ],
+        monkeypatch,
+    )
+    op = cmp.build_report(ops).groups[0].ops[0]
+    assert op.trip == 8
+    assert op.reread_bytes == 4096 * 2 * 7
+    assert op.hbm_bytes == 8 * op.hbm_per_iter
+
+
+def test_a_broken_attribution_keeps_the_price(monkeypatch):
+    """The price is the answer; the per-op split is only presentation."""
+    ops = _ops([_feats("a"), _feats("b")], monkeypatch)
+    monkeypatch.setattr(cmp, "_per_iteration", lambda f: 1 / 0)
+    report = cmp.build_report(ops)
+    assert report.total_us > 0
+    assert report.groups[0].ops == []
+    assert "predicted total" in report.format()
+
+
+def test_ops_that_run_different_numbers_of_times_are_grouped_apart(monkeypatch):
+    """A coarse_tile_fill sits OUTSIDE the loop and runs once beside ops that do not.
+
+    coarse_tiling_loops.md: the fill op is inserted "outside the loop, no loop_info".
+    A kernel therefore has no single iteration count, so the count is stated per loop
+    rather than in one column beside every op in the kernel.
+    """
+    ops = _ops(
+        [
+            _looped("fill", 1, [_arg("acc", "output", 4096)]),
+            _looped("bmm", 8, [_arg("arg0", "input", 8 * 4096)]),
+        ],
+        monkeypatch,
+    )
+    text = cmp.build_report(ops).format()
+    assert "loop, runs 8 times" in text
+    assert "not in a loop, runs once" in text
+    # each op sits under the block that states ITS count -- never one shared number
+    body = text.splitlines()
+    fill = next(i for i, ln in enumerate(body) if " fill " in ln or ln.endswith("fill"))
+    bmm = next(i for i, ln in enumerate(body) if "bmm" in ln and "HBM" in ln)
+    once = next(i for i, ln in enumerate(body) if "not in a loop" in ln)
+    eight = next(i for i, ln in enumerate(body) if "runs 8 times" in ln)
+    assert once < fill and eight < bmm
+
+
+def test_a_kernel_in_one_loop_states_the_count_once(monkeypatch):
+    ops = _ops(
+        [
+            _looped("a", 8, [_arg("arg0", "input", 8 * 4096)]),
+            _looped("b", 8, [_arg("arg1", "input", 8 * 4096)]),
+        ],
+        monkeypatch,
+    )
+    text = cmp.build_report(ops).format()
+    assert text.count("runs 8 times") == 1
+    assert "not in a loop" not in text
+
+
+def test_an_untiled_kernel_gets_no_loop_headers(monkeypatch):
+    """Nothing loops, so a "runs once" header would be noise on every kernel."""
+    ops = _ops([_feats("a"), _feats("b")], monkeypatch)
+    text = cmp.build_report(ops).format()
+    assert "not in a loop" not in text
+    assert "runs" not in text

@@ -60,7 +60,7 @@ from torch._inductor.ir import ComputedBuffer
 
 from . import config
 from .constants import DEVICE_NAME
-from .cost_model import CostParams, predict_ops
+from .cost_model import CostParams, _loop_reread_bytes, predict_ops
 from .dump_cost_model import extract_op_features
 from .logging_utils import get_inductor_logger
 
@@ -68,23 +68,17 @@ logger = get_inductor_logger("cost_model_pass")
 
 #: Truthy spellings, matching ``dump_cost_model.cost_dump_enabled`` so that "0" means
 #: off. Gating on plain truthiness would enable the pass for SPYRE_DUMP_COST=0.
-_ON = {"1", "2", "true", "yes", "on"}
+_ON = {"1", "true", "yes", "on"}
 
-#: Report from the most recent pre-scheduling run, tagged with the id of the graph it
-#: came from. The post-fusion check needs it, and the two pipelines are separate objects
-#: with no reference to each other; this mirrors ``dump_cost_model.LAST_IO``, the
-#: existing convention. The id guards against a nested lowering silently pairing one
-#: graph's estimate with another graph's bundles.
+#: Report from the most recent run, for tools that want it without threading a return
+#: value through the pipeline. Mirrors ``dump_cost_model.LAST_IO``, the existing
+#: convention for handing extraction results out of a pass.
 LAST_REPORT: "CostReport | None" = None
-LAST_GRAPH_ID: int | None = None
 
 
-def _mode() -> str:
-    """ "" (off), "1" (report), or "2" (report + post-fusion check)."""
-    raw = str(config.cost_model or "").strip().lower()
-    if raw not in _ON:
-        return ""
-    return "2" if raw == "2" else "1"
+def _enabled() -> bool:
+    """True when the cost model should run. Anything unrecognised means off."""
+    return str(config.cost_model or "").strip().lower() in _ON
 
 
 @dataclasses.dataclass
@@ -98,8 +92,18 @@ class OpCost:
     name: str
     loop_group_id: tuple[int, ...] | None
     hbm_bytes: int
+    #: On-chip traffic. An LX buffer is allocated per-tile, so inside a loop this is
+    #: already ONE iteration's working set, not the whole loop's.
     lx_bytes: int
     predicted_us: float
+    #: Iterations this op's loop runs (1 when it is not inside one).
+    trip: int = 1
+    #: Main-memory bytes ONE iteration moves. ``hbm_bytes`` is the whole loop; this is
+    #: the per-pass working set, which is the figure re-tiling actually changes.
+    hbm_per_iter: int = 0
+    #: Of ``hbm_bytes``, the excess over a single pass -- input bytes fetched again on
+    #: later iterations. See ``_per_iteration`` on why this is not always charged.
+    reread_bytes: int = 0
 
 
 @dataclasses.dataclass
@@ -129,53 +133,54 @@ class CostReport:
 
     total_us: float
     groups: list[GroupCost]
-    #: True when built from real post-fusion bundles rather than estimated ones.
-    from_fused_nodes: bool = False
 
     @property
     def n_modelled_ops(self) -> int:
         return sum(len(g.op_names) for g in self.groups)
 
     def format(self) -> str:
-        kind = "bundle" if self.from_fused_nodes else "kernel"
         lines = [
             f"predicted total: {self.total_us:10.1f} us over "
-            f"{len(self.groups)} {kind}(s), {self.n_modelled_ops} op(s)",
+            f"{len(self.groups)} kernel(s), {self.n_modelled_ops} op(s)",
             "",
-            f"  {kind:>10}  {'loops':>10}  {'trip':>5}  {'predicted us':>13}  ops",
+            f"  {'kernel':>10}  {'predicted us':>13}  ops",
         ]
         for g in sorted(self.groups, key=lambda x: -x.predicted_us):
-            loops = (
-                ",".join("/".join(str(i) for i in gid) for gid in g.loop_group_ids)
-                if g.has_loop
-                else "-"
-            )
-            lines.append(
-                f"  {g.index:>10}  {loops:>10}  {g.loop_trip:>5}  "
-                f"{g.predicted_us:>13.1f}  {len(g.op_names)}"
-            )
-            for o in sorted(g.ops, key=lambda x: -x.predicted_us):
-                # An op whose output stays on chip moves no main-memory bytes, so it
-                # attracts no share. Showing the on-chip bytes makes that 0.0 read as
-                # "this op was fused away", not "this op is free".
-                where = (
-                    f"{o.hbm_bytes / 1e6:.1f} MB"
-                    if o.hbm_bytes
-                    else f"on-chip only, {o.lx_bytes / 1e6:.1f} MB"
-                )
-                lines.append(
-                    f"  {'':>10}  {'':>10}  {'':>5}  {o.predicted_us:>13.1f}  "
-                    f"  {o.name} ({where})"
-                )
+            lines.append(f"  {g.index:>10}  {g.predicted_us:>13.1f}  {len(g.op_names)}")
+            # Size the name column to this kernel: real names run from "mm" to
+            # "constant_pad_nd_default", and a fixed width breaks the alignment.
+            width = max((len(o.name) for o in g.ops), default=0)
+            # One block per loop, so an iteration count is stated once for exactly the
+            # ops it governs. A fill op sits OUTSIDE the loop and runs once beside ops
+            # that run `trip` times, so there is no kernel-wide count to put in a column.
+            blocks = _by_loop(g.ops)
+            show_headers = len(blocks) > 1 or any(o.trip > 1 for o in g.ops)
+            for header, ops in blocks:
+                indent = 2 if show_headers else 0
+                if show_headers:
+                    subtotal = sum(o.predicted_us for o in ops)
+                    lines.append(f"  {'':>10}  {subtotal:>13.1f}    {header}")
+                for o in sorted(ops, key=lambda x: -x.predicted_us):
+                    lines.append(
+                        f"  {'':>10}  {o.predicted_us:>13.1f}    "
+                        f"{' ' * indent}{_traffic(o, width)}"
+                    )
         lines += [
             "",
+            "  Operations are grouped by the loop they run in; the count on each group",
+            "  header is that loop's iterations.  HBM = main-memory traffic for the whole",
+            "  loop, and '= T x B' breaks it into T iterations of B bytes.  LX = on-chip",
+            "  scratchpad traffic, already ONE iteration (an LX buffer is allocated per",
+            "  tile).  re-fetch = the part of HBM that is the same bytes read again on a",
+            "  later iteration.",
+            "",
             "  Each kernel is priced ONCE, as a bundle. The per-op column splits that",
-            "  total by each op's share of the main-memory bytes: an attribution, not a",
-            "  set of independent predictions. It carries no compute term, so it",
-            "  misattributes a compute-bound kernel, and because the weights are per-op",
-            "  while the total de-duplicates shared inputs, a share can be off by up to a",
-            "  third of itself. An op whose output stays on chip shows 0.0 -- it adds no",
-            "  traffic of its own.",
+            "  total by each op's share of the HBM bytes: an attribution, not a set of",
+            "  independent predictions. It carries no compute term, so it misattributes a",
+            "  compute-bound kernel, and because the weights are per-op while the total",
+            "  de-duplicates shared inputs, a share can be off by up to a third of itself.",
+            "  An op with no HBM traffic shows 0.0 -- its output stays in LX, so it adds",
+            "  no main-memory traffic of its own.",
         ]
         return "\n".join(lines)
 
@@ -198,12 +203,93 @@ def _is_modellable(op) -> bool:
     return device is not None and device.type == DEVICE_NAME
 
 
+def _by_loop(ops: list) -> list:
+    """Split a kernel's ops into blocks, one per loop, in first-appearance order.
+
+    A kernel has no single iteration count -- a ``coarse_tile_fill`` is inserted outside
+    the loop and runs once beside ops that run ``trip`` times -- so the count belongs on
+    a block of ops rather than in a column beside every op in the kernel. Ops are keyed
+    by (loop id, trip): the id alone is absent on replayed features, and the trip alone
+    would merge two distinct loops that happen to share a depth.
+    """
+    blocks: dict = {}
+    for o in ops:
+        blocks.setdefault((o.loop_group_id, o.trip), []).append(o)
+    out = []
+    for (gid, trip), members in blocks.items():
+        if trip > 1:
+            where = f"loop {'/'.join(str(i) for i in gid)}" if gid else "loop"
+            out.append((f"{where}, runs {trip} times", members))
+        else:
+            out.append(("not in a loop, runs once", members))
+    # Costliest first, matching how the ops inside each block are ordered.
+    out.sort(key=lambda b: -sum(o.predicted_us for o in b[1]))
+    return out
+
+
+def _bytes(n: int) -> str:
+    """Bytes at a scale that stays readable. MB rounds real 8 KB buffers to `0.0`."""
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f} MB"
+    if n >= 1000:
+        return f"{n / 1e3:.1f} KB"
+    return f"{n} B"
+
+
+def _traffic(o: "OpCost", width: int = 12) -> str:
+    """One op's traffic: whole-loop total, one iteration's share, and the re-fetch.
+
+    The whole-loop total alone is misleading in both directions -- it looks huge beside
+    an untiled op, and it hides how much of itself is the same bytes fetched again.
+    """
+    hbm = f"HBM {_bytes(o.hbm_bytes):>9}" if o.hbm_bytes else f"HBM {'-':>9}"
+    # An LX buffer is per-tile, so this is already one iteration either way.
+    lx = f"   LX {_bytes(o.lx_bytes):>9}" if o.lx_bytes else ""
+    per = (
+        f" = {o.trip} x {_bytes(o.hbm_per_iter)}" if o.trip > 1 and o.hbm_bytes else ""
+    )
+    refetch = f"   re-fetch {_bytes(o.reread_bytes)}" if o.reread_bytes else ""
+    return f"{o.name:<{width}} {hbm}{per}{lx}{refetch}".rstrip()
+
+
 def _loop_group_id(op) -> tuple[int, ...] | None:
     gid = getattr(getattr(op, "loop_info", None), "loop_group_id", None)
     try:
         return tuple(gid) if gid else None
     except TypeError:  # a malformed id (e.g. a bare int) must not sink the report
         return None
+
+
+def _per_iteration(f) -> dict:
+    """Split one op's traffic into what a single loop iteration moves.
+
+    The two memories report ``elems`` on different bases, so they split differently:
+
+    * An **HBM** arg reports the UNTILED count, and ``hbm_bytes()`` already multiplies it
+      by ``loop_factor``, so that total is whole-loop traffic and one iteration is simply
+      ``hbm_bytes / trip``. This holds for an operand that advances (factor 1, whole
+      tensor spread over the loop) and one the loop holds fixed (factor = trip, whole
+      tensor fetched every pass) alike, and for the nested case in between -- ``mm`` under
+      ``mm_nested_m_k`` really does carry ``1 < factor < trip``, so a rule that branched on
+      "advancing or fixed" would be wrong there by up to 2.8x.
+    * An **LX** arg is allocated per-tile, so ``lx_bytes()`` is ALREADY one iteration's
+      on-chip working set and must not be divided again. See the comment at
+      ``dump_cost_model._loop_features`` on HBM full-buffer vs LX per-tile extents.
+
+    ``reread_bytes`` defers to ``cost_model._loop_reread_bytes`` rather than re-deriving
+    the excess from ``loop_factor``, so the figure shown can never drift from the one
+    charged. That function's scope is deliberately narrow -- an input of a matmul whose
+    loop tiles an OUTPUT dim -- because under REDUCTION tiling ``loop_factor > 1`` means
+    the opposite thing: each iteration consumes a fresh K-slice, so those inputs advance
+    and it is only the accumulator that is re-touched. Reporting those as re-fetched
+    would be wrong, not merely uncharged.
+    """
+    trip = max(1, int(getattr(f, "loop_trip", 1) or 1))
+    return {
+        "trip": trip,
+        "hbm_per_iter": max(0, f.hbm_bytes()) // trip,
+        "reread_bytes": int(_loop_reread_bytes([f])),
+    }
 
 
 def _price(feats, index, params) -> GroupCost | None:
@@ -221,19 +307,27 @@ def _price(feats, index, params) -> GroupCost | None:
     # the error runs both ways -- de-dup shifts weight off the shared-input readers and
     # onto the op that owns the write. Kept because a consistent split would need the
     # reader set per input, which OpFeatures does not carry; flagged in format().
-    weights = [max(0, f.hbm_bytes()) for f in feats]
-    total = sum(weights)
-    ops = [
-        OpCost(
-            name=f.name,
-            loop_group_id=getattr(f, "_loop_group_id", None),
-            hbm_bytes=w,
-            lx_bytes=max(0, f.lx_bytes()),
-            predicted_us=predicted_us
-            * (w / total if total > 0 else 1.0 / max(1, len(feats))),
-        )
-        for f, w in zip(feats, weights)
-    ]
+    # The price above is the answer; the attribution is only presentation, so a failure
+    # here costs the breakdown for this kernel and nothing else.
+    ops = []
+    try:
+        weights = [max(0, f.hbm_bytes()) for f in feats]
+        total = sum(weights)
+        for f, w in zip(feats, weights):
+            ops.append(
+                OpCost(
+                    name=f.name,
+                    loop_group_id=getattr(f, "_loop_group_id", None),
+                    hbm_bytes=w,
+                    lx_bytes=max(0, f.lx_bytes()),
+                    predicted_us=predicted_us
+                    * (w / total if total > 0 else 1.0 / max(1, len(feats))),
+                    **_per_iteration(f),
+                )
+            )
+    except Exception:  # noqa: BLE001 - keep the price, lose only the breakdown
+        logger.warning("cost model could not attribute kernel %d; price kept", index)
+        ops = []
     gids: list[tuple[int, ...]] = []
     for f in feats:
         gid = getattr(f, "_loop_group_id", None)
@@ -289,109 +383,6 @@ def build_report(operations: list, params: CostParams | None = None) -> CostRepo
     return CostReport(total_us=sum(g.predicted_us for g in groups), groups=groups)
 
 
-def _iter_ops(node):
-    """Every ``ComputedBuffer`` under a scheduler node, recursing into loop nodes.
-
-    ``FusedSchedulerNode.get_nodes()`` returns its members without recursing, and a
-    ``CountedLoopSchedulerNode`` nested inside one has ``node is None`` -- so a
-    non-recursive walk silently drops every coarse-tiled op. ``hbm_pool_planning``
-    has the same recursion for the same reason.
-    """
-    for snode in node.get_nodes() if hasattr(node, "get_nodes") else [node]:
-        op = getattr(snode, "node", None)
-        if _is_modellable(op):
-            yield op
-        elif snode is not node and hasattr(snode, "get_nodes"):
-            yield from _iter_ops(snode)
-
-
-def build_report_from_nodes(
-    nodes: list, params: CostParams | None = None
-) -> CostReport:
-    """Price already-fused scheduler nodes: one kernel per real bundle.
-
-    After ``spyre_fuse_nodes`` each node IS one SuperDSC bundle, which is exactly what
-    ``predict_ops`` is defined over. This is therefore the correct grouping, against
-    which ``build_report``'s contiguity estimate can be checked.
-    """
-    params = params or CostParams()
-    groups: list[GroupCost] = []
-    for index, node in enumerate(nodes):
-        feats = []
-        for op in _iter_ops(node):
-            try:
-                f = extract_op_features(op)
-            except Exception:  # noqa: BLE001 - skip ops the extractor cannot model
-                continue
-            f._loop_group_id = _loop_group_id(op)
-            feats.append(f)
-        if feats and (g := _price(feats, index, params)) is not None:
-            groups.append(g)
-    return CostReport(
-        total_us=sum(g.predicted_us for g in groups),
-        groups=groups,
-        from_fused_nodes=True,
-    )
-
-
-def _current_graph_id() -> int | None:
-    """id() of the graph being lowered, or None when it cannot be determined.
-
-    The post-fusion pipeline receives scheduler nodes, not the graph, so the identity
-    has to come from Inductor's ambient state.
-    """
-    try:
-        from torch._inductor.virtualized import V
-
-        return id(V.graph)
-    except Exception:  # noqa: BLE001 - no ambient graph
-        return None
-
-
-def verify_against_fused_nodes(nodes: list) -> list:
-    """Re-score post-fusion and report how far the pre-scheduling estimate was off.
-
-    Runs only in mode "2". Returns ``nodes`` untouched -- this is a node-pipeline pass
-    and must return the list it was given.
-
-    The point is honesty: ``build_report`` estimates kernel boundaries from op
-    contiguity, but the real bundles are only known here. This measures the gap rather
-    than asserting it is small.
-    """
-    if _mode() != "2":
-        return nodes
-
-    try:
-        after = build_report_from_nodes(nodes)
-        from .dump_common import banner, emit
-
-        lines = [
-            banner("Cost model: re-scored against real fusion bundles"),
-            after.format(),
-            "",
-        ]
-        # Only compare against an estimate from THIS compilation. A nested lowering
-        # overwrites LAST_REPORT, and CustomPreSchedulingPasses early-returns on a
-        # non-Spyre graph without clearing it, so an unguarded read can pair one
-        # graph's estimate with another graph's bundles.
-        before = LAST_REPORT if LAST_GRAPH_ID == _current_graph_id() else None
-        if before is not None and before.total_us > 0:
-            delta = after.total_us - before.total_us
-            lines.append(
-                f"  pre-scheduling estimate {before.total_us:10.1f} us over "
-                f"{len(before.groups)} kernel(s)\n"
-                f"  real fusion bundles     {after.total_us:10.1f} us over "
-                f"{len(after.groups)} bundle(s)\n"
-                f"  difference              {delta:+10.1f} us "
-                f"({100.0 * delta / before.total_us:+.1f} %)"
-            )
-        emit("\n".join(lines) + "\n")
-    except Exception as exc:  # noqa: BLE001 - instrumentation must not raise
-        logger.warning("post-fusion cost re-score failed: %r", exc)
-
-    return nodes
-
-
 def cost_model_pass(graph) -> CostReport | None:
     """Predict this graph's runtime; ``None`` when the model is disabled.
 
@@ -401,9 +392,9 @@ def cost_model_pass(graph) -> CostReport | None:
     Returns the report so a caller can use it -- ``CustomPreSchedulingPasses`` stores it
     as ``last_cost_report`` for exactly that reason.
     """
-    global LAST_REPORT, LAST_GRAPH_ID
-    LAST_REPORT, LAST_GRAPH_ID = None, None
-    if not _mode():
+    global LAST_REPORT
+    LAST_REPORT = None
+    if not _enabled():
         return None
 
     try:
@@ -426,5 +417,5 @@ def cost_model_pass(graph) -> CostReport | None:
     except Exception as exc:  # noqa: BLE001 - printing must not raise either
         logger.warning("cost model report could not be emitted: %r", exc)
 
-    LAST_REPORT, LAST_GRAPH_ID = report, _current_graph_id() or id(graph)
+    LAST_REPORT = report
     return report

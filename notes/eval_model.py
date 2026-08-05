@@ -286,6 +286,9 @@ _CORRUPT_FEATURE_SHAS = {"7f37527", "f321503"}
 _BUGGY_LOOP_FACTOR_LOG = "coarse_reextract_20260804_004110.log"
 
 
+_DEFAULT_BMM_LAYOUT = "0,1,2"  # the order the compiler emits (config default)
+
+
 def in_scope(rec) -> bool:
     """False for rows excluded by the standing scope decisions above."""
     try:
@@ -296,6 +299,15 @@ def in_scope(rec) -> bool:
         return False
     sha = rec.get("model_sha") or ""
     if sha in _CORRUPT_FEATURE_SHAS and rec.get("feats"):
+        return False
+    # NON-DEFAULT BMM OPERAND LAYOUT. A faster device tile order exists (both rank-3
+    # operands on [1,0,2], 2.82x at byte-identical traffic), but it is reachable only by
+    # setting `matmul_preferred_layout`, which defaults to "" -- so nothing the compiler
+    # emits uses it. The model prices only what ships, so runs that FORCED another
+    # arrangement are out of scope. The measurement itself is kept: it is the evidence in
+    # the report's §14 layout figure, which still plots all four combinations.
+    la, lb = rec.get("layout_a"), rec.get("layout_b")
+    if (la or lb) and not (la == _DEFAULT_BMM_LAYOUT and lb == _DEFAULT_BMM_LAYOUT):
         return False
     op = rec.get("op") or ""
     if op.startswith("softmax"):

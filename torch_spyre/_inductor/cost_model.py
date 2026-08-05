@@ -473,24 +473,14 @@ class CostParams:
     bmm_default_mac_peak_per_core_ns: float = 160.0
     bmm_default_min_batch: int = 4
     bmm_default_min_cores: int = 8
-    # Per-OPERAND layout rates. The two operands' penalties are ADDITIVE IN TIME TO WITHIN ~2 %
-    # (measured on 11 matched quads, all repeat-backed: (A-slow + B-slow)/(both-slow + both-fast)
-    # = 0.983, range 0.953-1.018 depending on rep aggregation). That is NOT 1.0 within noise --
-    # the run-to-run floor is ~0.2 %, 9 of 11 quads sit below 1, and the residual tracks output
-    # width N -- so there is a real ~1.7 % SUPER-additivity this form deliberately does not carry.
-    # Additivity is still the right family: multiplicative is off by 26-57 %, imposing additivity
-    # costs <=0.9 % vs four free per-combo rates, and it generalises slightly BETTER
-    # leave-one-shape-out (4.52 vs 4.57 %). Three constants then give all four combos: both-fast
-    # ~650, A-default-only ~236, B-default-only ~287, both-default 161.5 MAC/ns/core.
-    # SCOPE: every bmm the compiler emits TODAY is both-default, so in production this reduces to
-    # that sum (161.5, vs the 160 the single constant used) -- the mixed/fast rates exist to price
-    # a layout CHANGE, not to score today's kernels. Constants are therefore fit in relative-TIME
-    # space with the both-default combo weighted, so the production corner does not drift.
-    # Joint least-squares over 47 reps=7 records, cores=32, B>=4. CAVEAT: calibrated at ONE
-    # split (4x8) and cores=32 only, so the rate is confounded with split geometry exactly as
-    # the single default rate above already was; `1024x1024x1024` and `512x2048x512` are the
-    # residual corners, and both-fast (the weakest-fit combo, mean |e| 4.4 %) supplies a quarter
-    # of the both-default rate. `bmm_default_mac_peak_per_core_ns` is retained for back-compat.
+    # LAYOUT IS NOT MODELLED, deliberately. A faster device tile order exists: with both
+    # rank-3 operands on [1,0,2] (batch outermost) a bmm runs 2.82x faster at byte-identical
+    # traffic, measured over 138 runs and 17 shapes. It is reachable only by setting
+    # `matmul_preferred_layout` ("" by default), so nothing the compiler emits today uses it.
+    # Pricing all four operand combinations cost three constants and an additive form for
+    # configurations that never ship; that was removed in favour of the single default-layout
+    # rate above. The measurement stands and is kept as evidence in the report's §14
+    # figure; the non-default runs are excluded from scoring (`eval_model.in_scope`).
     # A 3d-2d PROJECTION bmm (one rank-3 operand, one shared 2D operand) runs far faster than
     # a full both-batched bmm. Two rates, keyed on batch size.
     #
@@ -530,13 +520,6 @@ class CostParams:
     bmm_3d2d_mac_peak_lo_ns: float = 705.0  # B <= bmm_3d2d_batch_knee
     bmm_3d2d_mac_peak_hi_ns: float = 470.0  # B >  bmm_3d2d_batch_knee
     bmm_3d2d_batch_knee: int = 4
-    bmm_layout_peak_fast_ns: float = 650.0  # both operands on the fast [1,0,2] order
-    bmm_layout_peak_a_default_ns: float = (
-        368.0  # added when operand A is default [0,1,2]
-    )
-    bmm_layout_peak_b_default_ns: float = (
-        517.0  # added when operand B is default [0,1,2]
-    )
 
     # Access-pattern effective HBM BW (GB/s) for non-matmul ops whose stick layout is
     # reorganized -- these fold turnaround into the single rate (measured io/kernel on
@@ -853,14 +836,16 @@ def _matmul_mac_peak(o, params: "CostParams") -> float:
     b, a_def, b_def = _bmm_layout_pair(o)
     if b < params.bmm_default_min_batch or o.cores < params.bmm_default_min_cores:
         return params.mac_peak_per_core_ns
-    if not (a_def or b_def):  # both operands on the fast [1,0,2] order
-        return params.bmm_layout_peak_fast_ns
-    inv = 1.0 / params.bmm_layout_peak_fast_ns
-    if a_def:
-        inv += 1.0 / params.bmm_layout_peak_a_default_ns
-    if b_def:
-        inv += 1.0 / params.bmm_layout_peak_b_default_ns
-    return 1.0 / inv
+    if a_def and b_def:
+        # The ONLY batched arrangement the compiler emits: `matmul_preferred_layout` is
+        # opt-in and defaults to "" (config.py), so both rank-3 operands carry the
+        # default [0,1,2] order. One measured rate covers it.
+        return params.bmm_default_mac_peak_per_core_ns
+    # A faster order exists -- measured 2.82x over 138 runs, see the report's §14
+    # figure -- but it is reachable only by setting SPYRE_MATMUL_PREFERRED_LAYOUT, so it
+    # is deliberately NOT modelled and those runs are out of scope. Modelling it cost
+    # three constants and an additive form for a configuration nothing emits.
+    return params.mac_peak_per_core_ns
 
 
 def mm_spill_frac(tile_area: float, params: CostParams | None = None) -> float:
@@ -1207,7 +1192,8 @@ def _reduction_bw_cores_factor(cores, p):
 def _fused_elem_floor_ns(ops, p):
     """Per-core element-throughput floor (ns) for a FUSED reduction bundle (softmax).
 
-    WHY THROUGHPUT AND NOT BANDWIDTH -- three measurements pick this mechanism:
+    WHY NOT THE HBM BYTE COUNT -- three measurements rule it out (they do NOT rule out a
+    cost for LX traffic; see the caveat after them):
 
     1. The model's deficit scales as ~1/cores (4780/1873/791/418/211 us at cores 1/2/4/8/16
        on one matched shape), so it is a per-core RATE, not an additive per-kernel cost.
@@ -1220,9 +1206,15 @@ def _fused_elem_floor_ns(ops, p):
        (1,16)/(2,8)/(4,4). Cores is an independent driver at fixed working set, which rules
        out LX spill as the cause.
 
-    A per-core BANDWIDTH derate was tried first and is refuted: five fitted values, biased
-    -27 % on its own calibration cells, and 1.6x worse leave-one-shape-out than this
-    one-parameter form. The element count is the largest HBM operand (== rows*cols on 186/186
+    MECHANISM IS OPEN. The three facts above rule out HBM bandwidth and the spill term, not
+    LX bandwidth. Whole-loop LX traffic is as tile-count-invariant as the element count
+    (2.10 MB at 1/4/8 tiles on the calibration sweep) and LX is per-core, so a finite LX
+    bandwidth reproduces both signatures; since LX traffic is proportional to the element
+    count, the two stories share this functional form and the data cannot separate them. The
+    deciding experiment -- vary the fused stage count at fixed elements, fixed HBM bytes and
+    low cores -- has not been run. A per-core HBM BANDWIDTH derate was tried and is refuted:
+    five fitted values, biased -27 % on its own calibration cells, and 1.6x worse
+    leave-one-shape-out than this one-parameter form. The element count is the largest HBM operand (== rows*cols on 186/186
     measured bundles) -- the tensor every stage of the chain must touch."""
     elems = max((a.elems for o in ops for a in o.args if a.mem == "hbm"), default=0)
     cores = ops[0].cores or 1
@@ -1358,7 +1350,7 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         # a READ-AFTER-WRITE dependency ACROSS op boundaries (§3). That is a program-level /
         # coarse-tiling effect, NOT a single-op cost, so it is deliberately NOT modeled here.
         # `add_n` is not a native op; the single-op model stays pure. See notes/new_experiments_plan.md
-        # ("Next model") for the byte-keyed read-after-write term to unify with the coarse §15 spill.
+        # ("Next model") for the byte-keyed read-after-write term to unify with the coarse §18 spill.
     # `write` outer-product re-read: empirical extra HBM traffic, super-linear in the
     # output shape (both operands broadcast, no full input). Charged at bw_peak.
     mem += (
