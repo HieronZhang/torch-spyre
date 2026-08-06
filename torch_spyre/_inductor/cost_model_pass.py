@@ -152,7 +152,8 @@ class CostReport:
             width = max((len(o.name) for o in g.ops), default=0)
             # One block per loop, so an iteration count is stated once for exactly the
             # ops it governs. A fill op sits OUTSIDE the loop and runs once beside ops
-            # that run `trip` times, so there is no kernel-wide count to put in a column.
+            # that run `trip` times, so there is no kernel-wide count to put in a
+            # column.
             blocks = _by_loop(g.ops)
             show_headers = len(blocks) > 1 or any(o.trip > 1 for o in g.ops)
             for header, ops in blocks:

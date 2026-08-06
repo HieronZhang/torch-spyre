@@ -44,7 +44,11 @@ cm = em.cm
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from records import records_path  # noqa: E402
 
-RECORDS = records_path()
+
+# Resolved lazily: importing this module must not exit with setup instructions.
+def RECORDS():
+    return records_path()
+
 
 # Which ops belong to which Part. Names are the harness's; the report's prose uses plain
 # language, so the table below carries a translation column.
@@ -95,7 +99,7 @@ def _layout_name(lay):
 
 
 def collect(part):
-    with open(RECORDS, encoding="utf-8") as f:
+    with open(RECORDS(), encoding="utf-8") as f:
         recs = json.load(f)["records"]
     want = {o for o, _ in PART_OPS[part]}
     dp = cm.CostParams()

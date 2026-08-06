@@ -29,7 +29,9 @@ NOTE: this is a TIME + memory-allocation profiler -- it has NO DRAM bandwidth / 
 vs-write / bus-utilization counters, so it CANNOT explain why read+write halves
 bandwidth (that needs aiu-smi). It only gives cleaner device time.
 
-Knobs: BENCH_OP, BENCH_ROWS, BENCH_COLS, BENCH_WARMUP. BENCH_OP is any of the
+Knobs: BENCH_OP, BENCH_ROWS, BENCH_COLS, BENCH_WARMUP. BENCH_EMIT_RECORDS=1 adds the
+machine-readable IO/MODEL/FEATS block the sweep folds into the cost-model database;
+it is off by default because it restates the cost-model dump. BENCH_OP is any of the
 bench_ops/bench_bandwidth ops: neg copy gelu relu sigmoid exp | mul add | add3 add4 |
 read sumrow sumall amax mean | bcast mulbcast | write.
 
@@ -42,6 +44,7 @@ Examples:
 """
 
 import os
+import sys
 import statistics
 import time
 
@@ -74,6 +77,24 @@ BB = int(os.environ.get("BENCH_B", "8"))  # batch dim for bmm ops (a[B,M,K] @ b[
 STAGES = int(
     os.environ.get("BENCH_STAGES", "0")
 )  # extra LX-resident pointwise stages for `softmax_stages` (see that op)
+# The IO/MODEL/FEATS blocks are the machine-readable record the sweep folds into the
+# database (tools/cost_model/parse_sweep_logs.py). They restate what the cost-model dump
+# already printed, so for a human running one op they are pure noise -- emitted only when
+# the sweep asks for them.
+EMIT_RECORDS = os.environ.get("BENCH_EMIT_RECORDS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _emit(*args, **kwargs) -> None:
+    """Print a record line, but only when the sweep is collecting records."""
+    if EMIT_RECORDS:
+        print(*args, **kwargs)
+
+
 TO_MID = int(
     os.environ.get("TO_MID", "8")
 )  # transpose_outer middle (outer-swap) dim M:
@@ -879,22 +900,22 @@ def _print_io(io: dict) -> None:
     Lines are prefixed ``IO `` so the sweep (run_profile_sweep.sh) can grep them
     alongside the SUMMARY line instead of dropping the breakdown.
     """
-    print("IO -- device-layout I/O (cost model, stick-padded) --")
+    _emit("IO -- device-layout I/O (cost model, stick-padded) --")
     for o in io.get("ops", []):
         red = " [reduction]" if o.get("is_reduction") else ""
-        print(f"IO   op {o['name']}{red}")
+        _emit(f"IO   op {o['name']}{red}")
         for a in o["args"]:
             bc = " broadcast (loaded once)" if a["broadcast"] else ""
             lf = a.get("loop_factor", 1)
             xl = f" xL={lf}" if lf > 1 else ""
             log = f"torch {a['logical']} -> " if a.get("logical") else ""
-            print(
+            _emit(
                 f"IO     {a['role']:<6} {a.get('name', '?'):<22} "
                 f"{log}device {a['dims']} in {a['mem'].upper()} = "
                 f"{a['elems']} elems x 2B = {a['bytes']} B"
                 f"  (hbm counted: {a['hbm_counted']} B){xl}{bc}"
             )
-    print(
+    _emit(
         f"IO   => HBM I/O total = {io.get('hbm_bytes', 0)} B  "
         f"(lx {io.get('lx_bytes', 0)} B, ~free)"
     )
@@ -907,7 +928,7 @@ def _print_model(feats: list) -> float:
     the SUMMARY can carry it next to the measured kernel_us.
     """
     if not feats:
-        print("MODEL (no features extracted)")
+        _emit("MODEL (no features extracted)")
         return 0.0
     p = cost_model.CostParams()
     r, w = cost_model._fused_hbm_bytes(
@@ -948,37 +969,37 @@ def _print_model(feats: list) -> float:
         parts = f"[{parts}] / eff_underfill"
     if mm_us > 0:
         parts = f"compute + {parts}"
-    print(f"MODEL -- estimate (turnaround): T = {parts} --")
-    print(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
+    _emit(f"MODEL -- estimate (turnaround): T = {parts} --")
+    _emit(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
     for ln in mm_lines:
-        print(ln)
+        _emit(ln)
     blab = (
         f"R/{p.mm_bw_read_gbps:.0f}+W/{p.mm_bw_write_gbps:.0f}"
         if is_mm
         else f"(R+W)/{p.bw_peak_gbps:.0f}"
     )
-    print(f"MODEL   base = {blab} = {base / 1000:.2f} us")
-    print(
+    _emit(f"MODEL   base = {blab} = {base / 1000:.2f} us")
+    _emit(
         f"MODEL   turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(r, w)} "
         f"= {turn / 1000:.2f} us"
     )
     if eff < 1.0:
-        print(
+        _emit(
             f"MODEL   eff_underfill = min({p.coarse_underfill_cap},"
             f"({eff_rows:.1f}/{p.coarse_underfill_rfull:.0f})"
             f"**{p.coarse_underfill_exp}) = {eff:.3f} "
             f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
         )
-    print(f"MODEL   => T_model = {t / 1000:.2f} us")
+    _emit(f"MODEL   => T_model = {t / 1000:.2f} us")
     # Machine-readable feature vector (the model's INPUT) so a NEW model version can be
     # scored OFFLINE against the stored measured time -- no hardware re-run. Prefixed
     # `MODEL ` so the sweeps' `^MODEL ` grep already captures it; parse_sweep_logs.py
     # pulls it into the record's `feats`. See tools/cost_model/eval_model.py. Best-effort: a
     # serialization hiccup must NEVER fail the run (the kernel_us is what matters).
     try:
-        print(f"MODEL FEATS {cost_model.ops_to_json(feats)}")
+        _emit(f"MODEL FEATS {cost_model.ops_to_json(feats)}")
     except Exception as exc:  # noqa: BLE001 - diagnostic only
-        print(f"MODEL FEATS_SKIPPED {type(exc).__name__}: {str(exc)[:120]}")
+        _emit(f"MODEL FEATS_SKIPPED {type(exc).__name__}: {str(exc)[:120]}")
     return t / 1000
 
 
@@ -1068,6 +1089,19 @@ def _run():
         other = statistics.median(others)
     else:
         k_med = k_min = k_mean = k_std = k_cv = memset = other = 0.0
+    # A profiler that produced no Spyre events yields 0.0 here, which reads as a
+    # valid degenerate measurement rather than a failure. Say so loudly: the usual
+    # cause is a kineto build that does not match this PyTorch version, and a
+    # silent kernel_us=0 would be folded into the database as real data.
+    if not kernels or k_med <= 0.0:
+        print(
+            "WARNING: the profiler reported no Spyre device time. "
+            "Check that the kineto-spyre build matches this PyTorch version "
+            "(docs/source/user_guide/profiling/pytorch_profiler.md). "
+            "The measurement below is NOT usable.",
+            file=sys.stderr,
+        )
+
     kernel = k_med  # SUMMARY kernel_us = median (back-compat)
     # Effective BW from the GOLDEN kernel time and the model's device-layout I/O.
     bw = io_hbm_bytes / (kernel * 1000) if kernel > 0 else 0.0

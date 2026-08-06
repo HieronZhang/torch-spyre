@@ -230,10 +230,6 @@ class CustomPostPasses(_SpyreGraphPassPipeline):
     post-grad FX graph late in the sequence defined in `post_grad.post_grad_passes`.
     """
 
-    """
-    The list of custom passes to run
-    """
-
     def __init__(self):
         super().__init__(
             [

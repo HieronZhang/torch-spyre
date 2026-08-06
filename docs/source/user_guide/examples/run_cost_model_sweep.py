@@ -50,7 +50,6 @@ _TOOLS = os.path.join(_ROOT, "tools", "cost_model")
 sys.path.insert(0, _TOOLS)
 from records import records_path  # noqa: E402
 
-_RECORDS = records_path()
 _HARNESS = os.path.join(_HERE, "profile_ops.py")
 
 # Needs an opt-in layout preference that is not part of this feature -- those rows are
@@ -111,7 +110,10 @@ def main():
     ap.add_argument("--out", default="", help="log file (default: timestamped)")
     args = ap.parse_args()
 
-    with open(_RECORDS, encoding="utf-8") as fh:
+    # Resolved here, not at import: it can exit with setup instructions, and
+    # importing this module (for --help, or from a test) must not do that.
+    records = records_path()
+    with open(records, encoding="utf-8") as fh:
         records = json.load(fh)["records"]
     cfgs = _configs(records, args.op or None)
     if args.limit:
@@ -135,7 +137,14 @@ def main():
             print(f"[{i}/{len(cfgs)}] {tag}", flush=True)
             fh.write(f"\n=== {tag} ===\n")
             fh.flush()
-            run_env = dict(os.environ, BENCH_REPS=args.reps, SPYRE_DUMP_COST="1", **env)
+            run_env = dict(
+                os.environ,
+                BENCH_REPS=args.reps,
+                SPYRE_DUMP_COST="1",
+                # the IO/MODEL/FEATS record lines parse_sweep_logs.py consumes
+                BENCH_EMIT_RECORDS="1",
+                **env,
+            )
             p = subprocess.run(
                 [sys.executable, _HARNESS],
                 env=run_env,

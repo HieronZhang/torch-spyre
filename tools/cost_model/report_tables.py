@@ -51,7 +51,11 @@ cm = em.cm
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from records import records_path  # noqa: E402
 
-RECORDS = records_path()
+
+# Resolved lazily: importing this module must not exit with setup instructions.
+def RECORDS():
+    return records_path()
+
 
 # section key -> (title, ops). Ops are the harness op names, so the population is
 # explicit and auditable rather than implied by a category mapping.
@@ -71,7 +75,7 @@ SECTIONS: dict[str, tuple[str, list[str]]] = {
 
 
 def load():
-    with open(RECORDS, encoding="utf-8") as f:
+    with open(RECORDS(), encoding="utf-8") as f:
         recs = json.load(f)["records"]
     return [
         r for r in recs if not r.get("failed") and r.get("kernel_us") and em.in_scope(r)

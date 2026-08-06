@@ -38,7 +38,10 @@ _FIGDIR = os.path.join(_ROOT, "docs/source/compiler/cost_model_figures")
 sys.path.insert(0, _HERE)
 from records import records_path  # noqa: E402
 
-_RECORDS = records_path()
+
+# Resolved lazily: importing this module must not exit with setup instructions.
+def _RECORDS():
+    return records_path()
 
 
 def _mm_balanced_points(K_set=(2048, 4096), M=2048, N=2048):
@@ -56,7 +59,8 @@ def _mm_balanced_points(K_set=(2048, 4096), M=2048, N=2048):
 
 
 def _load(current_only=True):
-    recs = json.load(open(_RECORDS, encoding="utf-8"))["records"]
+    with open(_RECORDS(), encoding="utf-8") as fh:
+        recs = json.load(fh)["records"]
     recs = [r for r in recs if not r.get("failed") and r.get("kernel_us")]
     if current_only:
         recs = [r for r in recs if r.get("is_current")]
@@ -239,14 +243,14 @@ def _pw_ratio_write_points():
 
     import regex as re
 
-    logs = sorted(
-        glob.glob(os.path.join(_HERE, "..", "haoyang_logs", "pw_ratio_*.log"))
-    )
+    logs = sorted(glob.glob(os.path.join(_HERE, "..", "sweep_logs", "pw_ratio_*.log")))
     if not logs:
         return []
     R = W = None
     pts = []
-    for ln in open(logs[-1], encoding="utf-8"):
+    with open(logs[-1], encoding="utf-8") as _fh:
+        _log_lines = _fh.readlines()
+    for ln in _log_lines:
         m = re.search(r"^MODEL\s+R=(\d+) B .*?W=(\d+) B", ln)
         if m:
             R, W = int(m[1]), int(m[2])
@@ -581,13 +585,13 @@ def _broadcast_log_rows():
 
     import regex as re
 
-    logs = sorted(
-        glob.glob(os.path.join(_HERE, "..", "haoyang_logs", "broadcast_*.log"))
-    )
+    logs = sorted(glob.glob(os.path.join(_HERE, "..", "sweep_logs", "broadcast_*.log")))
     if not logs:
         return []
     rows = []
-    for ln in open(logs[-1], encoding="utf-8"):
+    with open(logs[-1], encoding="utf-8") as _fh:
+        _log_lines = _fh.readlines()
+    for ln in _log_lines:
         s = re.search(
             r"SUMMARY op=(\w+) rows=(\d+) cols=(\d+).*io_hbm_bytes=(\d+) kernel_us=([0-9.]+)",
             ln,

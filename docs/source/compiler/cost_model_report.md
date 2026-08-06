@@ -16,8 +16,13 @@ route: what was observed, what it raised, and what settled it.
 ### The data every number here is scored against
 
 **2828 measurements recorded, 2023 in scope, 1563 scoreable.** Every accuracy figure in this report
-is recomputed from the live model against the measurement database — which is fetched rather than
-committed, see `tools/cost_model/records.py` — so nothing here is hand-typed.
+is recomputed from the live model against the measurement database, so nothing here is
+hand-typed. That database is **not committed**: it is measured device time and belongs to the
+build that produced it (`tools/cost_model/records.py` explains how to generate one). These
+figures were computed on a PyTorch 2.11 build, and kernel performance moves as the compiler
+develops — a later spot-check measured 261 µs where this database has 390 µs for the same
+softmax configuration, after an upstream change began pinning a shared graph input into LX.
+Re-run the sweep and re-score to get numbers for your build.
 Regenerate the per-section accuracy lines and tables with `python3 tools/cost_model/report_tables.py`, and the
 figures with `python3 tools/cost_model/plot_report.py`.
 
@@ -203,7 +208,7 @@ are balanced.
 between reading and writing. The penalty falls on the overlap `min(R,W)`, which is 0 for
 pure read or pure write and maximal at a balanced 1:1:
 
-```
+```text
 T = (R+W)/BW_peak + α·min(R,W)      ⇒   effBW = 1 / (1/BW_peak + α·f),  f = min(R,W)/(R+W)
 ```
 
@@ -609,7 +614,7 @@ output → **read-heavy**).
 150 GB/s, and the read and write corners do not separate into distinct rates. So the memory term
 is the §2 form with a single rate:
 
-```
+```text
 memory = (R + W) / 150 + α·min(R,W)    (α = 0.00574 ns/B)
 ```
 
@@ -1068,7 +1073,7 @@ runs whose working set fits in LX — the effective bandwidth climbs from ~48 GB
 **Model (calibrated).** A pipeline-fill efficiency `eff ≤ 1` multiplies the memory term, keyed on
 the per-core tile height `h = ROWS / (cores · tiles)`:
 
-```
+```text
 eff = min(0.95,  (h / 13)^0.68)          memory term = (R + W) / BW_eff / eff
 ```
 

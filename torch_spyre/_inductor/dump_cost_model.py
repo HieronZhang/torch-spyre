@@ -248,14 +248,13 @@ def _loop_factor_for_index(index, levels) -> int:
     for trip, syms, _declared in levels:
         # An arg REPEATS at a level whenever that level's tiled symbols are absent from
         # its index -- for EITHER reason:
-        #   * the level tiles nothing this op has (`coarse_tile_fill` / `_combine`, whose
-        #     loop_info names a dim they do not iterate), or
-        #   * the level tiles a dim this arg's address does not depend on (matmul B under
-        #     M-tiling).
-        # Both mean the same physical thing: the op re-enters the same address each
-        # iteration of that level. An earlier version guarded this with `if syms`, which
-        # silently dropped the first case and under-counted one K-tiled bundle
-        # 552 MB -> 216 MB, moving the control op from -6.3 % to -64.2 %.
+        # * the level tiles nothing this op has (`coarse_tile_fill` / `_combine`, whose
+        # loop_info names a dim they do not iterate), or * the level tiles a dim this
+        # arg's address does not depend on (matmul B under M-tiling). Both mean the same
+        # physical thing: the op re-enters the same address each iteration of that
+        # level. An earlier version guarded this with `if syms`, which silently dropped
+        # the first case and under-counted one K-tiled bundle 552 MB -> 216 MB, moving
+        # the control op from -6.3 % to -64.2 %.
         if not (syms & free):
             factor *= trip
     return factor
@@ -347,9 +346,10 @@ def _matmul_features(
                 else:  # reduction (K) dim -> contributes to the K-split
                     k_split *= max(1, int(readable.get(s, 1)))
             if out_vars:
-                # Identify M (row/outer) and N (stick/inner), EXCLUDING batch. Prefer the
-                # exact named-dim map (present on work_div-hinted runs); else drop the
-                # largest-coeff var(s) as batch and take M/N from the two smallest coeffs.
+                # Identify M (row/outer) and N (stick/inner), EXCLUDING batch. Prefer
+                # the exact named-dim map (present on work_div-hinted runs); else drop
+                # the largest-coeff var(s) as batch and take M/N from the two smallest
+                # coeffs.
                 m_sym = n_sym = None
                 wdli = getattr(op, "work_div_loop_info", None)
                 if wdli:
@@ -427,10 +427,11 @@ def _hbm_pattern(op, is_reduction: bool, out_dims) -> str:
         stick = [s for s in it_space if _c(write_index, s) == 1]  # kept inner/stick var
         reduced = [s for s in it_space if _c(write_index, s) == 0]  # reduced-away vars
         # A CONCAT copies its input into an output dim absent from the read index (the
-        # concat "which-copy" var, read-coeff 0). cat0 (concat on a PARTITION dim) wedges
-        # a small (<64) device dim just inside the 64-stick -> fine sub-stick interleave.
-        # (Gated on the concat dim so a mere permutation like transpose_outer -- whose
-        # small outer dim also lands at [-2] -- is NOT mistaken for it.)
+        # concat "which-copy" var, read-coeff 0). cat0 (concat on a PARTITION dim)
+        # wedges a small (<64) device dim just inside the 64-stick -> fine sub-stick
+        # interleave. (Gated on the concat dim so a mere permutation like
+        # transpose_outer -- whose small outer dim also lands at [-2] -- is NOT mistaken
+        # for it.)
         concat = any(s not in read_syms for s in out_vars)
         if (
             concat
@@ -444,8 +445,8 @@ def _hbm_pattern(op, is_reduction: bool, out_dims) -> str:
             syms = getattr(ri, "free_symbols", None) or set()
             if ri is None:
                 continue
-            # reduce_outer: a REDUCED var read with coeff != 1 (across rows/outer) WHILE a
-            # stick dim is kept in the output (sumcol). A full reduction to a scalar
+            # reduce_outer: a REDUCED var read with coeff != 1 (across rows/outer) WHILE
+            # a stick dim is kept in the output (sumcol). A full reduction to a scalar
             # (sumall) keeps no stick -> stays default (it is fast, not cross-row).
             if is_reduction:
                 if stick and any(s in syms and abs(_c(ri, s)) > 1 for s in reduced):
@@ -535,7 +536,12 @@ def extract_op_features(op) -> OpFeatures:
         rows = (out_size[-2] if len(out_size) >= 2 else 0) or out_dims[-2]
         if out_mem != "lx":  # full-buffer alloc: per-tile slice is rows / loop_trip
             rows = rows / loop_trip
-        tile_rows_per_core = rows / _row_split(op, cores)
+        # `loop_trip > 1` is guaranteed by the branch condition; `_row_split` can in
+        # principle return 0 if a split map ever records one, and this term is a
+        # diagnostic -- a ZeroDivisionError here would take down a compile for a number
+        # nothing depends on. Guard locally rather than rely on the caller's condition.
+        split = _row_split(op, cores) or 1
+        tile_rows_per_core = rows / split
 
     # PER-ARG, PER-LEVEL loop factors. An operand is re-transferred at a nesting level
     # whose tiled symbol its index does NOT contain, and walked (transferred once) at a

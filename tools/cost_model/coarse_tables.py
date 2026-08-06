@@ -45,7 +45,11 @@ cm = em.cm
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from records import records_path  # noqa: E402
 
-RECORDS = records_path()
+
+# Resolved lazily: importing this module must not exit with setup instructions.
+def RECORDS():
+    return records_path()
+
 
 COARSE_OPS = [
     "matmul_row_tiling",
@@ -76,7 +80,7 @@ def shape_of(r):
 
 
 def collect(target_only=True):
-    with open(RECORDS, encoding="utf-8") as f:
+    with open(RECORDS(), encoding="utf-8") as f:
         recs = json.load(f)["records"]
     dp = cm.CostParams()
     out = []
@@ -194,26 +198,26 @@ def emit_summary(rows):
     by = collections.defaultdict(list)
     for d in rows:
         by[d["op"]].append(d["err"])
-    allе = []
+    alle = []
     for op in sorted(by, key=lambda o: -len(by[o])):
         e = by[op]
-        allе += e
+        alle += e
         rms = (sum(v * v for v in e) / len(e)) ** 0.5
         print(
             f"| `{op}` | {len(e)} | {rms:.1f} | {st.mean(e):+.1f} | "
             f"{max(e, key=abs):+.1f} | {sum(1 for v in e if abs(v) > 20)} |"
         )
-    rms = (sum(v * v for v in allе) / len(allе)) ** 0.5
+    rms = (sum(v * v for v in alle) / len(alle)) ** 0.5
     print(
-        f"| **all** | **{len(allе)}** | **{rms:.1f}** | **{st.mean(allе):+.1f}** | "
-        f"**{max(allе, key=abs):+.1f}** | **{sum(1 for v in allе if abs(v) > 20)}** |"
+        f"| **all** | **{len(alle)}** | **{rms:.1f}** | **{st.mean(alle):+.1f}** | "
+        f"**{max(alle, key=abs):+.1f}** | **{sum(1 for v in alle if abs(v) > 20)}** |"
     )
     print("\n| \\|err\\| band | count |")
     print("|---|---:|")
     for lo, hi in ((0, 5), (5, 10), (10, 15), (15, 20), (20, 1000)):
         print(
             f"| {lo}-{hi if hi < 1000 else '&infin;'} % | "
-            f"{sum(1 for v in allе if lo <= abs(v) < hi)} |"
+            f"{sum(1 for v in alle if lo <= abs(v) < hi)} |"
         )
 
 
