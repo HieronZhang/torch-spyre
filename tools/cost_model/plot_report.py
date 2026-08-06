@@ -1105,125 +1105,71 @@ def fig_matmul_split(_recs):
     _save(fig, "s13_split_shape")
 
 
-def fig_matmul_bmm_layout(_recs):
-    """§13: the batched-matmul penalty is set by how each operand is laid out in memory.
+def fig_matmul_layout_cube(_recs):
+    # §13: A x B x C. The earlier four-way sweep held the OUTPUT at the compiler
+    # default, so it never reached the fastest cell. With all three operands free the
+    # spread is far wider, and C turns out to be conditional: it pays only once BOTH
+    # inputs are already batch-outer. Data is the one-session cube (layout_cube.json),
+    # deliberately NOT sweep_records.json -- that database predates this toolchain.
+    import json
 
-    Every point is a batched matmul run at 32 cores. The four groups are the four
-    combinations of the two operands' memory layouts. "Batch-outer" means the batch index
-    is the slowest-varying dimension in memory; "row-outer" means the row index is. The
-    byte counts are IDENTICAL across the four -- only the traversal order differs -- so
-    any spread is dataflow, not traffic.
-    """
-    import regex as re
-
-    # Verified against the recorded device dims for logical [B,M,K]=[4,1024,2048]:
-    #   [0,1,2] -> [1024,32,4,64]  M outermost  = row-outer   (compiler default)
-    #   [1,0,2] -> [4,32,1024,64]  B outermost  = batch-outer (the fast order)
-    LBL = {"0,1,2": "row-outer", "1,0,2": "batch-outer"}
-    rows = [
-        r
-        for r in _load(current_only=False)
-        if r.get("op") == "bmm_layout"
-        and r.get("kernel_us")
-        and not r.get("failed")
-        and r.get("layout_a") in LBL
-        and r.get("layout_b") in LBL
-    ]
+    with open(os.path.join(_HERE, "layout_cube.json"), encoding="utf-8") as fh:
+        cube = json.load(fh)["records"]
+    L = {"0,1,2": "row", "1,0,2": "batch"}
     combos = [
-        ("0,1,2", "0,1,2"),
-        ("0,1,2", "1,0,2"),
-        ("1,0,2", "0,1,2"),
-        ("1,0,2", "1,0,2"),
+        (a, b, c)
+        for a in ("0,1,2", "1,0,2")
+        for b in ("0,1,2", "1,0,2")
+        for c in ("row-outer", "batch-outer")
     ]
+    shapes = sorted({r["B"] for r in cube})
+    col = {2: "#1f77b4", 4: "#d62728", 8: "#2ca02c"}
+    # State the actual dim sizes on the figure: "B = 4" alone does not say what was run,
+    # and the layout penalty depends on the shape.
+    one = cube[0]
+    dims = f"M={one['M']}  K={one['K']}  N={one['N']}"
 
-    # normalise each run against the FASTEST layout of its own shape, so shapes of very
-    # different absolute cost can be compared on one axis.
-    def shape_of(r):
-        """(batch, M, K, N). Labels appear in TWO formats in the record set --
-        `B=2 M=1024 K=2048 N=1024` and `B=4 1024x2048x1024` -- so both are parsed.
-        Batch is part of the key because a batched matmul's cost scales with it, so
-        runs may only be normalised against the same batch."""
-        lab = str(r.get("label") or "")
-        b = re.search(r"\bB=(\d+)", lab)
-        m = re.search(r"M=(\d+)\s+K=(\d+)\s+N=(\d+)", lab) or re.search(
-            r"(\d+)x(\d+)x(\d+)", lab
-        )
-        if not (b and m):
-            return None
-        return (int(b[1]), int(m[1]), int(m[2]), int(m[3]))
-
-    best = {}
-    for r in rows:
-        sh = shape_of(r)
-        if sh is None:
-            continue
-        k = (sh, r.get("cores"))
-        if r["layout_a"] == "1,0,2" and r["layout_b"] == "1,0,2":
-            best[k] = min(best.get(k, 1e18), r["kernel_us"])
-
-    # Collect EVERY group first, so the axis limits can leave room for the group-mean
-    # labels. Placing a label above a limit computed from one group clipped the lead
-    # group's mean off the canvas -- the figure then showed 3 of 4 labels, and the
-    # missing one carried the headline number.
-    shapes_seen = set()
-    series, drawn = [], 0
-    for la, lb in combos:
-        ys = []
-        for r in rows:
-            if r.get("layout_a") != la or r.get("layout_b") != lb:
-                continue
-            sh = shape_of(r)
-            b = best.get((sh, r.get("cores")))
-            if not sh or not b:
-                continue
-            ys.append(r["kernel_us"] / b)
-            shapes_seen.add(sh)
-        series.append(ys)
-        drawn += len(ys)
-
-    fig, ax = plt.subplots(figsize=(7.4, 4.8))
-    colors = ["#d62728", "#ff7f0e", "#9467bd", "#2ca02c"]
-    top = max(max(ys) for ys in series if ys)
-    for xi, ys in enumerate(series):
-        if not ys:
-            continue
-        ax.scatter(
-            [xi + 0.06 * (k % 5 - 2) for k in range(len(ys))],
+    fig, ax = plt.subplots(figsize=(9.2, 5.0))
+    for B in shapes:
+        cell = {(r["a"], r["b"], r["c"]): r["kernel_us"] for r in cube if r["B"] == B}
+        best = min(cell.values())
+        ys = [cell[k] / best for k in combos]
+        ax.plot(
+            range(len(combos)),
             ys,
-            s=58,
-            c=colors[xi],
+            "-o",
+            color=col.get(B, "0.4"),
+            ms=7,
+            lw=1.4,
+            label=f"B={B}:  [{B},{one['M']},{one['K']}] @ [{B},{one['K']},{one['N']}]",
             zorder=3,
-            edgecolors="white",
-            linewidths=0.6,
         )
-        ax.annotate(
-            f"{np.mean(ys):.2f}×",
-            xy=(xi, max(ys) + 0.06 * top),
-            ha="center",
-            fontsize=FS_ANNOT + 1,
-            fontweight="bold",
-            color=colors[xi],
-        )
-    ax.axhline(1.0, color="0.5", ls="--", lw=1.2, zorder=1)
-    ax.set_xticks(range(4))
-    ax.set_xticklabels([f"A {LBL[a]}\nB {LBL[b]}" for a, b in combos], fontsize=FS_TICK)
-    _style(
-        ax,
-        "§13  Batched multiply: the operands' memory layout sets the cost  (32 cores)",
-        "memory layout of the two operands",
-        "time ÷ time of the fastest layout\n(same shape, same bytes)",
+    ax.axhline(1.0, color="0.5", ls="--", lw=1.0, zorder=1)
+    ax.set_xticks(range(len(combos)))
+    ax.set_xticklabels(
+        [f"A {L[a]}\nB {L[b]}\nC {c.replace('-outer', '')}" for a, b, c in combos],
+        fontsize=FS_TICK - 1,
     )
-    bs = sorted({t[0] for t in shapes_seen})
-    dims = sorted({d for t in shapes_seen for d in t[1:]})
-    _coverage(
-        ax,
-        f"{drawn} runs · {len(shapes_seen)} shapes\n"
-        f"batch {bs[0]}–{bs[-1]} · M,K,N {dims[0]}–{dims[-1]}\n"
-        f"identical bytes in all four groups",
-        loc="upper right",
+    ax.set_ylabel("time / the fastest cell of the same shape", fontsize=FS_LABEL)
+    ax.set_xlabel("memory layout of the two inputs and the output", fontsize=FS_LABEL)
+    ax.set_title(
+        "§13  All three operands matter, and the output only once both inputs are"
+        f" batch-outer\n{dims},  32 cores,  fp16,  median of 7 repeats",
+        fontsize=FS_TITLE - 1,
     )
-    ax.set_ylim(bottom=0.9, top=top * 1.22)
-    _save(fig, "s13_bmm_operand_layout")
+    # Mark the one place the output earns anything.
+    ax.annotate(
+        "output pays\nonly here",
+        xy=(6.5, 1.6),
+        xytext=(4.6, 4.2),
+        fontsize=FS_TICK,
+        arrowprops=dict(arrowstyle="->", color="0.35", lw=1.2),
+        color="0.25",
+    )
+    ax.legend(loc="upper right", fontsize=FS_TICK)
+    ax.grid(axis="y", alpha=0.3)
+    fig.subplots_adjust(bottom=0.22)
+    _save(fig, "s13b_layout_cube")
 
 
 def fig_matmul_peak(_recs):
@@ -1581,7 +1527,7 @@ _FIGS = {
     "matmul_hbm": fig_matmul_hbm,
     "matmul_spill": fig_matmul_spill,
     "matmul_split": fig_matmul_split,
-    "matmul_bmm_layout": fig_matmul_bmm_layout,
+    "matmul_layout_cube": fig_matmul_layout_cube,
     "coarse_spill": fig_coarse_spill,
     "coarse_eff": fig_coarse_eff,
     "matmul_peak": fig_matmul_peak,

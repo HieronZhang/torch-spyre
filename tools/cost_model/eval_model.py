@@ -42,6 +42,7 @@ Feature source per record (in priority order):
 """
 
 import argparse
+import collections
 import importlib.util
 import json
 import math
@@ -305,7 +306,7 @@ def in_scope(rec) -> bool:
     if sha in _CORRUPT_FEATURE_SHAS and rec.get("feats"):
         return False
     # NON-DEFAULT BMM OPERAND LAYOUT. A faster device tile order exists (both rank-3
-    # operands on [1,0,2], 2.82x at byte-identical traffic), but it is reachable only by
+    # operands on [1,0,2], up to 8.3x at byte-identical traffic), but it is reachable only by
     # opting into the alternative operand layout, which is not the default -- so nothing the compiler
     # emits uses it. The model prices only what ships, so runs that FORCED another
     # arrangement are out of scope. The measurement itself is kept: it is the evidence in
@@ -375,6 +376,55 @@ def in_scope(rec) -> bool:
     return True
 
 
+def _select_build(rows, spec):
+    """Restrict `rows` to one measurement build, and say which builds are present.
+
+    A build here is the ``model_sha`` stamped on a sweep log, which is the git sha of the
+    tree that ran it. Measured ``kernel_us`` belongs to that build and to no other:
+    kernel performance moves as the compiler develops, and pooling builds turns a
+    compiler change into an apparent model error. The database has always spanned many
+    builds, so ``all`` stays the default rather than silently redefining every published
+    accuracy figure -- but it prints the census, so the pooling is never invisible.
+
+    ``latest`` picks the newest build by log date, which is what a fresh sweep produces.
+    """
+    census = collections.Counter(r.get("model_sha") or "(no sha)" for r in rows)
+    if spec == "all":
+        if len(census) > 1:
+            newest = max(
+                (r.get("log_date") or "", r.get("model_sha") or "")
+                for r in rows
+                if r.get("model_sha")
+            )
+            print(
+                f"NOTE: pooling {len(rows)} rows from {len(census)} measurement builds "
+                f"(newest {newest[1]}, {census[newest[1]]} rows). "
+                "Use --build latest to score one."
+            )
+        return rows
+
+    if spec == "latest":
+        dated = [r for r in rows if r.get("model_sha") and r.get("log_date")]
+        if not dated:
+            sys.exit(
+                "no row carries both a model_sha and a log_date; --build latest "
+                "needs a sweep log with a `git:` header"
+            )
+        sha = max(dated, key=lambda r: r["log_date"])["model_sha"]
+    else:
+        matches = {s for s in census if s.startswith(spec)}
+        if len(matches) != 1:
+            sys.exit(
+                f"--build {spec!r} matches {len(matches)} builds. Present: "
+                + ", ".join(f"{s}({n})" for s, n in census.most_common())
+            )
+        sha = matches.pop()
+
+    kept = [r for r in rows if r.get("model_sha") == sha]
+    print(f"build {sha}: {len(kept)} of {len(rows)} rows")
+    return kept
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--records", default="")
@@ -397,6 +447,12 @@ def main():
     ap.add_argument(
         "--list-worst", type=int, default=0, help="print the N worst |err| rows"
     )
+    ap.add_argument(
+        "--build",
+        default="all",
+        help="score one measurement build: a git sha prefix, `latest` (the newest "
+        "sweep in the database), or `all` (default -- every build pooled)",
+    )
     args = ap.parse_args()
 
     args.records = records_path(args.records or None)
@@ -408,6 +464,7 @@ def main():
 
     rows = [r for r in records if not r.get("failed") and r.get("kernel_us")]
     rows = [r for r in rows if in_scope(r)]
+    rows = _select_build(rows, args.build)
     if not args.all:
         # Score every row that CAN be scored against the current model: any row carrying
         # `feats` (its exact input, recomputed with the current model regardless of which

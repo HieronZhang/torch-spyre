@@ -452,8 +452,8 @@ class CostParams:
     bmm_default_min_batch: int = 4
     bmm_default_min_cores: int = 8
     # LAYOUT IS NOT MODELLED, deliberately. A faster device tile order exists: with both
-    # rank-3 operands on [1,0,2] (batch outermost) a bmm runs 2.82x faster at
-    # byte-identical traffic, measured over 138 runs and 17 shapes. It is reachable only
+    # all three operands on [1,0,2] (batch outermost) a bmm runs up to 8.3x faster at
+    # byte-identical traffic; the output only pays once BOTH inputs are already batch-outer. It is reachable only
     # by setting an opt-in layout preference the compiler does not enable by default, so
     # nothing the compiler emits today uses it. Pricing all four operand combinations
     # cost three constants and an additive form for configurations that never ship; that
@@ -802,7 +802,7 @@ def _matmul_mac_peak(o, params: "CostParams") -> float:
         # opt-in and defaults to "" (config.py), so both rank-3 operands carry the
         # default [0,1,2] order. One measured rate covers it.
         return params.bmm_default_mac_peak_per_core_ns
-    # A faster order exists -- measured 2.82x over 138 runs, see the report's §13
+    # A faster order exists -- up to 8.3x, see the report's §13
     # figure -- but it is reachable only by setting SPYRE_MATMUL_PREFERRED_LAYOUT, so it
     # is deliberately NOT modelled and those runs are out of scope. Modelling it cost
     # three constants and an additive form for a configuration nothing emits.
