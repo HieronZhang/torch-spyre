@@ -1116,7 +1116,10 @@ def fig_matmul_bmm_layout(_recs):
     """
     import regex as re
 
-    LBL = {"0,1,2": "batch-outer", "1,0,2": "row-outer"}
+    # Verified against the recorded device dims for logical [B,M,K]=[4,1024,2048]:
+    #   [0,1,2] -> [1024,32,4,64]  M outermost  = row-outer   (compiler default)
+    #   [1,0,2] -> [4,32,1024,64]  B outermost  = batch-outer (the fast order)
+    LBL = {"0,1,2": "row-outer", "1,0,2": "batch-outer"}
     rows = [
         r
         for r in _load(current_only=False)
@@ -1206,7 +1209,7 @@ def fig_matmul_bmm_layout(_recs):
     ax.set_xticklabels([f"A {LBL[a]}\nB {LBL[b]}" for a, b in combos], fontsize=FS_TICK)
     _style(
         ax,
-        "§14  Batched multiply: the operands' memory layout sets the cost  (32 cores)",
+        "§13  Batched multiply: the operands' memory layout sets the cost  (32 cores)",
         "memory layout of the two operands",
         "time ÷ time of the fastest layout\n(same shape, same bytes)",
     )
@@ -1220,7 +1223,7 @@ def fig_matmul_bmm_layout(_recs):
         loc="upper right",
     )
     ax.set_ylim(bottom=0.9, top=top * 1.22)
-    _save(fig, "s14_bmm_operand_layout")
+    _save(fig, "s13_bmm_operand_layout")
 
 
 def fig_matmul_peak(_recs):

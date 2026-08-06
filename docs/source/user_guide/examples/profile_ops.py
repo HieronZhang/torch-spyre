@@ -894,6 +894,29 @@ def make_workload():
     raise SystemExit(f"unknown BENCH_OP={OP!r} (use {known})")
 
 
+def _observed_layout(logical, dims):
+    """Classify a recorded device layout as batch-outer or row-outer.
+
+    The output tensor's layout is chosen by the compiler, not by the harness -- `_to_dev`
+    can only place INPUTS. So the only way to know what C got is to read it back off the
+    extracted features: for a rank-3 logical [B, M, N] the device shape is a permutation of
+    [batch, row, stick-outer] plus the 64-wide stick, and whichever of B / M sits at a lower
+    index is the slower-varying axis.
+
+    Returns "batch-outer", "row-outer", or "?" when the sizes are ambiguous (e.g. B == M),
+    because a wrong label is worse than an honest unknown.
+    """
+    if not logical or not dims or len(logical) != 3:
+        return "?"
+    b, m = logical[0], logical[1]
+    if b == m:
+        return "?"  # cannot tell the two apart by size
+    try:
+        return "batch-outer" if dims.index(b) < dims.index(m) else "row-outer"
+    except ValueError:
+        return "?"
+
+
 def _print_io(io: dict) -> None:
     """Per-tensor device-layout I/O the COST MODEL counts: dims, residency, bytes.
 
@@ -1116,9 +1139,29 @@ def _run():
         f"TIMING op={OP} reps={len(kernels)}/{REPS} prof_wall_s={prof_wall_s:.2f} "
         f"per_rep_s={prof_wall_s / max(1, REPS):.3f}"
     )
+    # What layout did the compiler actually give the OUTPUT? The harness can force the
+    # inputs but not C, so record what we got rather than assume it stayed default.
+    layout_c = "?"
+    for _o in feats or []:
+        for _a in (
+            _o.get("args", []) if isinstance(_o, dict) else getattr(_o, "args", [])
+        ):
+            _role = _a.get("role") if isinstance(_a, dict) else getattr(_a, "role", "")
+            if _role != "output":
+                continue
+            _log = (
+                _a.get("logical")
+                if isinstance(_a, dict)
+                else getattr(_a, "logical", [])
+            )
+            _dim = _a.get("dims") if isinstance(_a, dict) else getattr(_a, "dims", [])
+            if len(_log or []) == 3:
+                layout_c = _observed_layout(list(_log), list(_dim))
+                break
     print(
         f"SUMMARY op={OP} rows={ROWS} cols={COLS} cores={cores_tag} "
-        f"tiles={TILES} stages={STAGES} lx={LX} io_hbm_bytes={io_hbm_bytes} "
+        f"tiles={TILES} stages={STAGES} lx={LX} layout_c={layout_c} "
+        f"io_hbm_bytes={io_hbm_bytes} "
         f"kernel_us={kernel:.3f} pred_us={pred_us:.3f} err_pct={err:+.1f} "
         f"bw_gbps={bw:.1f} memset_us={memset:.3f} "
         f"other_dev_us={other:.3f} total_dev_us={kernel + memset + other:.3f} "

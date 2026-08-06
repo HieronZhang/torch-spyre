@@ -792,23 +792,63 @@ not. Past four batches the measured time settles at a shape-dependent **2.1–4.
 prediction and stays there as the batch grows, while a plain unbatched multiply of the same
 per-batch shape is predicted correctly.
 
-The byte count already charges for every batch, and so does the arithmetic count, so the gap
-is a *rate* rather than a missing quantity. It is not extra bytes either. A tensor can be
-arranged in device memory in more than one order; running one batched multiply under all four
-combinations of its two operands' orders — **the same bytes every time**, with the compiled
-program confirming no copy is inserted:
+**The two orders.** A rank-3 operand `[B, M, K]` can be laid out with either axis slowest-
+varying. For `[4, 1024, 2048]` the recorded device shapes are:
 
-| operand A | operand B | time (µs) | relative |
+| order | device shape | slowest-varying | |
+|---|---|---|---|
+| `[0,1,2]` | `[1024, 32, 4, 64]` | **row** (M) — batch sits just inside the stick | **row-outer**, what the compiler emits |
+| `[1,0,2]` | `[4, 32, 1024, 64]` | **batch** (B) | **batch-outer** |
+
+Row-outer walks the batch on the inside, so consecutive batches share no operand locality
+and the array is starved. Batch-outer keeps each batch contiguous.
+
+**Layout dominates batched-multiply performance.** The four combinations below move
+identical bytes and the compiled program inserts no copy. One shape — `B = 4`,
+`1024 × 2048 × 1024`, median of 7 repeats:
+
+| operand A | operand B | median kernel time (µs) | ÷ fastest |
 |---|---|---:|---:|
-| compiler default | compiler default | 1847 | **3.32×** |
-| compiler default | alternative | 1293 | 2.33× |
-| alternative | compiler default | 1062 | 1.91× |
-| alternative | alternative | 556 | 1.00× |
+| row-outer *(default)* | row-outer *(default)* | 1845 | **3.33×** |
+| row-outer *(default)* | batch-outer | 1293 | 2.33× |
+| batch-outer | row-outer *(default)* | 1061 | 1.91× |
+| batch-outer | batch-outer | 554 | 1.00× |
 
-Same work, same bytes, 3.3× the time. Over 138 runs and 17 shapes the default pair is
-**2.82×** the alternative.
+Same work, same bytes, 3.3× the time on this shape. **Across every shape** the penalty
+varies with the batch and the aspect ratio — the figure below plots each run against the
+fastest layout of its own shape, and the group means are 2.82× / 2.00× / 1.70× / 1.00×.
+The single shape above is one of the steeper ones; the median across shapes is 2.50×.
 
-![Each batched matrix multiply timed under all four combinations of its two operands' memory layouts, divided by its own fastest layout. 138 runs over 17 shapes. The compiler default is 2.82× slower, with the two single-operand swaps in between, at identical byte counts](cost_model_figures/s14_bmm_operand_layout.png)
+| B | M×K×N | row/row | row/batch | batch/row | batch/batch | default ÷ fastest |
+|---:|---|---:|---:|---:|---:|---:|
+| 2 | 512×2048×512 | 269 | 139 | 144 | 73 | **3.69×** |
+| 2 | 1024×1024×1024 | 253 | 210 | 176 | 132 | 1.91× |
+| 2 | 1024×2048×1024 | 467 | 380 | 305 | 216 | 2.16× |
+| 2 | 1024×2048×2048 | 1004 | 796 | 679 | 475 | 2.11× |
+| 2 | 2048×2048×1024 | 935 | 757 | 617 | 438 | 2.13× |
+| 4 | 512×2048×512 | 349 | 273 | 287 | 192 | **1.82×** |
+| 4 | 1024×1024×1024 | 963 | 698 | 618 | 386 | 2.50× |
+| 4 | 1024×2048×1024 | 1845 | 1292 | 1061 | 554 | 3.33× |
+| 4 | 1024×2048×2048 | 3698 | 2479 | 2146 | 1148 | 3.22× |
+| 4 | 2048×2048×1024 | 3708 | 2637 | 2217 | 1142 | 3.25× |
+| 8 | 512×2048×512 | 949 | 743 | 603 | 403 | 2.35× |
+| 8 | 1024×1024×1024 | 1969 | 1422 | 1275 | 807 | 2.44× |
+| 8 | 1024×2048×1024 | 3670 | 2582 | 2182 | 1182 | 3.10× |
+| 8 | 1024×2048×2048 | 7284 | 5034 | 4274 | 2356 | 3.09× |
+| 8 | 2048×2048×1024 | 7404 | 5136 | 4480 | 2310 | 3.21× |
+
+All 15 shapes carrying all four combinations, median of 7 repeats each, times in µs. The
+penalty is never below 1.8× and never above 3.7×, and it grows with the batch.
+
+**How current is this data?** These runs are a single-op bundle whose bmm reads each operand
+exactly once, so the graph-input LX clone that has since changed fused reductions
+(see [Next steps](#next-steps)) does not apply — none of the 138 records shows one, and none
+would gain one. What *cannot* be refreshed on this branch is the sweep itself: forcing an
+operand order needs `matmul_preferred_layout`, which belongs to a separate change, so these
+runs are skipped by `run_cost_model_sweep.py` and excluded from scoring. They stand as the
+measurement that layout sets the rate, not as a scored population.
+
+![Each batched matrix multiply timed under all four combinations of its two operands' memory layouts, divided by its own fastest layout. 138 runs over 17 shapes. The compiler default is 2.82× slower, with the two single-operand swaps in between, at identical byte counts](cost_model_figures/s13_bmm_operand_layout.png)
 
 **Slower memory or slower arithmetic?** Arithmetic. Time per unit of arithmetic is **flat at
 about 215 µs per billion multiply-accumulates** across the whole default-layout group, 16
