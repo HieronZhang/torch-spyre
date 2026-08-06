@@ -55,6 +55,7 @@ inside a group -- not for deciding group boundaries.
 from __future__ import annotations
 
 import dataclasses
+import threading
 
 from torch._inductor.ir import ComputedBuffer
 
@@ -73,7 +74,28 @@ _ON = {"1", "true", "yes", "on"}
 #: Report from the most recent run, for tools that want it without threading a return
 #: value through the pipeline. Mirrors ``dump_cost_model.LAST_IO``, the existing
 #: convention for handing extraction results out of a pass.
-LAST_REPORT: "CostReport | None" = None
+#:
+#: PER-THREAD on purpose. ``torch.compile`` can be driven from several threads at once,
+#: and each one runs this pipeline over its own graph. A plain module global would hand
+#: a caller whichever graph happened to finish last -- silently, and most often under
+#: load, which is exactly when a predicted-runtime number gets looked at. Each thread
+#: reads back only the report for the graph it compiled itself.
+#:
+#: The RETURN VALUE of :func:`cost_model_pass` is the authoritative path and is
+#: unaffected by any of this; ``LAST_REPORT`` is the convenience one.
+_STATE = threading.local()
+
+#: Declared for type checkers only -- deliberately unbound, so attribute access falls
+#: through to ``__getattr__`` below and reaches the per-thread storage.
+LAST_REPORT: CostReport | None
+
+
+def __getattr__(name: str) -> "CostReport | None":
+    # PEP 562. Keeps the documented ``cost_model_pass.LAST_REPORT`` spelling working
+    # while the storage underneath is per-thread.
+    if name == "LAST_REPORT":
+        return getattr(_STATE, "report", None)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _enabled() -> bool:
@@ -152,7 +174,8 @@ class CostReport:
             width = max((len(o.name) for o in g.ops), default=0)
             # One block per loop, so an iteration count is stated once for exactly the
             # ops it governs. A fill op sits OUTSIDE the loop and runs once beside ops
-            # that run `trip` times, so there is no kernel-wide count to put in a column.
+            # that run `trip` times, so there is no kernel-wide count to put in a
+            # column.
             blocks = _by_loop(g.ops)
             show_headers = len(blocks) > 1 or any(o.trip > 1 for o in g.ops)
             for header, ops in blocks:
@@ -389,11 +412,10 @@ def cost_model_pass(graph) -> CostReport | None:
     Read-only: the graph is never mutated. Called after the pre-scheduling pipeline,
     where the loop-level IR is final.
 
-    Returns the report so a caller can use it -- ``CustomPreSchedulingPasses`` stores it
-    as ``last_cost_report`` for exactly that reason.
+    Returns the report so a caller can use it -- ``CustomPreSchedulingPasses`` exposes
+    it as ``last_cost_report`` for exactly that reason.
     """
-    global LAST_REPORT
-    LAST_REPORT = None
+    _STATE.report = None
     if not _enabled():
         return None
 
@@ -417,5 +439,5 @@ def cost_model_pass(graph) -> CostReport | None:
     except Exception as exc:  # noqa: BLE001 - printing must not raise either
         logger.warning("cost model report could not be emitted: %r", exc)
 
-    LAST_REPORT = report
+    _STATE.report = report
     return report

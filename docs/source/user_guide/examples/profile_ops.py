@@ -29,7 +29,9 @@ NOTE: this is a TIME + memory-allocation profiler -- it has NO DRAM bandwidth / 
 vs-write / bus-utilization counters, so it CANNOT explain why read+write halves
 bandwidth (that needs aiu-smi). It only gives cleaner device time.
 
-Knobs: BENCH_OP, BENCH_ROWS, BENCH_COLS, BENCH_WARMUP. BENCH_OP is any of the
+Knobs: BENCH_OP, BENCH_ROWS, BENCH_COLS, BENCH_WARMUP. BENCH_EMIT_RECORDS=1 adds the
+machine-readable IO/MODEL/FEATS block the sweep folds into the cost-model database;
+it is off by default because it restates the cost-model dump. BENCH_OP is any of the
 bench_ops/bench_bandwidth ops: neg copy gelu relu sigmoid exp | mul add | add3 add4 |
 read sumrow sumall amax mean | bcast mulbcast | write.
 
@@ -41,8 +43,12 @@ Examples:
     bash docs/source/user_guide/examples/run_profile_sweep.sh
 """
 
+import contextlib
+import logging
 import os
+import sys
 import statistics
+import tempfile
 import time
 
 # Enable the cost-model dump so we read ITS device-layout I/O size (the same byte
@@ -74,6 +80,79 @@ BB = int(os.environ.get("BENCH_B", "8"))  # batch dim for bmm ops (a[B,M,K] @ b[
 STAGES = int(
     os.environ.get("BENCH_STAGES", "0")
 )  # extra LX-resident pointwise stages for `softmax_stages` (see that op)
+# The IO/MODEL/FEATS blocks are the machine-readable record the sweep folds into the
+# database (tools/cost_model/parse_sweep_logs.py). They restate what the cost-model dump
+# already printed, so for a human running one op they are pure noise -- emitted only when
+# the sweep asks for them.
+EMIT_RECORDS = os.environ.get("BENCH_EMIT_RECORDS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _emit(*args, **kwargs) -> None:
+    """Print a record line, but only when the sweep is collecting records."""
+    if EMIT_RECORDS:
+        print(*args, **kwargs)
+
+
+def _banner(title: str) -> str:
+    """A boxed section header, matching the cost-model dumps' own banners."""
+    bar = "=" * 78
+    return f"{bar}\n==== {title}\n{bar}"
+
+
+#: Lines the device stack writes on every profiler session and which say nothing about
+#: the measurement. ``SyncActivityProfilerHandler`` logs a start and a stop per session,
+#: so a 7-rep run emits 14 of them; kineto adds one fixed complaint about a ``[memory]``
+#: event it does not recognise. Both come from the out-of-tree runtime, not this repo,
+#: so there is nothing to silence at the source.
+_CHATTER = (
+    "SyncActivityProfilerHandler.cpp",
+    "is not present in the set of known events",
+)
+
+
+@contextlib.contextmanager
+def _quiet_device_chatter():
+    """Drop the runtime's per-session profiler chatter from fd 1 and 2.
+
+    The lines are written by C++ on the real file descriptors, so a Python-level
+    redirect cannot see them; this swaps the descriptors for a temporary file and
+    replays the capture afterwards.
+
+    ONLY the known-noise lines are dropped -- everything else is written straight back
+    out. A filter that swallowed an unexpected error to tidy the output would cost far
+    more than the noise it removed, and this wraps the part of the run where a device
+    failure is most likely to be reported.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved = os.dup(1), os.dup(2)
+    with tempfile.TemporaryFile(mode="w+b") as cap:
+        try:
+            os.dup2(cap.fileno(), 1)
+            os.dup2(cap.fileno(), 2)
+            yield
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(saved[0], 1)
+            os.dup2(saved[1], 2)
+            for fd in saved:
+                os.close(fd)
+            cap.seek(0)
+            text = cap.read().decode("utf-8", "replace")
+            kept = [
+                ln for ln in text.splitlines() if not any(c in ln for c in _CHATTER)
+            ]
+            if any(ln.strip() for ln in kept):
+                sys.stderr.write("\n".join(kept) + "\n")
+                sys.stderr.flush()
+
+
 TO_MID = int(
     os.environ.get("TO_MID", "8")
 )  # transpose_outer middle (outer-swap) dim M:
@@ -237,9 +316,9 @@ def _softmax_row_tiling():
 
 
 def _softmax_stages():
-    """Softmax with a CONTROLLED number of extra fused stages -- the §19 discriminator.
+    """Softmax with a CONTROLLED number of extra fused stages.
 
-    §19 charges a floor of ``elements / (cores * rate)``, keyed on the ELEMENT COUNT and
+    The fused-kernel floor is ``elements / (cores * rate)``, keyed on the ELEMENT COUNT and
     independent of how many stages the fused chain has. An LX-bandwidth explanation fits the
     same calibration data equally well (whole-loop LX traffic is as tile-count-invariant as
     the element count, and LX is per-core so it scales with cores identically), but it
@@ -659,14 +738,15 @@ def _softmax_unrolled():
 
 
 def _flash_attn_workload():
-    """Spyre flash-attention (mirrors flash_attn_example.py::flash_spyre) with the
-    coarse-tiling + work-division HINTS made env-configurable, so a sweep can vary the
-    block sizes and read the measured time for each. A MULTI-OP coarse-tiled program
-    (~28 ops): two batched matmuls (QK^T reduces over D, PV reduces over Lk) glued by the
-    online-softmax reductions, fused under one tiled loop nest -- see notes/flash_attn_hints.md.
+    """Spyre flash-attention with the coarse-tiling and work-division HINTS made
+    env-configurable, so a sweep can vary the block sizes and read the measured time for
+    each. A MULTI-OP coarse-tiled program (~28 ops): two batched matmuls (QK^T reduces
+    over D, PV reduces over Lk) glued by the online-softmax reductions, fused under one
+    tiled loop nest.
     Knobs: FA_B/FA_H/FA_LQ/FA_LK/FA_D (shape); FA_B_TILES/FA_H_TILES/FA_LQ_TILES/
     FA_LK_TILES (coarse tile COUNTS per dim -> loop nest); FA_WD ("H:4,Lq:8,Lk:8" work_div
-    -> intra-tile cores). We are NOT modeling flash attn yet; this is data + IR capture."""
+    -> intra-tile cores). We are NOT modeling flash attn yet; this is data capture: the
+    model over-predicts it by more than 10x, so it is excluded from every scored figure."""
     import math as _math
 
     import torch_spyre._inductor.wsr.propagate_named_dims as pnd
@@ -772,10 +852,8 @@ def make_workload():
         return torch.compile(lambda a, b: a + b), (_rand(ROWS, COLS), _rand(ROWS, 1))
     if OP == "write":  # write-only: both inputs broadcast -> cached
         return torch.compile(lambda b, c: b + c), (_rand(1, COLS), _rand(ROWS, 1))
-    if (
-        OP == "add_indep2"
-    ):  # §3 control: two INDEPENDENT adds, same 4R:2W as add3 but NO
-        # read-after-write dependency (op0=a+b, op1=c+d). add3 − add_indep2 isolates the
+    if OP == "add_indep2":  # control: two INDEPENDENT adds, same 4R:2W as add3 but NO
+        # read-after-write dependency (op0=a+b, op1=c+d). add3 - add_indep2 isolates the
         # dependent round-trip cost from the byte count. (Verify in the IR whether Inductor
         # fuses the two into one kernel or emits two; both readings are informative.)
         indep = lambda a, b, c, d: (a + b, c + d)  # noqa: E731
@@ -785,7 +863,7 @@ def make_workload():
     _sepm = _re.fullmatch(r"add(\d+)_sep", OP)
     if (
         _sepm
-    ):  # add{N}_sep -- §3 control: the SAME dependent chain as add{N} but forced into
+    ):  # add{N}_sep -- control: the SAME dependent chain as add{N} but forced into
         # SEPARATE kernels (each add is its own torch.compile), read-after-write dependency
         # IDENTICAL (the intermediate is written to HBM by one kernel and read by the next).
         # add{N} vs add{N}_sep = the fusion cost with the dependency held fixed (same bytes).
@@ -803,7 +881,7 @@ def make_workload():
         return chain, tuple(_rand(ROWS, COLS) for _ in range(n))
     if OP in _CT_REDUCE:  # coarse-tiled dim0 reduction (BENCH_TILES, LX_PLANNING)
         return _ct_workload(_CT_REDUCE[OP])
-    if OP == "softmax_stages":  # §19 discriminator: LX traffic vs element count
+    if OP == "softmax_stages":  # discriminator: LX traffic vs element count
         return _softmax_stages()
     if OP == "softmax_row_tiling":  # softmax(dim=-1) NROW-tiled -> 5 ops fuse in LX
         return _softmax_row_tiling()
@@ -850,6 +928,8 @@ def make_workload():
             "add_indep2",
             "add3_sep",
             "add4_sep",
+            "add5_sep",
+            "add6_sep",
             "softmax_row_tiling",
             "softmax_stages",
             "softmax_noexp_row_tiling",
@@ -879,22 +959,22 @@ def _print_io(io: dict) -> None:
     Lines are prefixed ``IO `` so the sweep (run_profile_sweep.sh) can grep them
     alongside the SUMMARY line instead of dropping the breakdown.
     """
-    print("IO -- device-layout I/O (cost model, stick-padded) --")
+    _emit("IO -- device-layout I/O (cost model, stick-padded) --")
     for o in io.get("ops", []):
         red = " [reduction]" if o.get("is_reduction") else ""
-        print(f"IO   op {o['name']}{red}")
+        _emit(f"IO   op {o['name']}{red}")
         for a in o["args"]:
             bc = " broadcast (loaded once)" if a["broadcast"] else ""
             lf = a.get("loop_factor", 1)
             xl = f" xL={lf}" if lf > 1 else ""
             log = f"torch {a['logical']} -> " if a.get("logical") else ""
-            print(
+            _emit(
                 f"IO     {a['role']:<6} {a.get('name', '?'):<22} "
                 f"{log}device {a['dims']} in {a['mem'].upper()} = "
                 f"{a['elems']} elems x 2B = {a['bytes']} B"
                 f"  (hbm counted: {a['hbm_counted']} B){xl}{bc}"
             )
-    print(
+    _emit(
         f"IO   => HBM I/O total = {io.get('hbm_bytes', 0)} B  "
         f"(lx {io.get('lx_bytes', 0)} B, ~free)"
     )
@@ -907,7 +987,7 @@ def _print_model(feats: list) -> float:
     the SUMMARY can carry it next to the measured kernel_us.
     """
     if not feats:
-        print("MODEL (no features extracted)")
+        _emit("MODEL (no features extracted)")
         return 0.0
     p = cost_model.CostParams()
     r, w = cost_model._fused_hbm_bytes(
@@ -922,12 +1002,17 @@ def _print_model(feats: list) -> float:
     )
     turn = p.rw_turnaround_ns_per_byte * min(r, w)
     # Underfill derate (output-dim tiling): smallest per-core tile governs.
-    eff, eff_rows = 1.0, 0.0
+    eff, eff_rows, eff_cols = 1.0, 0.0, 0.0
     for o in feats:
         if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
-            e = cost_model.coarse_underfill_eff(o.tile_rows_per_core, p)
+            cols = cost_model._op_cols(o)
+            e = (
+                cost_model.coarse_underfill_eff_matmul(o.tile_rows_per_core, p)
+                if is_mm
+                else cost_model.coarse_underfill_eff(o.tile_rows_per_core, cols, p)
+            )
             if e < eff:
-                eff, eff_rows = e, o.tile_rows_per_core
+                eff, eff_rows, eff_cols = e, o.tile_rows_per_core, cols
     # Matmul compute term (additive).
     mm_us, mm_lines = 0.0, []
     for o in feats:
@@ -948,38 +1033,91 @@ def _print_model(feats: list) -> float:
         parts = f"[{parts}] / eff_underfill"
     if mm_us > 0:
         parts = f"compute + {parts}"
-    print(f"MODEL -- estimate (turnaround): T = {parts} --")
-    print(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
+    _emit(f"MODEL -- estimate (turnaround): T = {parts} --")
+    _emit(f"MODEL   R={r} B (read)   W={w} B (write)   loop_trip L={lp}")
     for ln in mm_lines:
-        print(ln)
+        _emit(ln)
     blab = (
         f"R/{p.mm_bw_read_gbps:.0f}+W/{p.mm_bw_write_gbps:.0f}"
         if is_mm
         else f"(R+W)/{p.bw_peak_gbps:.0f}"
     )
-    print(f"MODEL   base = {blab} = {base / 1000:.2f} us")
-    print(
+    _emit(f"MODEL   base = {blab} = {base / 1000:.2f} us")
+    _emit(
         f"MODEL   turn = a*min(R,W) = {p.rw_turnaround_ns_per_byte}*{min(r, w)} "
         f"= {turn / 1000:.2f} us"
     )
     if eff < 1.0:
-        print(
-            f"MODEL   eff_underfill = min({p.coarse_underfill_cap},"
-            f"({eff_rows:.1f}/{p.coarse_underfill_rfull:.0f})"
-            f"**{p.coarse_underfill_exp}) = {eff:.3f} "
+        if is_mm:
+            _shape = (
+                f"({eff_rows:.1f}/{p.coarse_underfill_rfull_matmul:g})"
+                f"**{p.coarse_underfill_exp_matmul}"
+            )
+            _ceil = p.coarse_underfill_cap_matmul
+        else:
+            _shape = (
+                f"({eff_rows:.1f}/{p.coarse_underfill_rfull:g})"
+                f"**{p.coarse_underfill_exp}"
+                f" * ({eff_cols:.0f}/{p.coarse_underfill_col_ref:.0f})"
+                f"**{p.coarse_underfill_col_exp}"
+            )
+            _ceil = p.coarse_underfill_cap
+        _emit(
+            f"MODEL   eff_underfill = min({_ceil}, {_shape}) = {eff:.3f} "
             f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
         )
-    print(f"MODEL   => T_model = {t / 1000:.2f} us")
+    _emit(f"MODEL   => T_model = {t / 1000:.2f} us")
     # Machine-readable feature vector (the model's INPUT) so a NEW model version can be
     # scored OFFLINE against the stored measured time -- no hardware re-run. Prefixed
     # `MODEL ` so the sweeps' `^MODEL ` grep already captures it; parse_sweep_logs.py
     # pulls it into the record's `feats`. See tools/cost_model/eval_model.py. Best-effort: a
     # serialization hiccup must NEVER fail the run (the kernel_us is what matters).
     try:
-        print(f"MODEL FEATS {cost_model.ops_to_json(feats)}")
+        _emit(f"MODEL FEATS {cost_model.ops_to_json(feats)}")
     except Exception as exc:  # noqa: BLE001 - diagnostic only
-        print(f"MODEL FEATS_SKIPPED {type(exc).__name__}: {str(exc)[:120]}")
+        _emit(f"MODEL FEATS_SKIPPED {type(exc).__name__}: {str(exc)[:120]}")
     return t / 1000
+
+
+class _SpanOverflowGuard(logging.Handler):
+    """Abort a configuration whose per-core tensor span exceeds the hardware limit.
+
+    WHY THIS EXISTS. On 2026-08-07 a sweep ran one configuration -- a K-tiled
+    `bmm_3d2d` -- whose coarse-tile read copy was built over the full iteration space,
+    giving a `[4,1024,1024,1024]` staging buffer: 256 MB per core against the 255.996 MB
+    MVLOC addressing limit, and 17 GB of HBM traffic from 20 MB of inputs. It was the only
+    CRITICAL in 1640 runs. The run immediately after it, and all 1389 that followed, died
+    with `RAS::MCI::DdrInitRetryLimitExceeded`, and the card never recovered.
+
+    ONE CO-OCCURRENCE IS NOT A CAUSE, and this guard does not assume otherwise. But a
+    per-core span past the addressing limit means DMA descriptors that cannot address what
+    they were told to, the cost of being wrong is measured in days of dead hardware, and
+    the cost of being over-careful is one skipped data point. So: refuse to keep executing
+    a configuration the compiler has already flagged as out of spec.
+
+    LIMIT OF THE PROTECTION. `torch.compile` compiles lazily, so the CRITICAL is emitted
+    during the *first* execution -- this cuts exposure from 12 executions (5 warmup +
+    7 profiled) to 1, not to 0. Reaching zero would mean compiling the configuration
+    under fake tensors first, so that nothing is ever dispatched to the device.
+    """
+
+    LOGGER = "spyre.inductor.work_division"
+    NEEDLE = "exceeds hardware limit"
+
+    def __init__(self):
+        super().__init__(level=logging.CRITICAL)
+        self.hits: list[str] = []
+
+    def emit(self, record):
+        msg = record.getMessage()
+        if self.NEEDLE in msg:
+            self.hits.append(msg)
+
+    @classmethod
+    def install(cls):
+        guard = cls()
+        logging.getLogger(cls.LOGGER).addHandler(guard)
+        return guard
 
 
 def _run():
@@ -989,11 +1127,23 @@ def _run():
         for t in out if isinstance(out, (tuple, list)) else (out,):
             t.cpu()
 
+    guard = _SpanOverflowGuard.install()
     compiled, args = make_workload()
-    for _ in range(WARMUP):  # compile (-> cost-model dump fires) + warm the kernel
+    for i in range(WARMUP):  # compile (-> cost-model dump fires) + warm the kernel
         if _PREPARE is not None:  # coarse-tile: re-declare named dims before each trace
             _PREPARE()
         _sync(compiled(*args))
+        if i == 0 and guard.hits:
+            # Compilation flagged an out-of-spec span. Stop before the remaining warmup
+            # and profiled runs; report it the way the sweep parser understands.
+            print(f"FAILED reason=span_overflow ({len(guard.hits)} CRITICAL)")
+            for msg in guard.hits[:3]:
+                print(f"   {msg}")
+            print(
+                "SKIPPED: this configuration asks for a per-core span past the MVLOC "
+                "addressing limit. See _SpanOverflowGuard for why it is not measured."
+            )
+            return
     io = dict(dump_cost_model.LAST_IO)  # device-layout I/O the model computed
     feats = list(dump_cost_model.LAST_FEATS)  # raw OpFeatures for predict_ops()
     io_hbm_bytes = io.get("hbm_bytes", 0)
@@ -1036,17 +1186,22 @@ def _run():
     kernels, memsets, others = [], [], []
     first_prof = None
     t_prof0 = time.perf_counter()
-    for i in range(REPS):
-        prof, k, ms, ot = _profile_once()
-        if i == 0:
-            first_prof = prof
-        if k > 0:
-            kernels.append(k)
-            memsets.append(ms)
-            others.append(ot)
+    with _quiet_device_chatter():
+        for i in range(REPS):
+            prof, k, ms, ot = _profile_once()
+            if i == 0:
+                first_prof = prof
+            if k > 0:
+                kernels.append(k)
+                memsets.append(ms)
+                others.append(ot)
     prof_wall_s = time.perf_counter() - t_prof0
 
-    print(f"== {OP}[{ROWS}x{COLS}] -- profiler kernel time vs cost-model I/O ==")
+    print(_banner(f"PyTorch profiler: measured device time -- {OP}[{ROWS}x{COLS}]"))
+    print(
+        "Self SPYRE is the measured device time. The fused compute kernel is the row "
+        "this harness reports as kernel_us; Memcpy and Memset are counted separately."
+    )
     if first_prof is not None:  # show the first trace's event table (diagnostic)
         print(
             first_prof.key_averages()
@@ -1068,6 +1223,19 @@ def _run():
         other = statistics.median(others)
     else:
         k_med = k_min = k_mean = k_std = k_cv = memset = other = 0.0
+    # A profiler that produced no Spyre events yields 0.0 here, which reads as a
+    # valid degenerate measurement rather than a failure. Say so loudly: the usual
+    # cause is a kineto build that does not match this PyTorch version, and a
+    # silent kernel_us=0 would be folded into the database as real data.
+    if not kernels or k_med <= 0.0:
+        print(
+            "WARNING: the profiler reported no Spyre device time. "
+            "Check that the kineto-spyre build matches this PyTorch version "
+            "(docs/source/user_guide/profiling/pytorch_profiler.md). "
+            "The measurement below is NOT usable.",
+            file=sys.stderr,
+        )
+
     kernel = k_med  # SUMMARY kernel_us = median (back-compat)
     # Effective BW from the GOLDEN kernel time and the model's device-layout I/O.
     bw = io_hbm_bytes / (kernel * 1000) if kernel > 0 else 0.0

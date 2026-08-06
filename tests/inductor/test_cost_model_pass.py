@@ -31,6 +31,7 @@ No Spyre device or backend compiler is required -- ops are injected directly.
 """
 
 import dataclasses
+import threading
 
 import pytest
 
@@ -339,6 +340,55 @@ def test_enabled_returns_a_report(monkeypatch):
     assert report is not None
     assert report.total_us > 0.0
     assert cmp.LAST_REPORT is report
+
+
+def test_last_report_does_not_leak_across_threads(monkeypatch):
+    """A concurrent compile must not overwrite another thread's report.
+
+    ``torch.compile`` can be driven from several threads, each running this pipeline
+    over its own graph. When ``LAST_REPORT`` was a plain module global, whichever
+    thread finished last won and the others silently read someone else's number.
+    """
+    monkeypatch.setattr(cmp, "extract_op_features", lambda op: op)
+    monkeypatch.setattr(cmp, "ComputedBuffer", OpFeatures)
+    # Enable the pass directly instead of through ``config.patch``. Whether a config
+    # patch made on this thread is visible on a worker thread is a PyTorch detail that
+    # has changed between releases, and it is not what this test is about -- in
+    # production the switch is an environment variable read once at import.
+    monkeypatch.setattr(cmp, "_enabled", lambda: True)
+
+    all_compiled = threading.Barrier(4)
+    produced: dict[int, bool] = {}
+    isolated: dict[int, bool] = {}
+
+    def compile_one(i):
+        class _Graph:
+            operations = [_feats(f"op{i}", write_mb=i + 1)]
+
+        mine = cmp.cost_model_pass(_Graph())
+        produced[i] = mine is not None
+        # Nobody reads until every thread has produced a report, so a shared global
+        # would by now hold whichever thread happened to finish last.
+        all_compiled.wait(timeout=10)
+        isolated[i] = cmp.LAST_REPORT is mine
+
+    before = cmp.LAST_REPORT
+    threads = [threading.Thread(target=compile_one, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    # Asserted apart so a failure says WHICH half broke: the pass not running at all,
+    # or a thread reading someone else's report.
+    assert produced == {i: True for i in range(4)}, (
+        "the pass did not run on every thread"
+    )
+    assert isolated == {i: True for i in range(4)}, (
+        "a thread saw another thread's report"
+    )
+    # This thread compiled nothing, so its own view is untouched by all four.
+    assert cmp.LAST_REPORT is before
 
 
 def test_pass_never_raises(monkeypatch):

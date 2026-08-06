@@ -32,7 +32,7 @@ and always trustworthy; ``pred_us`` is only trustworthy for ``is_current`` rows.
 and ``--drop-ops`` to exclude retired ops (e.g. ``chain``) from the output entirely.
 
     python tools/cost_model/parse_sweep_logs.py examples/*.log
-    python tools/cost_model/parse_sweep_logs.py                 # default: haoyang_logs/*.log
+    python tools/cost_model/parse_sweep_logs.py                 # default: sweep_logs/*.log
     python tools/cost_model/parse_sweep_logs.py --out tools/cost_model/sweep_records.json <logs...>
     python tools/cost_model/parse_sweep_logs.py --drop-ops chain --current-sha c2bb9ce
 
@@ -354,7 +354,7 @@ def _flatten(rec):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("logs", nargs="*", help="log files (default: haoyang_logs/*.log)")
+    ap.add_argument("logs", nargs="*", help="log files (default: sweep_logs/*.log)")
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(os.path.dirname(here))
     ap.add_argument("--out", default=os.path.join(here, "sweep_records.json"))

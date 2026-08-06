@@ -42,11 +42,14 @@ Feature source per record (in priority order):
 """
 
 import argparse
+import collections
 import importlib.util
 import json
 import math
 import os
 import sys
+
+import regex as re
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -69,7 +72,9 @@ cm = _load_cost_model()
 # op -> reporting category
 _CATEGORY = {}
 for _c, _ops in {
-    "pointwise": "neg gelu relu sigmoid exp mul add add3 add4".split(),
+    # add5/add6/add_indep2 belong here as much as add3/add4 do; leaving them in `other`
+    # hid a real signal (the dependent-chain gap below) behind an unrelated bucket.
+    "pointwise": "neg gelu relu sigmoid exp mul add add3 add4 add5 add6 add_indep2".split(),
     "reduction": "sumrow sumcol sumall amax mean read".split(),
     "transport": "transpose transpose_outer cat0 cat1".split(),
     # copy (x+1.0) is really a broadcast op -- an add with a resident broadcast constant.
@@ -235,7 +240,7 @@ def features_for(rec, default_params, tol=0.02):
 # --------------------------------------------------------------------------- scope
 # STANDING SCOPE DECISIONS (user, 2026-07-31). These are permanently OUT of the
 # model's evaluation set -- not filtered ad hoc per analysis, so a number quoted
-# anywhere in the report always refers to the same population.
+# anywhere always refers to the same population.
 #
 #   1. cores < 8. Never a target regime. The few points we had were also
 #      hopelessly confounded (cores aliased with per-core area and split fanout,
@@ -253,7 +258,7 @@ _MIN_FUSED_REDUCTION_COLS = 1024
 # 4. Extreme lopsided work-division splits (16x2 / 2x16) ON THE COARSE-TILING OPS ONLY.
 #    Those splits are not chosen by us there -- the coarse-tiling hint makes the planner
 #    pick them, and they land far outside the calibration point of the matmul/bmm compute
-#    rate, which the report already flags as fitted at ONE split (4x8) and cores=32.
+#    rate, which is fitted at ONE split (4x8) and cores=32.
 #    Evidence it is the SPLIT, not the tiling: a PLAIN (non-coarse) bmm forced to 16x2
 #    reads -53.2 %, essentially the same as coarse-tiled bmm at 16x2 (-54.1 %), while
 #    plain bmm at 4x8 is -7.4 % over 213 rows.
@@ -292,6 +297,9 @@ _BUGGY_LOOP_FACTOR_LOG = "coarse_reextract_20260804_004110.log"
 
 _DEFAULT_BMM_LAYOUT = "0,1,2"  # the order the compiler emits (config default)
 
+#: `add3_sep` ... `add6_sep`: one chain measured as several kernels. See `in_scope`.
+_SEP_CHAIN = re.compile(r"add\d+_sep")
+
 
 def in_scope(rec) -> bool:
     """False for rows excluded by the standing scope decisions above."""
@@ -304,12 +312,12 @@ def in_scope(rec) -> bool:
     sha = rec.get("model_sha") or ""
     if sha in _CORRUPT_FEATURE_SHAS and rec.get("feats"):
         return False
-    # NON-DEFAULT BMM OPERAND LAYOUT. A faster device tile order exists (both rank-3
-    # operands on [1,0,2], 2.82x at byte-identical traffic), but it is reachable only by
+    # NON-DEFAULT BMM OPERAND LAYOUT. A faster device tile order exists (all three
+    # operands on [1,0,2], up to 8.3x at byte-identical traffic), but it is reachable by
     # opting into the alternative operand layout, which is not the default -- so nothing the compiler
     # emits uses it. The model prices only what ships, so runs that FORCED another
-    # arrangement are out of scope. The measurement itself is kept: it is the evidence in
-    # the report's §13 layout figure, which still plots all four combinations.
+    # arrangement are out of scope. The measurement itself is kept: it is the evidence
+    # for that 8.3x, and the database still holds every combination.
     la, lb = rec.get("layout_a"), rec.get("layout_b")
     if (la or lb) and not (la == _DEFAULT_BMM_LAYOUT and lb == _DEFAULT_BMM_LAYOUT):
         return False
@@ -320,6 +328,17 @@ def in_scope(rec) -> bool:
     # the model: 41.1 % RMS at -32.3 % mean, against 3.0-6.6 % for every operand this
     # section does model. The runs stay in the database as the evidence.
     if op == "write":
+        return False
+    # `add{N}_sep` CANNOT BE SCORED AS RECORDED -- a harness limitation, not a model gap.
+    # The workload is N-1 SEPARATE compiled kernels (profile_ops.py, `add{N}_sep`), the
+    # measured time covers all of them, but the cost-model dump captures only the LAST
+    # sub-kernel's features. So a one-kernel prediction is compared against an N-kernel
+    # measurement, and the error is arithmetic: -55/-70/-80/-83 % for N-1 = 2/3/4/5.
+    # Multiplying the prediction by the sub-kernel count collapses those to -10/-9/-19/
+    # -17 %, the same band as the fused `add{N}` rows -- which is the check that this is
+    # bookkeeping and not a real miss. Scoring them measures the harness. The runs stay
+    # in the database: they are the fusion control, read as add{N} vs add{N}_sep.
+    if _SEP_CHAIN.fullmatch(op):
         return False
     if op.startswith("softmax"):
         cols = rec.get("cols")
@@ -338,7 +357,7 @@ def in_scope(rec) -> bool:
                 return False  # pre-fix extractor: field did not exist yet
     # Feature-corrupt: fill/combine args mis-counted by the first per-level implementation.
     # STALE PER-ARG loop_factor. A coarse-tiled MATMUL always has a loop-invariant
-    # operand (§13): row-tiling repeats B, K-tiling repeats the accumulator. So at
+    # operand: row-tiling repeats B, K-tiling repeats the accumulator. So at
     # tiles > 1 SOME arg must carry loop_factor > 1. If none does, the row was extracted
     # before the per-arg fix and its byte count is wrong -- scoring any model against it
     # is meaningless. Detected structurally rather than by log name so a future stale
@@ -375,6 +394,55 @@ def in_scope(rec) -> bool:
     return True
 
 
+def _select_build(rows, spec):
+    """Restrict `rows` to one measurement build, and say which builds are present.
+
+    A build here is the ``model_sha`` stamped on a sweep log, which is the git sha of the
+    tree that ran it. Measured ``kernel_us`` belongs to that build and to no other:
+    kernel performance moves as the compiler develops, and pooling builds turns a
+    compiler change into an apparent model error. The database has always spanned many
+    builds, so ``all`` stays the default rather than silently redefining every published
+    accuracy figure -- but it prints the census, so the pooling is never invisible.
+
+    ``latest`` picks the newest build by log date, which is what a fresh sweep produces.
+    """
+    census = collections.Counter(r.get("model_sha") or "(no sha)" for r in rows)
+    if spec == "all":
+        if len(census) > 1:
+            newest = max(
+                (r.get("log_date") or "", r.get("model_sha") or "")
+                for r in rows
+                if r.get("model_sha")
+            )
+            print(
+                f"NOTE: pooling {len(rows)} rows from {len(census)} measurement builds "
+                f"(newest {newest[1]}, {census[newest[1]]} rows). "
+                "Use --build latest to score one."
+            )
+        return rows
+
+    if spec == "latest":
+        dated = [r for r in rows if r.get("model_sha") and r.get("log_date")]
+        if not dated:
+            sys.exit(
+                "no row carries both a model_sha and a log_date; --build latest "
+                "needs a sweep log with a `git:` header"
+            )
+        sha = max(dated, key=lambda r: r["log_date"])["model_sha"]
+    else:
+        matches = {s for s in census if s.startswith(spec)}
+        if len(matches) != 1:
+            sys.exit(
+                f"--build {spec!r} matches {len(matches)} builds. Present: "
+                + ", ".join(f"{s}({n})" for s, n in census.most_common())
+            )
+        sha = matches.pop()
+
+    kept = [r for r in rows if r.get("model_sha") == sha]
+    print(f"build {sha}: {len(kept)} of {len(rows)} rows")
+    return kept
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--records", default="")
@@ -397,6 +465,12 @@ def main():
     ap.add_argument(
         "--list-worst", type=int, default=0, help="print the N worst |err| rows"
     )
+    ap.add_argument(
+        "--build",
+        default="all",
+        help="score one measurement build: a git sha prefix, `latest` (the newest "
+        "sweep in the database), or `all` (default -- every build pooled)",
+    )
     args = ap.parse_args()
 
     args.records = records_path(args.records or None)
@@ -408,6 +482,7 @@ def main():
 
     rows = [r for r in records if not r.get("failed") and r.get("kernel_us")]
     rows = [r for r in rows if in_scope(r)]
+    rows = _select_build(rows, args.build)
     if not args.all:
         # Score every row that CAN be scored against the current model: any row carrying
         # `feats` (its exact input, recomputed with the current model regardless of which

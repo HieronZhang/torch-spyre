@@ -19,7 +19,7 @@ LoopLevel IR to guide higher-level optimization. Deliberately NOT a simulator.
 
 Model (per fused bundle / single-op kernel):
 
-    T   = compute + mem - gamma*min(compute, mem)          mem = HBM / (eff * s_lx)
+    T   = max(compute, mem) + split                        mem = HBM / (eff * s_lx)
 
     HBM = [ (R+W)/BW + alpha*min(R,W) ] + spill + write_extra
     s_lx = min(1, (512KB/ws)**0.15)   for a coarse-tiled kernel with ws > 512KB   (else 1)
@@ -68,17 +68,21 @@ applied to a STANDALONE row-reduction (single op; a fused softmax stays on bw_pe
 input dedup is not broken; ``sumcol`` uses reduce_outer). (A cross-core ring-combine term
 for a split reduced axis was dropped as sub-noise -- provably <=~5ns on us kernels.)
 
-MATMUL (reduction_type batchmatmul) adds a compute term that OVERLAPS the HBM term:
-``T = compute + HBM - gamma*min(compute, HBM)``, with
-``compute = MACs / cores / (mac_peak * pt_eff)`` (MACs = M*N*K, mac_peak=1140 SUSTAINED,
-gamma=0.46). The matmul HBM uses a SINGLE rate = the copy peak (150; the old two-rate
+MATMUL (reduction_type batchmatmul) adds a compute term that OVERLAPS the HBM term.
+The engine streams operands while the array works, so the kernel takes the LONGER of the
+two, not their sum: ``T = max(compute, HBM)``, with
+``compute = MACs / cores / (mac_peak * pt_eff)`` (MACs = M*N*K, mac_peak=1140 SUSTAINED).
+A PARTIAL-overlap form (``compute + HBM - gamma*min(compute, HBM)``) was fitted and
+DROPPED: the overlap it models is produced inside the proprietary backend, not by
+anything this IR can see, and its constant did double duty with the peak-rate error, so
+it was not identifiable. Full overlap is the mechanism-level claim the data supports.
+The matmul HBM uses a SINGLE rate = the copy peak (150; the old two-rate
 143/156 is retired, 156>150 was an unphysical artifact) plus an operand RE-READ
 "tile spill": ``(|A|+|B|)*f(area)`` at that rate, f a saturating log of the per-core
 output-tile area (M/m)*(N/n) past the on-chip capacity ~64K elems). Fanout is NOT separately
 identified (the falsification sweeps were confounded). K is
 always kept whole (WD_K=1) so the K-split psum ring term is 0. Fit on the db_sweep +
-decouple/re-read sweeps: ~8% RMS across cores 4->32, MNK 2e9..3.4e10. Isolation order and
-per-term derivation: docs/source/compiler/cost_model_report.md.
+decouple/re-read sweeps: ~8% RMS across cores 4->32, MNK 2e9..3.4e10.
 
 COARSE-TILING (fused kernel, e.g. ``softmax_row_tiling``): a coarse-tiled op is ONE fused
 kernel with intermediates kept in LX -- NOT a sum of per-op kernels. Two things follow.
@@ -87,14 +91,18 @@ reads ``arg0`` in both ``amax`` and ``sub``, but the fused kernel loads it from 
 and serves the 2nd read on-chip -- the naive per-op sum double-counts it (~+25% at the
 floor; at the floor softmax runs at ~100 GB/s = the balanced-copy rate, i.e. 1 read +
 1 write, confirming the once-count). (2) UNDERFILL: tiling an output dim cuts each core's
-per-tile height (rpc = ROWS/(cores*tiles)); a short tile underfills the streaming pipeline.
-``coarse_underfill_eff = min(cap, (rpc/r_full)**exp)`` (cap~0.95, r_full~13, exp~0.68),
-SEPARATE from the matmul ``pt_eff``. Re-fit on the softmax rpc sweep; the cross-COLS control
-(COLS 2048 vs 4096 at matched rpc -> per-byte cost equal to +/-4%) proved the derate keys on
-ROWS (rpc), NOT tile bytes, and that it is the tile-SIZE effect, not the tile COUNT L (four
-T=4..32 points at rpc=16 cost the same). Efficiency plateaus ~0.95 at rpc 16-32 and cliffs
-below (rpc4~0.45, rpc2~0.28). KNOWN residuals: a mild efficiency decline above rpc~32
-(rpc128~0.82, unmodeled, rows-driven); and when the per-core WORKING SET overflows the
+per-tile SIZE -- rpc = ROWS/(cores*tiles) rows of COLS -- and a small tile underfills the
+streaming pipeline. ``coarse_underfill_eff = min(cap, (rpc/r_full)**exp *
+(COLS/col_ref)**col_exp)`` (cap~1.08, r_full~7.9 at col_ref 2048, exp~0.50, col_exp~0.38),
+SEPARATE from the matmul ``pt_eff``. Re-fit 2026-08-11 on 48 tiled softmax rows at
+cores=32 spanning rpc 2..256 AND COLS 128..4096; the width term is that re-fit's finding
+and REPLACES the earlier rows-only reading, whose cross-COLS control (2048 vs 4096) sat
+entirely inside the plateau and so could not see a width dependence. It remains a
+tile-SIZE effect, not a tile-COUNT one (four T=4..32 points at rpc=16 cost the same).
+KNOWN residuals: at cores 8 and 16 the memory term has no core-count scaling at all, so a
+coarse-tiled softmax there is UNDER-predicted by 30-50% (identified and controlled --
+matched tile shape, tile count ruled out -- but deliberately unmodeled; see the report);
+and when the per-core WORKING SET overflows the
 practically available LX (~512 KB/core) the intermediates SPILL to HBM. The extractor already
 counts those spilled bytes as HBM (they show up read+written), so it is NOT a byte miss -- but
 that spilled traffic runs SLOWER than the modeled rate, so the effective bandwidth is DERATED
@@ -113,8 +121,8 @@ block-transpose (calibrated at its best middle dim M=8; M!=8 flagged), cat1 near
 swapped) -> flat ``bw_restickify_gbps`` ~116; "reduce_outer" sumcol (cross-row reduce) ~113.
 cat0/transpose carry an ``OpFeatures.hbm_pattern`` from the extractor; cat1/transpose_outer
 are detected structurally from the logical reshape (``_transport_kind``). (A dependent multi-op
-chain like add3/add4 costs more than its byte count -- a read-after-write ACROSS op boundaries,
-§3 -- a program-level effect, not a single-op cost, so NOT modeled here.) Transports land
+chain like add3/add4 costs more than its byte count -- a read-after-write ACROSS op
+boundaries: a program-level effect, not a single-op cost, so NOT modeled here.) Transports land
 within ~6%. BROADCAST-operand ops (copy/bcast/bcastcol/mulbcast: a full input + a small
 broadcast operand) run ~118 GB/s -- ``bw_broadcast_gbps`` (mechanism open). ``write``
 (b[1,C]+c[R,1], BOTH operands broadcast -> outer-product) is slow + super-linear; modeled by an
@@ -192,14 +200,16 @@ class OpFeatures:
     matmul_cols_per_core: float = 0.0  # N/n (per-core B tile width  -> B re-read)
     matmul_a_bytes: int = 0  # |A| = M*K device bytes (re-read scales with M/m)
     matmul_b_bytes: int = 0  # |B| = K*N device bytes (re-read scales with N/n)
-    # Per-dim core-split counts (m along M, n along N). Recorded so a split-shape term can
-    # key on the raw fanout / arrangement, not just the area (M/m)*(N/n). 1 = unsplit.
+    # Per-dim core-split counts (m along M, n along N). Recorded so a split-shape term
+    # can key on the raw fanout / arrangement, not just the area (M/m)*(N/n). 1 =
+    # unsplit.
     matmul_m_split: int = 1
     matmul_n_split: int = 1
     # Access-pattern HBM effective-BW override (from the LoopLevel IR index/layout):
     # "restickify" (transpose: write-stick var read with coeff!=1), "stick_scatter"
     # (cat on a partition dim -> a device dim <64 just inside the stick), "reduce_outer"
-    # (cross-row reduction: reduced var read with coeff!=1). "" -> default 150+turnaround.
+    # (cross-row reduction: reduced var read with coeff!=1). "" -> default
+    # 150+turnaround.
     hbm_pattern: str = ""
 
     def read_bytes(self) -> int:
@@ -316,17 +326,18 @@ class CostParams:
     rw_turnaround_ns_per_byte: float = 0.00574
     # Genuine-reduction cross-core ring combine: (k-1) hops each touching every output
     # element. Fires ONLY for real reductions (NOT matmul -- gated in predict_ops), and
-    # only when out_elems<cores, so it is bounded by ~cores*psum (<=~4.5ns) -- effectively
-    # inert (kept for structure). The matmul K-split PSUM ring is deliberately NOT modeled:
-    # the planner keeps K whole (WD_K=1), and forcing WD_K>1 made this term explode (+489%).
-    # (A per-iteration coarse-tiling loop overhead c_loop*L was removed: it was calibrated on
-    # the dropped chain/ctsum reduction-dim sweeps and no current op exercises it.)
-    # Pipeline-fill (underfill) derate for OUTPUT-dim (pointwise) coarse-tiling:
-    # eff = min(1, (rows_per_core / (pass_rows * target_passes)) ** exponent). Same FORM
-    # as the matmul pt_eff (work_division.py); the 8-row pass is the shared hardware
-    # constant, target_passes differs by op structure. PROVISIONAL -- guessed from the
-    # chain K-sweep (flat to ~16 rows/core, cliff at 8; data hints exponent ~0.4). To be
-    # calibrated by the untiled-small-ROWS underfill-confirm runs.
+    # only when out_elems<cores, so it is bounded by ~cores*psum (<=~4.5ns) --
+    # effectively inert (kept for structure). The matmul K-split PSUM ring is
+    # deliberately NOT modeled: the planner keeps K whole (WD_K=1), and forcing WD_K>1
+    # made this term explode (+489%). (A per-iteration coarse-tiling loop overhead
+    # c_loop*L was removed: it was calibrated on the dropped chain/ctsum reduction-dim
+    # sweeps and no current op exercises it.) Pipeline-fill (underfill) derate for
+    # OUTPUT-dim (pointwise) coarse-tiling: eff = min(1, (rows_per_core / (pass_rows *
+    # target_passes)) ** exponent). Same FORM as the matmul pt_eff (work_division.py);
+    # the 8-row pass is the shared hardware constant, target_passes differs by op
+    # structure. PROVISIONAL -- guessed from the chain K-sweep (flat to ~16 rows/core,
+    # cliff at 8; data hints exponent ~0.4). To be calibrated by the untiled-small-ROWS
+    # underfill-confirm runs.
     underfill_pass_rows: float = 8.0  # PT / stream pass granularity (matmul _PT_ROWS)
     underfill_target_passes_pointwise: float = 2.0  # pointwise full-fill ~2 pass (=16)
     # Falloff exponent. CALIBRATED 0.35 from the Section-B chain sweep (rc 16->2): eff
@@ -336,27 +347,80 @@ class CostParams:
     # keying tile_rows_per_core on the row-dim split, not total cores).
     underfill_exponent: float = 0.35
     # COARSE-TILING (fused pointwise / softmax) underfill -- SEPARATE from the matmul
-    # pt_eff above. Re-fit 2026-07-08 on the softmax rpc sweep (rpc = per-core rows per
-    # tile = ROWS/(cores*T)); the cross-COLS control (COLS 2048 vs 4096 at matched rpc,
-    # per-byte cost equal to +/-4%) proved the derate keys on ROWS (rpc), NOT tile bytes.
-    # eff = min(cap, (rpc/r_full)**exp): plateau ~0.95 at rpc~16-32, steep underfill cliff
-    # below (rpc4~0.45, rpc2~0.28). A MILD rise above rpc~32 (rpc128 eff~0.82) is a known,
-    # unmodeled residual (rows-driven, mechanism TBD -- within the +/-15-20% bar).
-    coarse_underfill_rfull: float = 13.0
-    coarse_underfill_exp: float = 0.68
-    coarse_underfill_cap: float = 0.95
-    # LX-SPILL bandwidth derate. When a coarse-tiled kernel's per-core working set (its live
-    # intermediate tiles, ~2 of them) overflows the practically available LX (~512 KB/core),
-    # those intermediates spill to HBM. The extractor ALREADY counts the spilled bytes as HBM
-    # (they show up read+written), so this is NOT a byte miss -- but that spilled traffic runs
-    # SLOWER than the modeled rate, so the effective bandwidth is derated:
-    #   BW *= min(1, (lx_spill_cap / ws_per_core) ** lx_spill_exp),  ws > cap only.
-    # Softmax-calibrated: 10.7 -> 6.0 % RMS, worst -39.8 -> -17.8 %, on
-    # softmax_row_tiling / 32 cores / tiles>=2 / in-scope (n=60). NOTE 512 KB is NOT a
-    # documented capacity -- this repo documents 2 MB physical and ~1.6 MB allocatable
-    # per core. The value is fitted; do not describe it as matching the hardware.
+    # pt_eff above. RE-FIT 2026-08-11 as a TWO-variable surface on 48 tiled
+    # softmax_row_tiling rows at cores=32 (h = ROWS/(cores*T) = 2..256, COLS =
+    # 128..4096), backing the derate out of the measurement with the LX-spill term also
+    # disabled so the two are not entangled:
+    #
+    #   eff = min(cap, (h/r_full)**exp * (COLS/col_ref)**col_exp)
+    #
+    # WHY IT GAINED A WIDTH. The previous single-variable fit keyed on ROWS alone, on
+    # the strength of a cross-COLS control at COLS 2048 vs 4096. That control was blind,
+    # not wrong: at both those widths the required efficiency is already at the plateau
+    # for every h it sampled, so it could not see a width term. Sweeping down to COLS
+    # 128 shows the required efficiency rising steadily with width at fixed h (at h=4:
+    # 0.18 -> 0.32 -> 0.49 -> 0.68 for COLS 128/256/512/2048), i.e. a narrow tensor
+    # needs a much taller tile to fill the pipeline. The fitted exponents (0.50 on h,
+    # 0.38 on COLS) say the governing quantity is close to the per-core TILE SIZE h*COLS
+    # -- the bytes each core streams per tile -- with a weak residual preference for
+    # taller tiles. That is the opposite of the retired conclusion, and it is the
+    # reading the mechanism (a stream too short to amortise pipeline fill) predicted all
+    # along.
+    #
+    # RMS 9.0 % in log units over the 48 fitted rows, 4.8 % over the 29 with COLS >=
+    # 1024 (the in-scope width band -- see eval_model.in_scope). The width evidence
+    # itself comes from COLS 128..512, which the standing scope decision puts OUT of the
+    # scored population: those rows fix the shape but are not part of any accuracy
+    # claim.
+    coarse_underfill_rfull: float = 7.9  # rows/core at full fill, AT col_ref
+    coarse_underfill_exp: float = 0.50  # tile-HEIGHT exponent
+    coarse_underfill_col_ref: float = 2048.0  # width r_full is quoted at
+    coarse_underfill_col_exp: float = 0.38  # tensor-WIDTH exponent
+    # PLATEAU. 1.08, not 1.0: it is a fitted RATIO, not a physical efficiency. On this
+    # build a coarse-tiled fused softmax with a large per-core tile runs ~8 % FASTER
+    # than the modeled memory term, so the surface has to be able to speed the model up.
+    # The offset is fused-softmax-specific (pointwise, which sets the base rate, runs -6
+    # % mean the other way), so it is absorbed here rather than in bw_peak_gbps -- but
+    # it is DOUBLE DUTY, and the deciding experiment is an untiled COLS sweep at
+    # cores=32: the three untiled in-scope rows we have disagree (+22 %, -14 %, -14 %),
+    # too few to separate a base-rate offset from a tiling one. Weakly identified:
+    # 1.06..1.11 span 0.1 pp of RMS.
+    coarse_underfill_cap: float = 1.08
+    # MATMUL keeps the PRE-2026-08-11 rows-only curve, frozen. Every row behind the new
+    # surface is a softmax row; a coarse-tiled matmul was always priced by extrapolating
+    # the softmax fit onto it, and nothing in the re-sweep says the new shape transfers.
+    # The one piece of evidence available says it does not: swapping tiled matmul onto
+    # the new surface moves matmul_row from 38.3 to 41.7 % RMS (mean -36.4 -> -39.8),
+    # because the shallower height curve stops derating its short tiles. That is weak
+    # evidence -- matmul_row under-predicts by a third for reasons unrelated to this
+    # term -- but it points the wrong way, so the matmul branch does not move. Re-fit it
+    # when a coarse matmul tile-count sweep exists. See `coarse_underfill_eff_matmul`.
+    coarse_underfill_rfull_matmul: float = 13.0
+    coarse_underfill_exp_matmul: float = 0.68
+    coarse_underfill_cap_matmul: float = 0.95
+    #: Smallest per-core tile height the MATMUL curve was fitted at (see `_eff0` sibling).
+    coarse_underfill_h0_matmul: float = 2.0
+    # LX-SPILL bandwidth derate. When a coarse-tiled kernel's per-core working set (its
+    # live intermediate tiles, ~2 of them) overflows the practically available LX (~512
+    # KB/core), those intermediates spill to HBM. The extractor ALREADY counts the
+    # spilled bytes as HBM (they show up read+written), so this is NOT a byte miss --
+    # but that spilled traffic runs SLOWER than the modeled rate, so the effective
+    # bandwidth is derated: BW *= min(1, (lx_spill_cap / ws_per_core) ** lx_spill_exp),
+    # ws > cap only. NOTE 512 KB is NOT a documented capacity -- this repo documents 2
+    # MB physical and ~1.6 MB allocatable per core. The value is fitted; do not describe
+    # it as matching the hardware.
+    #
+    # EXPONENT RE-FIT 2026-08-11, 0.15 -> 0.06, JOINTLY with the coarse-underfill
+    # surface above. The two act on the same rows and both fall off with the per-core
+    # tile, so fitting either alone hands it the other's error: the 0.15 fit was taken
+    # with the underfill surface keyed on rows only, and on the current build it
+    # over-derated the large-tile end by up to 24 % where the measurement wants ~7 %.
+    # The decline itself is real and survives the joint fit -- D falls from 1.13 at ws
+    # 256 KB to 0.98 at 3 MB -- it is just much milder than the old value. Weakly
+    # identified (0.03..0.09 spans 0.07 pp of RMS); the CAP is barely identified at all
+    # (256 KB..512 KB spans 0.02 pp), so it is left where it was.
     lx_spill_cap_bytes: float = 524288.0  # ~512 KB/core practically available LX
-    lx_spill_exp: float = 0.15
+    lx_spill_exp: float = 0.06
     # Matmul-specific spill calibration (see _lx_spill_bw_derate). Defaults make the
     # term fire only on the largest matmul tiles (it acts on 19 in-scope rows).
     # The cap is only weakly identified: 1 MB..infinity spans 0.44 pp of RMS.
@@ -367,7 +431,7 @@ class CostParams:
     # the capacity threshold differs.
     mm_spill_ws_cap_bytes: float = 2097152.0
     mm_spill_ws_exp: float = 0.15
-    # MATMUL compute term. T_matmul = compute + HBM - gamma*min(compute, HBM), where
+    # MATMUL compute term. T_matmul = max(compute, HBM), where
     # compute = MACs/cores/(mac_peak*pt_eff). mac_peak=1140 (sustained) fit on the
     # compute-DOMINANT low-core runs (cores 4-8, compute 80-90% of the kernel; the old
     # 1536 datasheet was ~33% optimistic). A single peak over-predicts cores=32 -- the
@@ -381,29 +445,33 @@ class CostParams:
     # over-charged rather than the overlap under-modelled.
     loop_reread_scale: float = 0.85
     # Matmul operand RE-READ (tile spill): the per-core OUTPUT-accumulator tile has area
-    # (M/m)*(N/n); once it exceeds the on-chip capacity (~64K fp16 elems/core) it no longer
-    # stays resident, so the operands are re-streamed from HBM. The re-read magnitude is the
-    # operand bytes; the fraction grows with how far the tile overflows:
+    # (M/m)*(N/n); once it exceeds the on-chip capacity (~64K fp16 elems/core) it no
+    # longer stays resident, so the operands are re-streamed from HBM. The re-read
+    # magnitude is the operand bytes; the fraction grows with how far the tile
+    # overflows:
     #   reread = (|A| + |B|) * f(area),  f(area) = min(cap, slope*log2(area/area0)).
-    # Fit on the decouple + re-read sweeps (area spill, K-split never used so psum ring = 0).
+    # Fit on the decouple + re-read sweeps (area spill, K-split never used so psum ring
+    # = 0).
     mm_spill_area0: float = (
         65536.0  # per-core output-tile area (elems) below which no spill
     )
     mm_spill_slope: float = 0.45
     mm_spill_cap: float = 1.50
-    # SPLIT-SHAPE re-read (§11): the area spill above is symmetric in m<->n and so is blind to
-    # how the output is split. A forced-split sweep shows a large per-core tile that is ALSO
-    # split many ways costs extra the area term misses -- an INTERACTION of tile size and how
-    # far each output dimension is split. It is SIZE-GATED (bites only once the tile is ~2x the
-    # §10 knee, so a small lopsided tile stays accurate) and TWO-SIDED: splitting the LONGER
-    # output dim into many cores is penalized sooner (knee 8, the planner's own _COHORT_LIMIT)
-    # and harder than splitting the SHORTER dim (knee 16, empirical). This asymmetry -- e.g. at
-    # M>>N, a 32x1 split (fan the long M) costs ~2x a 1x32 (fan the short N) at equal area --
-    # is real (leave-one-shape-out RMS 337->249 vs the one-sided form) and a symmetric term
-    # cannot express it.
-    #   split = cL*max(0,area-area0)*max(0,log2(fan_long/8)) + cS*max(0,area-area0)*max(0,log2(fan_short/16))
-    #   area = (M/m)*(N/n);  fan_long = m if M>=N else n;  fan_short = the other split count
-    # Zero for balanced splits (both fanouts small) and for small tiles. See §11, the offline fitting tools.
+    # SPLIT-SHAPE re-read: the area spill above is symmetric in m<->n and so is
+    # blind to how the output is split. A forced-split sweep shows a large per-core tile
+    # that is ALSO split many ways costs extra the area term misses -- an INTERACTION of
+    # tile size and how far each output dimension is split. It is SIZE-GATED (bites
+    # only once the tile is ~2x the area-spill knee, so a small lopsided tile stays
+    # accurate) and TWO-SIDED: splitting the LONGER output dim into many cores is
+    # penalized sooner (knee 8, the planner's own _COHORT_LIMIT) and harder than
+    # splitting the SHORTER dim (knee 16, empirical). This asymmetry -- e.g. at M>>N,
+    # a 32x1 split (fan the long M) costs ~2x a 1x32 (fan the short N) at equal area
+    # -- is real (leave-one-shape-out RMS 337->249 vs the one-sided form) and a
+    # symmetric term cannot express it.
+    # split = cL*max(0,area-area0)*max(0,log2(fan_long/8)) +
+    # cS*max(0,area-area0)*max(0,log2(fan_short/16)) area = (M/m)*(N/n);  fan_long = m
+    # if M>=N else n;  fan_short = the other split count Zero for balanced splits (both
+    # fanouts small) and for small tiles. Fitted offline with `eval_model.py`.
     mm_split_reread_us_per_elem: float = 2.62e-3  # cL: long-dim split coefficient
     mm_split_short_us_per_elem: float = 2.88e-3  # cS: short-dim split coefficient
     mm_split_area0: float = 131072.0  # per-core tile elems below which no split re-read
@@ -415,97 +483,102 @@ class CostParams:
     )
     # Matmul HBM: a SINGLE effective rate = the pointwise copy peak (150). The earlier
     # two-rate fit (143 read / 156 write) is retired: 156 > 150 is unphysical (a write
-    # cannot beat the copy peak) and was a compute-free-fit artifact absorbing the overlap
-    # term. On the planner-realistic envelope a single 150 + turnaround + overlap scores
-    # better than the old two-rate (RMS ~5.8% with the area-spill term) -- equal-or-better
-    # AND physical. Read/write are not separately identifiable from these data. (See §7.)
+    # cannot beat the copy peak) and was a compute-free-fit artifact absorbing the
+    # overlap term. On the planner-realistic envelope a single 150 + turnaround +
+    # overlap scores better than the old two-rate (RMS ~5.8% with the area-spill term)
+    # -- equal-or-better AND physical. Read/write are not separately identifiable from
+    # these data.
     mm_bw_read_gbps: float = 150.0
     mm_bw_write_gbps: float = 150.0
     # DEFAULT-LAYOUT BMM slow compute rate (cat 4). A batched matmul whose BOTH rank-3
-    # operands carry the COMPILER-DEFAULT [0,1,2] device tile order -- the batch dim B sits
-    # just inside the stick (device pos -2) -- runs the systolic array at a much SLOWER
-    # sustained rate than a plain 2D matmul: on clean reps=7 data (bmm_wd + bmm_layout
-    # both-default, cores=32, B>=4) the effective rate is a stable ~160 MAC/ns/core (us/GMAC
-    # ~214, mac_peak 145-147 raw; 160 the overlap-corrected fit), vs 1140 for a 2D matmul.
-    # The [1,0,2] "fast" layout (B outermost) sustains ~460-490; the compiler emits the slow
-    # [0,1,2] for every real bmm, so the model must charge the slow rate. It is COMPUTE-bound
-    # (us/GMAC is shape-flat; the effective HBM BW only appears to vary because io_hbm/MACs
-    # varies), so the fix is a per-op mac_peak override, NOT a bandwidth change. Detector:
-    # ``_default_layout_bmm_batch`` (both batched operands default at dev pos -2). GATED to
-    # B >= ``bmm_default_min_batch``: at B=2 (batch << the 32-way M*N split) the slow penalty
-    # halves (us/GMAC ~108, rate ~290) -- a distinct small-batch corner left on the plain
-    # rate. Also GATED to cores >= ``bmm_default_min_cores``: the slow rate is a many-core
-    # contention effect (implied per-core peak 407@c1, 241@c2, 168@c4 -> ~160 only at c>=8;
-    # the clean fit is all cores=32), so low-core bmm keeps the plain peak. Gold-safe: never
-    # fires on plain 2D ``mmwd`` (0/343) or the 3d-2d projection bmm.
+    # operands carry the COMPILER-DEFAULT [0,1,2] device tile order -- the batch dim B
+    # sits just inside the stick (device pos -2) -- runs the systolic array at a much
+    # SLOWER sustained rate than a plain 2D matmul: on clean reps=7 data (bmm_wd +
+    # bmm_layout both-default, cores=32, B>=4) the effective rate is a stable ~160
+    # MAC/ns/core (us/GMAC ~214, mac_peak 145-147 raw; 160 the overlap-corrected fit),
+    # vs 1140 for a 2D matmul. The [1,0,2] "fast" layout (B outermost) sustains
+    # ~460-490; the compiler emits the slow [0,1,2] for every real bmm, so the model
+    # must charge the slow rate. It is COMPUTE-bound (us/GMAC is shape-flat; the
+    # effective HBM BW only appears to vary because io_hbm/MACs varies), so the fix is a
+    # per-op mac_peak override, NOT a bandwidth change. Detector:
+    # ``_default_layout_bmm_batch`` (both batched operands default at dev pos -2). GATED
+    # to B >= ``bmm_default_min_batch``: at B=2 (batch << the 32-way M*N split) the slow
+    # penalty halves (us/GMAC ~108, rate ~290) -- a distinct small-batch corner left on
+    # the plain rate. Also GATED to cores >= ``bmm_default_min_cores``: the slow rate is
+    # a many-core contention effect (implied per-core peak 407@c1, 241@c2, 168@c4 ->
+    # ~160 only at c>=8; the clean fit is all cores=32), so low-core bmm keeps the plain
+    # peak. Gold-safe: never fires on plain 2D ``mmwd`` (0/343) or the 3d-2d projection
+    # bmm.
     bmm_default_mac_peak_per_core_ns: float = 160.0
     bmm_default_min_batch: int = 4
     bmm_default_min_cores: int = 8
-    # LAYOUT IS NOT MODELLED, deliberately. A faster device tile order exists: with both
-    # rank-3 operands on [1,0,2] (batch outermost) a bmm runs 2.82x faster at byte-identical
-    # traffic, measured over 138 runs and 17 shapes. It is reachable only by setting
-    # an opt-in layout preference the compiler does not enable by default, so nothing the compiler emits today uses it.
-    # Pricing all four operand combinations cost three constants and an additive form for
-    # configurations that never ship; that was removed in favour of the single default-layout
-    # rate above. The measurement stands and is kept as evidence in the report's §13
-    # figure; the non-default runs are excluded from scoring (`eval_model.in_scope`).
-    # A 3d-2d PROJECTION bmm (one rank-3 operand, one shared 2D operand) runs far faster than
-    # a full both-batched bmm. Two rates, keyed on batch size.
-    #
-    # MECHANISM: OPEN. The obvious story -- "the 2D operand loads once and is reused, so it
-    # escapes the per-batch re-gather" -- is WRONG, or at least already paid for: that operand
-    # is tagged `broadcast=True` with `loop_factor=1`, so the byte count ALREADY charges it
-    # once, and charging it again as a rate would double-book. Two further facts contradict a
-    # pure amortisation story: (a) all 43 measured rank-3 operands are in the SLOW default
-    # order, for which the layout-additivity term's own rate is 235 MAC/ns/core -- 2.6x below
-    # what 3d2d actually sustains, so the two shipped mechanisms disagree about the same
-    # physical configuration; and (b) amortising a once-loaded operand should get BETTER with
-    # more batches, whereas the measured rate STEPS DOWN above B=4. These are empirical rates
-    # with the mechanism unresolved, and they are labelled as such deliberately.
-    #
-    # THE B STEP IS REAL, not a shape confound (an earlier flat-rate version of this term
-    # claimed otherwise and was refuted). Per-GMAC cost normalised to B=4, within shape and at
-    # an identical 4x8 split: 1024x1024x1024 -> 1.136/1.000/1.352/1.384 and
-    # 1024x2048x1024 -> 1.145/1.000/1.425/1.415 at B=2/4/8/16, i.e. three shapes carry more
-    # than one B and two are fully repeat-backed ladders. It is NOT capacity: the per-core
-    # working set at the step (768->1024 KB, 1024->1536 KB) stays under the 1638 KB LX budget,
-    # and two configs with IDENTICAL 1024 KB working sets run at 57.6 vs 80.1 us/GMAC.
-    # Leave-one-SHAPE-out (holding out a whole B ladder) prefers the step over a flat rate.
-    #
-    # Calibrated on repeat-backed PLAIN 3d2d only (n=19, B in {2,4,8,16}); `bmm_3d2d_k_tiling`
-    # is EXCLUDED because its `matmul_macs` is per-tile (up to 16x under-counted), so it cannot
-    # calibrate a rate. Calibration RMS 16.5 -> 5.6 %, mean -2.2 -> -0.2 %.
-    # RESIDUAL, disclosed: the smallest shape `512x2048x512` at B=4 still reads +10.4 % (it
-    # wants ~965, 1.6x the fitted rate) -- the small-shape corner is not priced by either rate.
-    # It is the ONE repeat-backed record anywhere in the database that this term makes worse
-    # (4.3 -> 10.4 %); the flat-rate version it replaces left it at +21.9 %.
-    # NO CORES GATE, unlike the sibling layout term, and deliberately: every measured 3d2d row
-    # is already cores >= 8 (44 at 32, two each at 8/16), so a gate is a no-op on current data,
-    # and below it the fallback would be the plain 1140 -- a rate the sibling's own low-core
-    # data shows is 2.5-7x too fast for a batched matmul. Extrapolating the measured 3d2d rate
-    # is the lesser error. The cores=8/16 rows are single-shot and remain the worst in the set
-    # (-68.8 -> -52.9 %, -66.5 -> -51.1 %); they are improved but not resolved.
+    # LAYOUT IS NOT MODELLED, deliberately. A faster device tile order exists: with all
+    # three operands on [1,0,2] (batch outermost) a bmm runs up to 8.3x faster at
+    # byte-identical traffic, and the OUTPUT layout only pays off once both inputs are
+    # already batch-outer. It is reachable only behind an opt-in layout preference that
+    # the compiler does not enable by default, so nothing it emits today uses it.
+    # Pricing all four operand combinations cost three constants and an additive form
+    # for configurations that never ship; that was removed in favour of the single
+    # default-layout rate above. The measurement stands and is kept in the database; the
+    # non-default runs are excluded from scoring (`eval_model.in_scope`). A 3d-2d
+    # PROJECTION bmm (one rank-3 operand, one shared 2D operand) runs far faster than a
+    # full both-batched bmm. Two rates, keyed on batch size. MECHANISM: OPEN. The
+    # obvious story -- "the 2D operand loads once and is reused, so it escapes the
+    # per-batch re-gather" -- is WRONG, or at least already paid for: that operand is
+    # tagged `broadcast=True` with `loop_factor=1`, so the byte count ALREADY charges it
+    # once, and charging it again as a rate would double-book. Two further facts
+    # contradict a pure amortisation story: (a) all 43 measured rank-3 operands are in
+    # the SLOW default order, for which the layout-additivity term's own rate is 235
+    # MAC/ns/core -- 2.6x below what 3d2d actually sustains, so the two shipped
+    # mechanisms disagree about the same physical configuration; and (b) amortising a
+    # once-loaded operand should get BETTER with more batches, whereas the measured rate
+    # STEPS DOWN above B=4. These are empirical rates with the mechanism unresolved, and
+    # they are labelled as such deliberately. THE B STEP IS REAL, not a shape confound
+    # (an earlier flat-rate version of this term claimed otherwise and was refuted).
+    # Per-GMAC cost normalised to B=4, within shape and at an identical 4x8 split:
+    # 1024x1024x1024 -> 1.136/1.000/1.352/1.384 and 1024x2048x1024 ->
+    # 1.145/1.000/1.425/1.415 at B=2/4/8/16, i.e. three shapes carry more than one B and
+    # two are fully repeat-backed ladders. It is NOT capacity: the per-core working set
+    # at the step (768->1024 KB, 1024->1536 KB) stays under the 1638 KB LX budget, and
+    # two configs with IDENTICAL 1024 KB working sets run at 57.6 vs 80.1 us/GMAC.
+    # Leave-one-SHAPE-out (holding out a whole B ladder) prefers the step over a flat
+    # rate. Calibrated on repeat-backed PLAIN 3d2d only (n=19, B in {2,4,8,16});
+    # `bmm_3d2d_k_tiling` is EXCLUDED because its `matmul_macs` is per-tile (up to 16x
+    # under-counted), so it cannot calibrate a rate. Calibration RMS 16.5 -> 5.6 %, mean
+    # -2.2 -> -0.2 %. RESIDUAL, disclosed: the smallest shape `512x2048x512` at B=4
+    # still reads +10.4 % (it wants ~965, 1.6x the fitted rate) -- the small-shape
+    # corner is not priced by either rate. It is the ONE repeat-backed record anywhere
+    # in the database that this term makes worse (4.3 -> 10.4 %); the flat-rate version
+    # it replaces left it at +21.9 %. NO CORES GATE, unlike the sibling layout term, and
+    # deliberately: every measured 3d2d row is already cores >= 8 (44 at 32, two each at
+    # 8/16), so a gate is a no-op on current data, and below it the fallback would be
+    # the plain 1140 -- a rate the sibling's own low-core data shows is 2.5-7x too fast
+    # for a batched matmul. Extrapolating the measured 3d2d rate is the lesser error.
+    # The cores=8/16 rows are single-shot and remain the worst in the set (-68.8 ->
+    # -52.9 %, -66.5 -> -51.1 %); they are improved but not resolved.
     bmm_3d2d_mac_peak_lo_ns: float = 705.0  # B <= bmm_3d2d_batch_knee
     bmm_3d2d_mac_peak_hi_ns: float = 470.0  # B >  bmm_3d2d_batch_knee
     bmm_3d2d_batch_knee: int = 4
 
     # Access-pattern effective HBM BW (GB/s) for non-matmul ops whose stick layout is
     # reorganized -- these fold turnaround into the single rate (measured io/kernel on
-    # the db_sweep). Keyed by OpFeatures.hbm_pattern; default ops keep bw_peak+turnaround.
+    # the db_sweep). Keyed by OpFeatures.hbm_pattern; default ops keep
+    # bw_peak+turnaround.
     bw_restickify_gbps: float = (
         116.0  # transpose: stick swapped, LESS turnaround (faster)
     )
-    # Stick-plane transports (cat0, transpose_outer, cat1): a `clone` that reorganizes the
-    # stick layout. The 32 cores split the stick-plane dim (sp = C/64); each core does the
-    # per-row stick work. Effective BW falls with the per-row strided stick gather -- more
-    # planes (sp) and a longer gather stride (more rows R) -- so all three share ONE form,
-    #   effBW = clamp(a - b*log2(sp) - d*log2(R), floor, bw_peak)   (report S6),
-    # differing only in calibration. cat0 = a STEEP untiled gather (its two cat copies sit
-    # just inside the stick, so each output row re-gathers sp scattered input sticks).
-    # transpose_outer = a GENTLE tiled block-transpose, calibrated at its best middle dim
-    # M=8 (effBW peaks at M~8 and falls either side -- M!=8 is a flagged residual, not yet
-    # modeled). cat1 = nearly FLAT (its cat copies sit outermost -> contiguous read+write).
-    # transpose itself is a hardware restickify (stick swapped) -> flat bw_restickify_gbps.
+    # Stick-plane transports (cat0, transpose_outer, cat1): a `clone` that reorganizes
+    # the stick layout. The 32 cores split the stick-plane dim (sp = C/64); each core
+    # does the per-row stick work. Effective BW falls with the per-row strided stick
+    # gather -- more planes (sp) and a longer gather stride (more rows R) -- so all
+    # three share ONE form, effBW = clamp(a - b*log2(sp) - d*log2(R), floor, bw_peak)
+    # (report S6), differing only in calibration. cat0 = a STEEP untiled gather (its two
+    # cat copies sit just inside the stick, so each output row re-gathers sp scattered
+    # input sticks). transpose_outer = a GENTLE tiled block-transpose, calibrated at its
+    # best middle dim M=8 (effBW peaks at M~8 and falls either side -- M!=8 is a flagged
+    # residual, not yet modeled). cat1 = nearly FLAT (its cat copies sit outermost ->
+    # contiguous read+write). transpose itself is a hardware restickify (stick swapped)
+    # -> flat bw_restickify_gbps.
     tx_cat0_a: float = 144.0
     tx_cat0_b: float = 9.6
     tx_cat0_d: float = 2.4
@@ -514,16 +587,17 @@ class CostParams:
     tx_touter_b: float = 6.8
     tx_touter_d: float = 1.2
     tx_touter_floor_gbps: float = 83.0
-    # transpose_outer only: the surface above is fit at the common M=8 (M = the outer/swapped
-    # dim, `TO_MID`). M is the output's CONTIGUOUS STICK-RUN length in the device layout
-    # [R, sp, M, 64], so M<8 means sub-1 KB writes and the rate falls further -- measured
-    # (all repeat-backed, cv<1%): M=8 +3.7%, M=4 -16.0%, M=2 -26.8% error, i.e. monotone in
-    # log2(M). Charged as a per-halving BW loss BELOW M=8, applied AFTER the surface clamp
-    # because it is a separate effect from the (R,C) surface whose floor is calibrated at M=8.
-    # Fit: 13 GB/s/halving takes transpose_outer RMS 9.6% -> 7.1% and the worst M<8 point
-    # from -29% to <10%. The M>8 side is deliberately NOT modelled: it is weaker, R-dependent
-    # (-0%/-4% at R=512 vs -9%/-22% at R=2048) and confounded with a planner split-shape
-    # change at large sizes ((1,32,1)->(2,2,8)->(4,4,2)); it needs the TAILS sweep.
+    # transpose_outer only: the surface above is fit at the common M=8 (M = the
+    # outer/swapped dim, `TO_MID`). M is the output's CONTIGUOUS STICK-RUN length in the
+    # device layout [R, sp, M, 64], so M<8 means sub-1 KB writes and the rate falls
+    # further -- measured (all repeat-backed, cv<1%): M=8 +3.7%, M=4 -16.0%, M=2 -26.8%
+    # error, i.e. monotone in log2(M). Charged as a per-halving BW loss BELOW M=8,
+    # applied AFTER the surface clamp because it is a separate effect from the (R,C)
+    # surface whose floor is calibrated at M=8. Fit: 13 GB/s/halving takes
+    # transpose_outer RMS 9.6% -> 7.1% and the worst M<8 point from -29% to <10%. The
+    # M>8 side is deliberately NOT modelled: it is weaker, R-dependent (-0%/-4% at R=512
+    # vs -9%/-22% at R=2048) and confounded with a planner split-shape change at large
+    # sizes ((1,32,1)->(2,2,8)->(4,4,2)); it needs the TAILS sweep.
     tx_touter_m_ref: float = 8.0
     tx_touter_m_penalty_gbps: float = 13.0
     tx_touter_m_floor_gbps: float = 40.0
@@ -531,24 +605,35 @@ class CostParams:
     tx_cat1_b: float = 0.8
     tx_cat1_d: float = 0.0
     tx_cat1_floor_gbps: float = 90.0
+    #: Smallest value the coarse-underfill surface was fitted at -- its support corner
+    #: (COLS 128, h 4). Below it the fit is not evaluated; the curve is anchored here and
+    #: continued with `gamma`. Was a bound on h alone; now on the surface VALUE, because
+    #: with a width term the support boundary is no longer a single tile height.
+    coarse_underfill_eff0: float = 0.248
+    #: Decay exponent BELOW the anchor. Not fitted -- see `coarse_underfill_eff`. Small
+    #: enough to bound the derate, non-zero so the tile still orders configurations.
+    coarse_underfill_gamma: float = 0.1
     bw_reduce_outer_gbps: float = 113.0  # cross-row (dim0) reduction (sumcol)
     # Row-reduction READ rate falls with ROWS (the read pipeline degrades as each core
     # streams more rows), op-independent, saturating. Fit on the reduction-rows sweep
-    # (read/sumrow/amax/mean/sumall collapse to one curve): effBW = floor + amp*exp(-ROWS/
-    # scale), clamped to peak. sumcol (reduce_outer) is exempt -- different access pattern.
+    # (read/sumrow/amax/mean/sumall collapse to one curve): effBW = floor +
+    # amp*exp(-ROWS/ scale), clamped to peak. sumcol (reduce_outer) is exempt --
+    # different access pattern.
     red_read_bw_floor_gbps: float = 114.0
     red_read_bw_amp_gbps: float = 61.0
     red_read_bw_scale_rows: float = 3700.0
     # A reduction streams a full-tensor READ over the shared HBM bus; with FEWER active
-    # cores fewer parallel LX request streams are in flight, so a smaller fraction of peak
-    # HBM bandwidth is realized. reduction_read_bw() above is the cores=32 (full-bus)
-    # calibration; this table derates it below 32 cores. g(cores)=BW(cores)/BW(32), the mean
-    # over the clean plain reductions (read/amax/sumrow/mean) at their non-underfilled
-    # anchor shapes. It is SUB-linear/saturating (a single core drives ~11% of the bus, not
-    # 1/32=3%); g=cores/32 is falsified 3.6x. g(32)=1.0 EXACTLY -> the cores=32 gold path is
+    # cores fewer parallel LX request streams are in flight, so a smaller fraction of
+    # peak HBM bandwidth is realized. reduction_read_bw() above is the cores=32
+    # (full-bus) calibration; this table derates it below 32 cores.
+    # g(cores)=BW(cores)/BW(32), the mean over the clean plain reductions
+    # (read/amax/sumrow/mean) at their non-underfilled anchor shapes. It is
+    # SUB-linear/saturating (a single core drives ~11% of the bus, not 1/32=3%);
+    # g=cores/32 is falsified 3.6x. g(32)=1.0 EXACTLY -> the cores=32 gold path is
     # untouched. c8/c16 are single-shot (no reps); the measured plateau ~0.54 is shipped
-    # as-is (a repeated low-core reduction sweep is the deciding experiment). Applies ONLY on
-    # the standalone-reduction branch below; fused softmax (len>1) is a separate io_hbm effect.
+    # as-is (a repeated low-core reduction sweep is the deciding experiment). Applies
+    # ONLY on the standalone-reduction branch below; fused softmax (len>1) is a separate
+    # io_hbm effect.
     red_bw_cores_g: dict = dataclasses.field(
         default_factory=lambda: {1: 0.11, 2: 0.22, 4: 0.43, 8: 0.54, 16: 0.54, 32: 1.0}
     )
@@ -558,14 +643,15 @@ class CostParams:
     bw_broadcast_gbps: float = (
         118.0  # fallback rate (used only if the logical shape is absent)
     )
-    # ALL FOUR broadcast ops share the SAME shape of effective-BW surface (a dense R×C sweep):
-    # a well-filled regime (ROWS >= min_rows) where the rate declines gently with both COLS and
-    # ROWS, and a short-tensor regime (ROWS < min_rows) that is a V-valley with its minimum at
-    # ROWS = COLS/64 (the output stick-plane count). The small-ROWS collapse and the COLS/ROWS
-    # dependence are GENERAL broadcast-kernel effects -- they are NOT specific to the b[1,C]
-    # operand (copy, a scalar broadcast, shows the same collapse). The only operand-specific
-    # difference is a small rate lift: the ROW-broadcast ops (bcast/mulbcast, b[1,C]) run a few
-    # GB/s faster than the scalar/column ops (copy/bcastcol), so each FAMILY gets its own fit.
+    # ALL FOUR broadcast ops share the SAME shape of effective-BW surface (a dense R×C
+    # sweep): a well-filled regime (ROWS >= min_rows) where the rate declines gently
+    # with both COLS and ROWS, and a short-tensor regime (ROWS < min_rows) that is a
+    # V-valley with its minimum at ROWS = COLS/64 (the output stick-plane count). The
+    # small-ROWS collapse and the COLS/ROWS dependence are GENERAL broadcast-kernel
+    # effects -- they are NOT specific to the b[1,C] operand (copy, a scalar broadcast,
+    # shows the same collapse). The only operand-specific difference is a small rate
+    # lift: the ROW-broadcast ops (bcast/mulbcast, b[1,C]) run a few GB/s faster than
+    # the scalar/column ops (copy/bcastcol), so each FAMILY gets its own fit.
     bcast_bw_min_rows: float = (
         1024.0  # split between the well-filled and short-tensor regimes
     )
@@ -588,7 +674,8 @@ class CostParams:
     bcast_v_floor: float = 92.0
     bcast_v_bl: float = 32.0
     bcast_v_br: float = 10.0
-    # -- SCALAR/COLUMN family (copy: scalar; bcastcol: b[R,1]) -- same shape, slightly slower --
+    # -- SCALAR/COLUMN family (copy: scalar; bcastcol: b[R,1]) -- same shape, slightly
+    # slower --
     cbc_bw_a: float = 162.0  # well-filled surface (5.1% RMS)
     cbc_bw_b: float = 1.8
     cbc_bw_d: float = 2.2
@@ -627,33 +714,88 @@ def underfill_eff(
     return min(1.0, (rows_per_core / r_full) ** p.underfill_exponent)
 
 
+def _op_cols(o) -> float:
+    """The op's row WIDTH: the longest last logical dim over its operands. This is the
+    length of one contiguous run in the device layout, so it is what sets how much a core
+    streams per row -- used by both the underfill surface and the LX working set."""
+    return max((a.logical[-1] for a in o.args if a.logical), default=0)
+
+
 def coarse_underfill_eff(
-    rpc: float, params: CostParams | None = None, cap: float | None = None
+    rpc: float,
+    cols: float,
+    params: CostParams | None = None,
+    cap: float | None = None,
 ) -> float:
     """Pipeline-fill efficiency for a COARSE-tiled (fused pointwise / softmax) kernel whose
-    per-core tile is ``rpc`` rows tall (rpc = ROWS/(cores*tiles)). DISTINCT from the matmul
-    pt_eff (``underfill_eff``): re-fit on the softmax rpc sweep, where efficiency plateaus
-    at ``coarse_underfill_cap`` (~0.95) around rpc 16-32 and derates as
-    ``(rpc/r_full)**exp`` below (rpc4~0.45, rpc2~0.28). The cross-COLS control proved this
-    keys on ROWS (rpc), not tile bytes. ``rpc<=0`` (unknown/untiled) -> 1.0 (no derate).
-    (A mild efficiency decline above rpc~32 is a known, unmodeled residual.)
+    per-core tile is ``rpc`` rows tall (rpc = ROWS/(cores*tiles)) and ``cols`` wide.
+    DISTINCT from the matmul pt_eff (``underfill_eff``). ``rpc<=0`` (untiled) or
+    ``cols<=0`` (width unknown) -> 1.0 (no derate).
 
-    ``cap`` overrides the plateau. The 0.95 plateau is a SOFTMAX measurement; there is no
-    matmul measurement supporting it, and on a tiled matmul the tile is almost always far
-    above the knee (``tile_rows_per_core`` 32-1024, median 64, vs ``r_full`` = 13), so the
-    term would contribute ONLY its cap -- a flat 5 % memory penalty that models nothing.
-    The caller passes ``cap=1.0`` for matmul so the SHAPE part (the knee, which does fire
-    on 30 of 175 tiled-matmul rows and is a real short-tile effect) is kept while the
-    softmax-specific plateau is not applied where it was never calibrated. Same reasoning
-    already applied to the sibling ``_lx_spill_bw_derate``, which is gated off for matmul.
+        eff = min(cap, (rpc/r_full)**exp * (cols/col_ref)**col_exp)
+
+    BOTH variables matter, and the width one is the 2026-08-11 correction: the surface
+    used to key on ``rpc`` alone, and over-predicted a wide tiled softmax by 26-54 % while
+    under-predicting a narrow one. What the tile really has to be is BIG -- the fitted
+    exponents (0.50, 0.38) put the governing quantity close to ``rpc*cols``, the elements
+    each core streams per tile -- so ``r_full`` is now the full-fill height AT ``col_ref``,
+    and a tensor half as wide needs ~1.7x the height. See CostParams for the fit.
+
+    SOFTMAX / fused-pointwise ONLY. A coarse-tiled MATMUL goes through
+    ``coarse_underfill_eff_matmul``, which is the pre-re-fit rows-only curve held frozen:
+    every row behind this surface is a softmax row, and the one check available says the
+    new shape does not transfer to matmul. Same split as the sibling
+    ``_lx_spill_bw_derate``, which already carries a separate cap/exponent pair for matmul.
+    """
+    p = params or CostParams()
+    if rpc <= 0 or cols <= 0:
+        return 1.0
+    raw = (rpc / p.coarse_underfill_rfull) ** p.coarse_underfill_exp * (
+        cols / p.coarse_underfill_col_ref
+    ) ** p.coarse_underfill_col_exp
+    # OUTSIDE THE FIT, DO NOT EXTRAPOLATE THE FIT. The surface is calibrated over a
+    # (rpc, cols) box whose smallest corner -- cols 128, rpc 4 -- puts it at
+    # `coarse_underfill_eff0`. Below that it was being evaluated anyway, and being an
+    # unbounded power law it kept diverging: a recorded flash bundle carried rpc 0.0078,
+    # giving eff 0.0065 -- a 155x derate that inflated its prediction 42x.
+    #
+    # So the curve is ANCHORED at the smallest VALUE it was fitted at and continues
+    # below with a much weaker exponent. The anchor is on the surface value rather than
+    # on rpc because with two variables the edge of the support is no longer one tile
+    # height. Two properties matter: * inside the fit nothing changes at all, so no
+    # calibrated point moves; * below it the tile still ORDERS configurations -- a plain
+    # floor does not, and measurably collapsed two distinct flash tilings onto one
+    # prediction.
+    #
+    # `coarse_underfill_gamma` is a FORM choice, not a fitted constant: the only data
+    # below the anchor is six flash bundles, far too few to fit an exponent, and no more
+    # can be collected while coarse tiling does not compile. Re-fit it when tiled
+    # measurements exist there again.
+    ceil_ = p.coarse_underfill_cap if cap is None else cap
+    e0 = p.coarse_underfill_eff0
+    if raw >= e0:
+        return min(ceil_, raw)
+    return min(ceil_, e0) * (raw / e0) ** p.coarse_underfill_gamma
+
+
+def coarse_underfill_eff_matmul(rpc: float, params: CostParams | None = None) -> float:
+    """Coarse-tiling underfill for a tiled MATMUL: ``min(0.95, (rpc/13)**0.68)``, anchored
+    at ``rpc = 2`` and continued below with ``gamma``.
+
+    This is the surface as it stood before the 2026-08-11 two-variable re-fit, kept for
+    matmul alone and deliberately FROZEN -- see ``coarse_underfill_rfull_matmul``. It is
+    an extrapolation from softmax either way (no matmul measurement calibrates it), but it
+    is the extrapolation the tiled-matmul accuracy figures were taken under, and the new
+    one scores worse there. ``rpc<=0`` (untiled/unknown) -> 1.0.
     """
     p = params or CostParams()
     if rpc <= 0:
         return 1.0
-    return min(
-        p.coarse_underfill_cap if cap is None else cap,
-        (rpc / p.coarse_underfill_rfull) ** p.coarse_underfill_exp,
-    )
+    h0, ceil_ = p.coarse_underfill_h0_matmul, p.coarse_underfill_cap_matmul
+    r_full, exp = p.coarse_underfill_rfull_matmul, p.coarse_underfill_exp_matmul
+    if rpc >= h0:
+        return min(ceil_, (rpc / r_full) ** exp)
+    return min(ceil_, (h0 / r_full) ** exp) * (rpc / h0) ** p.coarse_underfill_gamma
 
 
 def _lx_spill_working_set(ops: list) -> float:
@@ -662,8 +804,7 @@ def _lx_spill_working_set(ops: list) -> float:
     ws = 0.0
     for o in ops:
         if o.tiles_output_dim and o.tile_rows_per_core > 0:
-            cols = max((a.logical[-1] for a in o.args if a.logical), default=0)
-            ws = max(ws, 2.0 * o.tile_rows_per_core * cols * o.dtype_bytes)
+            ws = max(ws, 2.0 * o.tile_rows_per_core * _op_cols(o) * o.dtype_bytes)
     return ws
 
 
@@ -676,9 +817,9 @@ def _lx_spill_bw_derate(ops: list, params: CostParams | None = None) -> float:
     # Previously gated OFF for matmul entirely (the term was softmax-calibrated). But a
     # coarse-tiled matmul spills for the same reason -- its per-core tile is the same
     # kind of live working set -- and the large-tile end is where the model was most
-    # wrong: mean residual +4.0 / +0.4 / -5.4 / -12.1 % at M = 2048/4096/8192/16384, i.e.
-    # progressively UNDER-predicted as the tile grows. The derate is inert below the cap
-    # (1.000 at <=64 rows/core), so it only touches that end.
+    # wrong: mean residual +4.0 / +0.4 / -5.4 / -12.1 % at M = 2048/4096/8192/16384,
+    # i.e. progressively UNDER-predicted as the tile grows. The derate is inert below
+    # the cap (1.000 at <=64 rows/core), so it only touches that end.
     ws = _lx_spill_working_set(ops)
     # Matmul gets its OWN cap/exponent. The softmax calibration (512 KB, 0.15) does not
     # transfer: applied to matmul it over-derates the mid-range tiles (pushing the
@@ -768,8 +909,9 @@ def _matmul_mac_peak(o, params: "CostParams") -> float:
     gated-out bmm -- keeps the plain ``mac_peak_per_core_ns``, so the gold path is untouched."""
     b3 = _bmm_3d2d_batch(o)
     if b3:
-        # 3d-2d projection: empirical rate, stepping down above B=4. Mechanism open -- see the
-        # parameter comment for the three facts that refute the obvious amortisation story.
+        # 3d-2d projection: empirical rate, stepping down above B=4. Mechanism open --
+        # see the parameter comment for the three facts that refute the obvious
+        # amortisation story.
         return (
             params.bmm_3d2d_mac_peak_lo_ns
             if b3 <= params.bmm_3d2d_batch_knee
@@ -779,14 +921,15 @@ def _matmul_mac_peak(o, params: "CostParams") -> float:
     if b < params.bmm_default_min_batch or o.cores < params.bmm_default_min_cores:
         return params.mac_peak_per_core_ns
     if a_def and b_def:
-        # The ONLY batched arrangement the compiler emits: `matmul_preferred_layout` is
-        # opt-in and defaults to "" (config.py), so both rank-3 operands carry the
-        # default [0,1,2] order. One measured rate covers it.
+        # The ONLY batched arrangement the compiler emits: the layout preference that
+        # would change it is opt-in and off by default, so both rank-3 operands carry
+        # the default [0,1,2] order. One measured rate covers it.
         return params.bmm_default_mac_peak_per_core_ns
-    # A faster order exists -- measured 2.82x over 138 runs, see the report's §13
-    # figure -- but it is reachable only by setting SPYRE_MATMUL_PREFERRED_LAYOUT, so it
-    # is deliberately NOT modelled and those runs are out of scope. Modelling it cost
-    # three constants and an additive form for a configuration nothing emits.
+    # A faster order exists -- up to 8.3x with all three operands batch-outer -- but it
+    # is reachable only behind an opt-in layout preference that no released build
+    # enables, so it is deliberately NOT modelled and those runs are out of scope.
+    # Modelling it cost three constants and an additive form for a configuration
+    # nothing emits.
     return params.mac_peak_per_core_ns
 
 
@@ -925,7 +1068,7 @@ def broadcast_bw(o, p):
     """Effective HBM BW for a broadcast-operand op. All four ops share one surface SHAPE
     (well-filled COLS/ROWS decline + a short-tensor V-valley whose min is at ROWS=COLS/64);
     the ROW-broadcast ops (bcast/mulbcast, b[1,C]) run a few GB/s faster than the scalar/
-    column ops (copy/bcastcol), so each family has its own constants. See report §4."""
+    column ops (copy/bcastcol), so each family has its own constants."""
     rc = _logical_rc(o)
     if rc is None:
         return p.bw_broadcast_gbps
@@ -993,7 +1136,8 @@ def _transport_kind(o) -> str:
         and ol[1] > 1
     ):
         return "transpose_outer"
-    # cat1: a 2-D input [R, C] reused across k copies -> [R, k, C] (concat on the stick axis).
+    # cat1: a 2-D input [R, C] reused across k copies -> [R, k, C] (concat on the stick
+    # axis).
     if (
         len(ol) == 3
         and len(il) == 2
@@ -1102,8 +1246,9 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     a fused kernel loads each distinct EXTERNAL input from HBM ONCE (re-reads served
     on-chip), so a shared input is not double-counted; reads and writes are summed over
     the bundle before the turnaround term (shared bus). ``eff_underfill`` derates the
-    bandwidth term when OUTPUT-dim (coarse) tiling shortens each core's per-tile height
-    (``coarse_underfill_eff``, keyed on per-core rows per tile).
+    bandwidth term when OUTPUT-dim (coarse) tiling shrinks each core's per-tile stream
+    (``coarse_underfill_eff``, keyed on per-core rows per tile AND the row width;
+    ``coarse_underfill_eff_matmul``, rows only, for a tiled matmul).
     Matmul ops add an ADDITIVE compute term (MACs/cores/(mac_peak*pt_eff)).
     """
     p = params or CostParams()
@@ -1132,11 +1277,12 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
             return transport_bw(o, p, kind)
         return None
 
-    # Only the fused-reduction branch below raises this; every other path leaves it at 0 so
-    # the `max()` at `mem_t` is a no-op for them.
+    # Only the fused-reduction branch below raises this; every other path leaves it at 0
+    # so the `max()` at `mem_t` is a no-op for them.
 
     if any(getattr(o, "is_matmul", False) for o in ops):
-        # Operand re-read: when the per-core output tile of area (M/m)*(N/n) overflows the
+        # Operand re-read: when the per-core output tile of area (M/m)*(N/n) overflows
+        # the
         # on-chip capacity, both operands (|A|+|B|) are re-streamed by the same fraction.
         # Read-rate bytes. (Fanout was proven NOT a term by the re-read sweep.)
         spill = sum(
@@ -1176,12 +1322,13 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     ):
         # A STANDALONE row-reduction (sum/amax/mean/read over the last axis, or sumall)
         # reads at a rate that FALLS with ROWS. The rate is fit as (R+W)/time, so it
-        # already includes the read/write turnaround -- do NOT add it again. sumcol takes
-        # the reduce_outer path above; a FUSED coarse kernel (len>1, e.g. softmax) stays on
-        # bw_peak below so its input dedup is not broken. The ROWS rate is the cores=32
-        # calibration; below 32 cores fewer streams drive the HBM bus, so derate by g(cores)
-        # (g(32)=1 -> gold untouched). Only read/amax/sumrow/mean reach here at cores<32;
-        # ctsum/ctamax/ctamin/sumall structurally qualify too but only ever run at cores=32.
+        # already includes the read/write turnaround -- do NOT add it again. sumcol
+        # takes the reduce_outer path above; a FUSED coarse kernel (len>1, e.g. softmax)
+        # stays on bw_peak below so its input dedup is not broken. The ROWS rate is the
+        # cores=32 calibration; below 32 cores fewer streams drive the HBM bus, so
+        # derate by g(cores) (g(32)=1 -> gold untouched). Only read/amax/sumrow/mean
+        # reach here at cores<32; ctsum/ctamax/ctamin/sumall structurally qualify too
+        # but only ever run at cores=32.
         _bw = reduction_read_bw(
             _reduction_rows(ops[0]), p
         ) * _reduction_bw_cores_factor(ops[0].cores, p)
@@ -1191,51 +1338,62 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         and any(o.is_reduction for o in ops)
         and not any(getattr(o, "is_matmul", False) for o in ops)
     ):
-        # A FUSED reduction bundle (softmax = amax -> sub -> exp -> sum -> div). This path had
-        # no core-count term at all, which made low-core softmax the model's worst category
-        # (median -82 % at cores<32; `softmax_unrolled` runs at cores=1 BY DESIGN, so every one
-        # of its points sat near -92 %). The binding constraint there is PER-CORE ELEMENT
-        # that separate the two. Charged as a floor, so it only ever raises a prediction and
-        # never binds at cores=32 (0/89 records) -> the cores=32 path is byte-identical.
-        #
-        # FLAGGED, deliberately NOT modelled: the floor alone leaves a systematic residual at
-        # cores=8/16 (median -17 % / -41 %), where the throughput bound hands back to the
-        # memory term and that term is itself too optimistic. The true form is a roofline whose
-        # OTHER side also saturates; fitting that here would need the bus term re-derived at
-        # the same time. Independently, the memory side still tracks the reduced-axis length
-        # COLS at cores=32 (median error -50.9 / -38.7 / -17.5 / +0.4 % at cols 128/256/512/
-        # 2048), which no core-count term can reach. Deciding experiment: a COLS x ROWS cores
-        # ladder with repeats -- the present cells are one shape, one log, n=1 per config.
-        # NOTE the floor is applied to the FINAL memory time below, not here: `mem` is still
-        # divided by the underfill/spill derates further down, which would inflate a floor
-        # imposed at this point by 1/(eff*spill_derate).
+        # A FUSED reduction bundle (softmax = amax -> sub -> exp -> sum -> div). This
+        # path had no core-count term at all, which made low-core softmax the model's
+        # worst category (median -82 % at cores<32; `softmax_unrolled` runs at cores=1
+        # BY DESIGN, so every one of its points sat near -92 %). The binding constraint
+        # there is PER-CORE ELEMENT that separate the two. Charged as a floor, so it
+        # only ever raises a prediction and never binds at cores=32 (0/89 records) ->
+        # the cores=32 path is byte-identical. FLAGGED, deliberately NOT modelled: the
+        # floor alone leaves a systematic residual at cores=8/16 (median -17 % / -41 %),
+        # where the throughput bound hands back to the memory term and that term is
+        # itself too optimistic. The true form is a roofline whose OTHER side also
+        # saturates; fitting that here would need the bus term re-derived at the same
+        # time. Independently, the memory side still tracks the reduced-axis length COLS
+        # at cores=32 (median error -50.9 / -38.7 / -17.5 / +0.4 % at cols 128/256/512/
+        # 2048), which no core-count term can reach. Deciding experiment: a COLS x ROWS
+        # cores ladder with repeats -- the present cells are one shape, one log, n=1 per
+        # config. NOTE the floor is applied to the FINAL memory time below, not here:
+        # `mem` is still divided by the underfill/spill derates further down, which
+        # would inflate a floor imposed at this point by 1/(eff*spill_derate).
         mem = (r + w) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(r, w)
     else:
         mem = (r + w) / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte * min(r, w)
-        # NOTE: a multi-op dependent chain (e.g. add3/add4 = chained binary adds) runs slower
-        # than its byte count because the intermediate is written then read back through HBM --
-        # a READ-AFTER-WRITE dependency ACROSS op boundaries (§3). That is a program-level /
-        # coarse-tiling effect, NOT a single-op cost, so it is deliberately NOT modeled here.
-        # `add_n` is not a native op; the single-op model stays pure. See the report
-        # ("Next model") for the byte-keyed read-after-write term to unify with the coarse §17 spill.
+        # NOTE: a multi-op dependent chain (e.g. add3/add4 = chained binary adds) runs
+        # slower than its byte count because the intermediate is written then read back
+        # through HBM -- a READ-AFTER-WRITE dependency ACROSS op boundaries. That
+        # is a program-level / coarse-tiling effect, NOT a single-op cost, so it is
+        # deliberately NOT modeled here. `add_n` is not a native op; the single-op model
+        # stays pure.
+        #
+        # SIZE OF THE GAP, measured on one build (2026-08-07, 78 pointwise rows): the
+        # fused chains under-predict by -9.3 % on average, rising with chain depth --
+        # add -5 %, add3 -10 %, add4 -15 %, add6 -16 %. `add_indep2` is the control that
+        # identifies it: two INDEPENDENT adds, more bytes than add3 and the same op
+        # count, predicted to -0.9 %. Two alternative readings are ruled out by the same
+        # data -- op count (add_indep2 has two ops) and the read/write ratio (add, add5
+        # and add6 all run at R:W = 2:1 and err -2 %, -15 %, -15 %). What remains is the
+        # dependency itself. A byte-keyed read-after-write term, unified with the coarse
+        # LX-spill derate below, is the natural next step.
     # OUTPUT-dim (pointwise) coarse-tiling underfill: a short per-core tile underfills
     # the streaming pipeline, derating the bandwidth term. The smallest tile in the
     # bundle governs (worst underfill). 1.0 (no derate) when nothing is output-tiled.
     eff = 1.0
+    # A matmul bundle keeps the pre-re-fit rows-only curve: the new surface is fitted
+    # entirely on softmax and scores WORSE on tiled matmul (see the CostParams note).
+    _mm = any(getattr(o, "is_matmul", False) for o in ops)
     for o in ops:
         if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
-            # NOTE (2026-08-03): passing `cap=1.0` here for matmul is the RIGHT change on
-            # its own terms -- the 0.95 plateau is a softmax measurement and a tiled
-            # matmul's tile is far above the knee, so the term contributes only a flat 5 %
-            # that models nothing. It is NOT applied yet because it is entangled with the
-            # loop-invariant re-read: alone it makes the model faster while `matmul_row`
-            # already UNDER-predicts, so it regresses (RMS 21.8 -> 22.5, mean -13.7 ->
-            # -14.8). Together with the re-read at alpha=1 it helps (RMS 18.2 -> 16.6).
-            # Ship the PAIR, once the extractor sets per-arg `loop_factor`.
-            eff = min(eff, coarse_underfill_eff(o.tile_rows_per_core, p))
-    # LX-SPILL bandwidth derate: a coarse-tiled kernel whose per-core working set (~2 live
-    # intermediate tiles) overflows LX spills to HBM, and that spilled traffic runs slower
-    # than the modeled rate. Bytes are already counted as HBM; here we derate the BW.
+            e = (
+                coarse_underfill_eff_matmul(o.tile_rows_per_core, p)
+                if _mm
+                else coarse_underfill_eff(o.tile_rows_per_core, _op_cols(o), p)
+            )
+            eff = min(eff, e)
+    # LX-SPILL bandwidth derate: a coarse-tiled kernel whose per-core working set (~2
+    # live intermediate tiles) overflows LX spills to HBM, and that spilled traffic runs
+    # slower than the modeled rate. Bytes are already counted as HBM; here we derate the
+    # BW.
     spill_derate = _lx_spill_bw_derate(ops, p)
     # A fused reduction bundle is floored by per-core element throughput (see
     mem_t = p.fill_ns + mem / eff / spill_derate
@@ -1254,23 +1412,26 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     for o in ops:
         if o.is_matmul and o.matmul_macs > 0 and o.cores > 0:
             # A coarse-tiled matmul appears to underfill the array MORE per tile than a
-            # standalone one, but the current data (thin, non-current, partly U-shaped) is
-            # too weak to fit -- so it is NOT modeled: tiled matmuls take pt_eff=1 (flagged;
-            # a clean tile-count sweep is queued). Standalone matmuls use the array-fill derate.
+            # standalone one, but the current data (thin, non-current, partly U-shaped)
+            # is too weak to fit -- so it is NOT modeled: tiled matmuls take pt_eff=1
+            # (flagged; a clean tile-count sweep is queued). Standalone matmuls use the
+            # array-fill derate.
             if o.tiles_output_dim:
                 pt_eff = 1.0
             else:
                 pt_eff = underfill_eff(
                     o.matmul_rows_per_core, p, p.underfill_target_passes_matmul
                 )
-            # A DEFAULT-LAYOUT bmm (both operands on the slow [0,1,2] tile order, B>=gate)
-            # runs the array at the slow rate; every other matmul keeps the plain peak.
+            # A DEFAULT-LAYOUT bmm (both operands on the slow [0,1,2] tile order,
+            # B>=gate) runs the array at the slow rate; every other matmul keeps the
+            # plain peak.
             mac_peak = _matmul_mac_peak(o, p)
             compute += o.matmul_macs / o.cores / (mac_peak * pt_eff)
-    # SPLIT-SHAPE re-read (§11): a large per-core output tile that is ALSO split many ways
-    # re-reads operands beyond what the symmetric area spill counts. Two-sided: splitting the
-    # LONGER output dim (knee 8) is penalized sooner/harder than the SHORTER (knee 16). An
-    # INTERACTION of tile size and split; 0 for balanced splits and small tiles.
+    # SPLIT-SHAPE re-read: a large per-core output tile that is ALSO split many
+    # ways re-reads operands beyond what the symmetric area spill counts. Two-sided:
+    # splitting the LONGER output dim (knee 8) is penalized sooner/harder than the
+    # SHORTER (knee 16). An INTERACTION of tile size and split; 0 for balanced splits
+    # and small tiles.
     split_ns = 0.0
     for o in ops:
         if o.is_matmul and o.cores > 0:
@@ -1290,30 +1451,30 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
                 * max(0.0, math.log2(max(1, short_fan) / p.mm_split_short_knee))
             )
             split_ns += split_us * 1000.0  # us -> ns
-    # compute/HBM OVERLAP: memory transfers pipeline with the systolic compute, so the
-    # smaller of the two is partly hidden (gamma=0.46). For a non-matmul bundle compute=0
-    # -> min(0, mem_t)=0 -> t = mem_t (unchanged). The split re-read is charged AFTER the
-    # overlap (it is not hidden by compute -- it is why the lopsided kernel runs long).
-    # Overlap. The hidden fraction of the SHORTER stream depends on how BALANCED the two
-    # streams are: when compute is far shorter than memory it hides almost completely,
-    # while comparable streams contend and only a fraction hides. rho = min/max.
-    # GATE, stated honestly. `loop_trip > 1` currently decides ZERO rows (it is implied
-    # by tiles_output_dim on every record we hold), so its "a loop can pipeline across
-    # iterations" rationale is UNTESTED -- it is kept only as a guard for future
-    # non-looped output-tiled ops. `tiles_output_dim` binds on just 8 rows
-    # (bmm_3d2d_k_tiling), which already under-predict ~17 %, so those rows cannot
+    # compute/HBM OVERLAP: the engine streams operands while the systolic array works,
+    # so a kernel takes the LONGER of the two rather than their sum. For a non-matmul
+    # bundle compute=0 -> t = mem_t (unchanged). The split re-read is charged AFTER the
+    # overlap: it is not hidden by compute -- it is why the lopsided kernel runs long.
+    #
+    # A PARTIAL-overlap form was fitted and deliberately dropped; see the module
+    # docstring. What remains below is the GATE, stated honestly. `loop_trip > 1`
+    # currently decides ZERO rows (it is implied by tiles_output_dim on every record we
+    # hold), so its "a loop can pipeline across iterations" rationale is UNTESTED -- it
+    # is kept only as a guard for future non-looped output-tiled ops.
+    # `tiles_output_dim` binds on just 8 rows (bmm_3d2d_k_tiling), which already
+    # under-predict ~17 %, so those rows cannot
     # distinguish "reduction-tiled iterations are dependent" from "that op's memory term
     # is too small". What IS established is only that SOME gate is needed: removing both
-    # regresses mmwd 15.1 -> 17.6 and bmm_layout 20.2 -> 25.5.
-    # Compute and memory OVERLAP: the engine streams operands while the array works, so a
-    # kernel takes the LONGER of the two rather than their sum.
+    # regresses mmwd 15.1 -> 17.6 and bmm_layout 20.2 -> 25.5. Compute and memory
+    # OVERLAP: the engine streams operands while the array works, so a kernel takes the
+    # LONGER of the two rather than their sum.
     t = max(compute, mem_t) + split_ns
     # (A genuine-reduction cross-core ring-combine term once lived here; it is provably
     # bounded by ~cores * a tiny per-elem cost <= ~5 ns -- below run-to-run noise --
-    # so it is dropped as inert. K is never split for matmul, so there is no matmul analogue.
-    # A per-iteration coarse-tiling LOOP overhead (c_loop*L) also once lived here, calibrated
-    # on the now-dropped chain/ctsum reduction-dim sweeps; no current op exercises it, so it
-    # is removed rather than carried unvalidated.)
+    # so it is dropped as inert. K is never split for matmul, so there is no matmul
+    # analogue. A per-iteration coarse-tiling LOOP overhead (c_loop*L) also once lived
+    # here, calibrated on the now-dropped chain/ctsum reduction-dim sweeps; no current
+    # op exercises it, so it is removed rather than carried unvalidated.)
     return t
 
 
@@ -1356,12 +1517,16 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     )
     turn = p.rw_turnaround_ns_per_byte * min(R, W)
     # Underfill derate (output-dim tiling): smallest per-core tile governs.
-    eff, eff_rows = 1.0, 0.0
+    eff, eff_rows, eff_cols = 1.0, 0.0, 0.0
     for o in ops:
         if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
-            e = coarse_underfill_eff(o.tile_rows_per_core, p)
+            e = (
+                coarse_underfill_eff_matmul(o.tile_rows_per_core, p)
+                if is_mm
+                else coarse_underfill_eff(o.tile_rows_per_core, _op_cols(o), p)
+            )
             if e < eff:
-                eff, eff_rows = e, o.tile_rows_per_core
+                eff, eff_rows, eff_cols = e, o.tile_rows_per_core, _op_cols(o)
     # Matmul compute (additive): sum the per-op compute term for any matmul ops.
     mm_us, mm_lines = 0.0, []
     for o in ops:
@@ -1405,10 +1570,22 @@ def explain(ops: list, params: CostParams | None = None) -> str:
         f"= {turn / 1000:.2f} us"
     )
     if eff < 1.0:
+        if is_mm:
+            shape = (
+                f"({eff_rows:.1f}/{p.coarse_underfill_rfull_matmul:g})"
+                f"**{p.coarse_underfill_exp_matmul}"
+            )
+            ceil_ = p.coarse_underfill_cap_matmul
+        else:
+            shape = (
+                f"({eff_rows:.1f}/{p.coarse_underfill_rfull:g})"
+                f"**{p.coarse_underfill_exp}"
+                f" * ({eff_cols:.0f}/{p.coarse_underfill_col_ref:.0f})"
+                f"**{p.coarse_underfill_col_exp}"
+            )
+            ceil_ = p.coarse_underfill_cap
         lines.append(
-            f"     eff_underfill = min({p.coarse_underfill_cap},"
-            f"({eff_rows:.1f}/{p.coarse_underfill_rfull:.0f})"
-            f"**{p.coarse_underfill_exp}) = {eff:.3f}  "
+            f"     eff_underfill = min({ceil_}, {shape}) = {eff:.3f}  "
             f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
         )
     split_us = 0.0
