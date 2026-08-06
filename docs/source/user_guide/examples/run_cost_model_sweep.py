@@ -28,6 +28,13 @@ it stays correct as the database grows: whatever is in there gets re-measured.
     python3 ... run_cost_model_sweep.py --limit 20                            # a timed pilot
     python3 ... run_cost_model_sweep.py --resume <log>                        # continue one
 
+ON A MACHINE WITH NO DATABASE, export the configuration list where one exists and carry
+that instead -- it is small, and it holds no measured times to be tempted into scoring
+against::
+
+    python3 ... run_cost_model_sweep.py --export-configs sweep_configs.json   # dev box
+    python3 ... run_cost_model_sweep.py --configs sweep_configs.json          # run box
+
 A CONFIGURATION IS MORE THAN A SHAPE. A forced work division, an operand layout or a
 flash-attention tiling is part of what was measured, and re-running the shape without it
 measures a different kernel under the old kernel's label. ``_env_from_record`` therefore
@@ -65,7 +72,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_HERE))))
 _TOOLS = os.path.join(_ROOT, "tools", "cost_model")
 sys.path.insert(0, _TOOLS)
-from records import records_path  # noqa: E402
+from records import find_records  # noqa: E402
 
 _HARNESS = os.path.join(_HERE, "profile_ops.py")
 
@@ -292,6 +299,52 @@ def _completed(log):
     return done
 
 
+def _write_manifest(path, cfgs):
+    """Write the configuration list as a standalone file.
+
+    The list is the only thing this script needs from the database, and it is derived
+    from labels and shapes -- not from measured times. Exporting it lets a machine that
+    has never swept run the full sweep without carrying 14 MB of another build's
+    measurements, which it must not score against anyway.
+    """
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"provenance": _provenance(""), "configs": cfgs}, fh, indent=1)
+
+
+def _read_manifest(path, only_op=None):
+    """Configurations from a manifest written by ``--export-configs``."""
+    with open(path, encoding="utf-8") as fh:
+        cfgs = json.load(fh)["configs"]
+    if only_op:
+        cfgs = [c for c in cfgs if c.get("BENCH_OP") == only_op]
+    return cfgs, collections.Counter()
+
+
+#: Shown when there is no database AND no manifest. Deliberately does not say "run this
+#: script": the configuration list comes FROM the database, so this script cannot
+#: bootstrap one, and telling the user otherwise sends them in a circle.
+_NO_DATABASE = """\
+No cost-model database here, and no --configs manifest.
+
+This sweep re-measures a known list of configurations, and it reads that list from the
+database -- so it cannot create the first one. Get the list from a machine that has a
+database:
+
+    # there:
+    python3 run_cost_model_sweep.py --export-configs sweep_configs.json
+    # copy sweep_configs.json here, then:
+    python3 run_cost_model_sweep.py --configs sweep_configs.json
+
+The manifest holds only shapes, core counts, splits and layouts -- no measured times --
+so it is safe to carry between machines. The measurements this run produces are written
+to a fresh database here, belonging to this build alone.
+
+If you would rather copy the whole database over instead, point at it with:
+
+    export SPYRE_COST_MODEL_RECORDS=/path/to/sweep_records.json
+"""
+
+
 def _hms(seconds):
     seconds = int(max(0, seconds))
     return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
@@ -311,16 +364,41 @@ def main():
         help="continue an interrupted sweep: append to this log and skip the "
         "configurations in it that already produced a measurement",
     )
+    ap.add_argument(
+        "--configs",
+        default="",
+        help="measure the configurations in this manifest instead of deriving them "
+        "from the database (see --export-configs)",
+    )
+    ap.add_argument(
+        "--export-configs",
+        default="",
+        help="derive the configuration list from the database, write it here as a "
+        "manifest, and exit without measuring anything",
+    )
     args = ap.parse_args()
 
     # Resolved here, not at import: it can exit with setup instructions, and
     # importing this module (for --help, or from a test) must not do that.
-    records = records_path()
-    with open(records, encoding="utf-8") as fh:
-        records = json.load(fh)["records"]
-    cfgs, lost = _configs(records, args.op or None)
+    if args.configs:
+        cfgs, lost = _read_manifest(args.configs, args.op or None)
+    else:
+        records = find_records()
+        if records is None:
+            sys.exit(_NO_DATABASE)
+        with open(records, encoding="utf-8") as fh:
+            records = json.load(fh)["records"]
+        cfgs, lost = _configs(records, args.op or None)
     if args.limit:
         cfgs = cfgs[: args.limit]
+    if args.export_configs:
+        _write_manifest(args.export_configs, cfgs)
+        print(f"{len(cfgs)} configurations -> {args.export_configs}")
+        print("carry it to the measurement machine and run:")
+        print(
+            f"    python3 {os.path.basename(__file__)} --configs {args.export_configs}"
+        )
+        return 0
 
     by_op = collections.Counter(c["BENCH_OP"] for c in cfgs)
     print(f"{len(cfgs)} configurations over {len(by_op)} ops")

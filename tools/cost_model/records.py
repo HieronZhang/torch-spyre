@@ -76,13 +76,12 @@ build:
 """
 
 
-def records_path(explicit=None):
-    """Absolute path to the database.
+def find_records(explicit=None):
+    """Absolute path to the database, or None if there is not one.
 
-    Raises SystemExit with instructions rather than a traceback: every caller is a
-    command-line tool, and a missing database is a setup step, not a bug. Never downloads
-    anything -- fetching someone else's measurements silently would make a stale reference
-    look like a measurement of the machine it is running on.
+    Separate from ``records_path`` because not every caller should die when the database
+    is absent: the sweep runner can be told which configurations to measure directly, and
+    on a machine that has never swept, "no database" is its normal starting state.
     """
     if explicit:
         if not os.path.exists(explicit):
@@ -95,7 +94,18 @@ def records_path(explicit=None):
             sys.exit(f"SPYRE_COST_MODEL_RECORDS points at a missing file: {env}")
         return env
 
-    if os.path.exists(CACHE):
-        return CACHE
+    return CACHE if os.path.exists(CACHE) else None
 
-    sys.exit(_HELP)
+
+def records_path(explicit=None):
+    """Absolute path to the database.
+
+    Raises SystemExit with instructions rather than a traceback: every caller is a
+    command-line tool, and a missing database is a setup step, not a bug. Never downloads
+    anything -- fetching someone else's measurements silently would make a stale reference
+    look like a measurement of the machine it is running on.
+    """
+    path = find_records(explicit)
+    if path is None:
+        sys.exit(_HELP)
+    return path
