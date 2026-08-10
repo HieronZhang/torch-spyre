@@ -49,6 +49,8 @@ import math
 import os
 import sys
 
+import regex as re
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 from records import records_path  # noqa: E402
@@ -70,7 +72,9 @@ cm = _load_cost_model()
 # op -> reporting category
 _CATEGORY = {}
 for _c, _ops in {
-    "pointwise": "neg gelu relu sigmoid exp mul add add3 add4".split(),
+    # add5/add6/add_indep2 belong here as much as add3/add4 do; leaving them in `other`
+    # hid a real signal (the dependent-chain gap below) behind an unrelated bucket.
+    "pointwise": "neg gelu relu sigmoid exp mul add add3 add4 add5 add6 add_indep2".split(),
     "reduction": "sumrow sumcol sumall amax mean read".split(),
     "transport": "transpose transpose_outer cat0 cat1".split(),
     # copy (x+1.0) is really a broadcast op -- an add with a resident broadcast constant.
@@ -293,6 +297,9 @@ _BUGGY_LOOP_FACTOR_LOG = "coarse_reextract_20260804_004110.log"
 
 _DEFAULT_BMM_LAYOUT = "0,1,2"  # the order the compiler emits (config default)
 
+#: `add3_sep` ... `add6_sep`: one chain measured as several kernels. See `in_scope`.
+_SEP_CHAIN = re.compile(r"add\d+_sep")
+
 
 def in_scope(rec) -> bool:
     """False for rows excluded by the standing scope decisions above."""
@@ -321,6 +328,17 @@ def in_scope(rec) -> bool:
     # the model: 41.1 % RMS at -32.3 % mean, against 3.0-6.6 % for every operand this
     # section does model. The runs stay in the database as the evidence.
     if op == "write":
+        return False
+    # `add{N}_sep` CANNOT BE SCORED AS RECORDED -- a harness limitation, not a model gap.
+    # The workload is N-1 SEPARATE compiled kernels (profile_ops.py, `add{N}_sep`), the
+    # measured time covers all of them, but the cost-model dump captures only the LAST
+    # sub-kernel's features. So a one-kernel prediction is compared against an N-kernel
+    # measurement, and the error is arithmetic: -55/-70/-80/-83 % for N-1 = 2/3/4/5.
+    # Multiplying the prediction by the sub-kernel count collapses those to -10/-9/-19/
+    # -17 %, the same band as the fused `add{N}` rows -- which is the check that this is
+    # bookkeeping and not a real miss. Scoring them measures the harness. The runs stay in
+    # the database: they are the §3 fusion control, read as add{N} vs add{N}_sep.
+    if _SEP_CHAIN.fullmatch(op):
         return False
     if op.startswith("softmax"):
         cols = rec.get("cols")

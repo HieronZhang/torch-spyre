@@ -43,6 +43,7 @@ Examples:
     bash docs/source/user_guide/examples/run_profile_sweep.sh
 """
 
+import logging
 import os
 import sys
 import statistics
@@ -772,7 +773,77 @@ def _flash_attn_workload():
     )
 
 
+def _prefix_block_workload():
+    """Chunked-prefill block: cat two hidden-state chunks on the SEQ dim, RMSNorm, SwiGLU.
+
+    Built to put buffers of DIFFERENT effective bandwidth in contention for one scratchpad,
+    which is the only situation where a time-ranked LX allocation can differ from the
+    byte-ranked one CP-SAT computes. The concat is on a partition dim, so it carries the
+    `stick_scatter` access pattern, and its stick dim is `d_model` -- wide enough to drag the
+    rate well below the 150 GB/s default. `h` (the concat) and `xn` (the rescale) then have
+    IDENTICAL dims and consumer counts, so CP-SAT scores them equal and cannot choose
+    between them, while they move at rates ~2x apart. See research/cpsat_blind_spot.md.
+
+    Knobs: PB_B/PB_SP/PB_SN (batch, prefix len, new len), PB_D/PB_F (model/ff width),
+    PB_B_TILES/PB_S_TILES/PB_F_TILES (coarse tile COUNTS). `D` is never tiled -- it is the
+    reduction axis of both projections, and tiling a reduction materialises the read copy
+    over the whole iteration space.
+    """
+    import torch_spyre._inductor.wsr.propagate_named_dims as pnd
+    from torch._inductor.codecache import FxGraphCache
+    from torch_spyre._inductor import spyre_hint
+
+    global _PREPARE
+    B = int(os.environ.get("PB_B", "4"))
+    Sp = int(os.environ.get("PB_SP", "512"))
+    Sn = int(os.environ.get("PB_SN", "512"))
+    D = int(os.environ.get("PB_D", "4096"))
+    Fd = int(os.environ.get("PB_F", "12800"))
+    bt = int(os.environ.get("PB_B_TILES", "1"))
+    st = int(os.environ.get("PB_S_TILES", "1"))
+    ft = int(os.environ.get("PB_F_TILES", "2"))
+    eps = 1e-5
+
+    def _declare():
+        pnd.declare_tensor_dim("B", B)
+        pnd.declare_tensor_dim("Sp", Sp)
+        pnd.declare_tensor_dim("Sn", Sn)
+        pnd.declare_tensor_dim("S", Sp + Sn)
+        pnd.declare_tensor_dim("D", D)
+        pnd.declare_tensor_dim("Fd", Fd)
+
+    _declare()
+
+    def block(h_prefix, h_new, wg, wu):
+        pnd.name_tensor_dims(h_prefix, ["B", "Sp", "D"])
+        pnd.name_tensor_dims(h_new, ["B", "Sn", "D"])
+        pnd.name_tensor_dims(wg, ["D", "Fd"])
+        pnd.name_tensor_dims(wu, ["D", "Fd"])
+        with spyre_hint(tiles={"B": bt}):
+            with spyre_hint(tiles={"S": st}):
+                with spyre_hint(tiles={"Fd": ft}):
+                    h = torch.cat([h_prefix, h_new], dim=-2)
+                    ms = (h * h).mean(dim=-1, keepdim=True)
+                    xn = h * torch.rsqrt(ms + eps)
+                    return torch.nn.functional.silu(xn @ wg) * (xn @ wu)
+
+    hp = torch.randn(B, Sp, D, dtype=torch.float16)
+    hn = torch.randn(B, Sn, D, dtype=torch.float16)
+    wg = torch.randn(D, Fd, dtype=torch.float16) * 0.02
+    wu = torch.randn(D, Fd, dtype=torch.float16) * 0.02
+    block(hp, hn, wg, wu)  # eager reference call, as the flash workload does
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    _PREPARE = _declare
+    return (
+        torch.compile(block),
+        (hp.to(DEVICE), hn.to(DEVICE), wg.to(DEVICE), wu.to(DEVICE)),
+    )
+
+
 def make_workload():
+    if OP == "prefix_block":  # chunked-prefill block (PB_* knobs); mixed transports
+        return _prefix_block_workload()
     if OP in _UNARY:
         return torch.compile(_UNARY[OP]), (_rand(ROWS, COLS),)
     if OP in _BINARY:
@@ -1026,6 +1097,47 @@ def _print_model(feats: list) -> float:
     return t / 1000
 
 
+class _SpanOverflowGuard(logging.Handler):
+    """Abort a configuration whose per-core tensor span exceeds the hardware limit.
+
+    WHY THIS EXISTS. On 2026-08-07 a sweep ran one configuration -- a K-tiled
+    `bmm_3d2d` -- whose coarse-tile read copy was built over the full iteration space,
+    giving a `[4,1024,1024,1024]` staging buffer: 256 MB per core against the 255.996 MB
+    MVLOC addressing limit, and 17 GB of HBM traffic from 20 MB of inputs. It was the only
+    CRITICAL in 1640 runs. The run immediately after it, and all 1389 that followed, died
+    with `RAS::MCI::DdrInitRetryLimitExceeded`, and the card never recovered.
+
+    ONE CO-OCCURRENCE IS NOT A CAUSE, and this guard does not assume otherwise. But a
+    per-core span past the addressing limit means DMA descriptors that cannot address what
+    they were told to, the cost of being wrong is measured in days of dead hardware, and
+    the cost of being over-careful is one skipped data point. So: refuse to keep executing
+    a configuration the compiler has already flagged as out of spec.
+
+    LIMIT OF THE PROTECTION. `torch.compile` compiles lazily, so the CRITICAL is emitted
+    during the *first* execution -- this cuts exposure from 12 executions (5 warmup +
+    7 profiled) to 1, not to 0. For zero exposure a configuration must be compiled with
+    fake tensors first; see `research/compile_only.py`.
+    """
+
+    LOGGER = "spyre.inductor.work_division"
+    NEEDLE = "exceeds hardware limit"
+
+    def __init__(self):
+        super().__init__(level=logging.CRITICAL)
+        self.hits: list[str] = []
+
+    def emit(self, record):
+        msg = record.getMessage()
+        if self.NEEDLE in msg:
+            self.hits.append(msg)
+
+    @classmethod
+    def install(cls):
+        guard = cls()
+        logging.getLogger(cls.LOGGER).addHandler(guard)
+        return guard
+
+
 def _run():
     def _sync(
         out,
@@ -1033,11 +1145,23 @@ def _run():
         for t in out if isinstance(out, (tuple, list)) else (out,):
             t.cpu()
 
+    guard = _SpanOverflowGuard.install()
     compiled, args = make_workload()
-    for _ in range(WARMUP):  # compile (-> cost-model dump fires) + warm the kernel
+    for i in range(WARMUP):  # compile (-> cost-model dump fires) + warm the kernel
         if _PREPARE is not None:  # coarse-tile: re-declare named dims before each trace
             _PREPARE()
         _sync(compiled(*args))
+        if i == 0 and guard.hits:
+            # Compilation flagged an out-of-spec span. Stop before the remaining warmup
+            # and profiled runs; report it the way the sweep parser understands.
+            print(f"FAILED reason=span_overflow ({len(guard.hits)} CRITICAL)")
+            for msg in guard.hits[:3]:
+                print(f"   {msg}")
+            print(
+                "SKIPPED: this configuration asks for a per-core span past the MVLOC "
+                "addressing limit. See _SpanOverflowGuard for why it is not measured."
+            )
+            return
     io = dict(dump_cost_model.LAST_IO)  # device-layout I/O the model computed
     feats = list(dump_cost_model.LAST_FEATS)  # raw OpFeatures for predict_ops()
     io_hbm_bytes = io.get("hbm_bytes", 0)

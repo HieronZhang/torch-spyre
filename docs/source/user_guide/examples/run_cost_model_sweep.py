@@ -81,8 +81,18 @@ _HARNESS = os.path.join(_HERE, "profile_ops.py")
 #: to run -- a fresh checkout on fresh hardware has no measurements at all.
 _PLAN = os.path.join(_TOOLS, "sweep_plan.json")
 
-#: Ops the plan lists but this branch cannot measure. Empty here.
-_SKIP_OPS: set = set()
+#: Ops the plan lists but this sweep will not measure.
+#:
+#: ``bmm_3d2d_k_tiling`` is masked because it is the prime suspect in the 2026-08-07 card
+#: failure. Its ``TILES=2`` configuration was the ONLY run in 1640 to emit
+#: ``[CRITICAL] per-core tensor span 256.000 MB (shape=[4,1024,1024,1024]) exceeds hardware
+#: limit`` -- 4096 bytes over the MVLOC addressing limit -- and the run immediately after it
+#: began 1389 consecutive ``DdrInitRetryLimitExceeded`` failures from which the card never
+#: recovered. One co-occurrence does not prove cause, and the same configuration measured
+#: fine at ~1171 us on three earlier builds, so this is a REGRESSION under quarantine rather
+#: than a bad configuration. Re-enable it deliberately, alone, once a full sweep is banked:
+#: ``--op bmm_3d2d_k_tiling`` still runs it, since ``--op`` is an explicit request.
+_SKIP_OPS: set = {"bmm_3d2d_k_tiling"}
 
 #: What ``_env_from_record`` rebuilds beyond the shape, and where each piece comes from.
 #: Anything not on this list is either a plain shape/core/tile config or unreproducible.
@@ -354,6 +364,30 @@ Point at an existing database instead with:
 """
 
 
+def _drop_measured(cfgs):
+    """Configurations the database has no measurement for yet.
+
+    Resume-by-database rather than resume-by-log. The log lives on the machine that ran
+    the sweep and may not travel with the results; the database does. Matching runs the
+    same reconstruction the plan was built with, so a config and its record agree exactly
+    when they describe the same run.
+    """
+    path = find_records()
+    if path is None:
+        print("no database yet -- nothing to skip")
+        return cfgs
+    with open(path, encoding="utf-8") as fh:
+        records = json.load(fh)["records"]
+    have = {
+        tuple(sorted(env.items()))
+        for r in records
+        if r.get("kernel_us") and not r.get("failed") and (env := _env_from_record(r))
+    }
+    out = [c for c in cfgs if tuple(sorted(c.items())) not in have]
+    print(f"skipping {len(cfgs) - len(out)} already measured; {len(out)} left")
+    return out
+
+
 def _spread(items, n):
     """`n` items spread evenly across `items`, keeping order.
 
@@ -377,6 +411,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--op", default="", help="measure only this op")
     ap.add_argument(
+        "--exclude",
+        default="",
+        help="comma list of ops to SKIP. Use to defer a configuration that is suspected of "
+        "destabilising the device until the rest of the sweep is safely collected.",
+    )
+    ap.add_argument(
         "--limit",
         type=int,
         default=0,
@@ -392,6 +432,27 @@ def main():
         default="",
         help="continue an interrupted sweep: append to this log and skip the "
         "configurations in it that already produced a measurement",
+    )
+    ap.add_argument(
+        "--skip-measured",
+        action="store_true",
+        help="skip configurations the existing database already has a measurement "
+        "for -- resume by database rather than by log, when the log is on another "
+        "machine or was lost",
+    )
+    ap.add_argument(
+        "--timeout",
+        type=int,
+        default=900,
+        help="seconds one configuration may take before it is killed and skipped "
+        "(0 disables). Stops one hanging compile from ending the sweep.",
+    )
+    ap.add_argument(
+        "--abort-after",
+        type=int,
+        default=10,
+        help="stop the sweep after this many CONSECUTIVE configurations produce no "
+        "measurement (0 disables). A dead device fails every remaining run.",
     )
     ap.add_argument(
         "--configs", default=_PLAN, help=f"sweep plan to measure (default: {_PLAN})"
@@ -421,9 +482,23 @@ def main():
         cfgs, lost = _configs(records)
     else:
         cfgs, lost = _load_plan(args.configs)
-    cfgs = [c for c in cfgs if c.get("BENCH_OP") not in _SKIP_OPS]
     if args.op:
+        # An explicit --op is a deliberate request and overrides the quarantine list.
         cfgs = [c for c in cfgs if c.get("BENCH_OP") == args.op]
+        if args.op in _SKIP_OPS:
+            print(
+                f"NOTE: {args.op} is quarantined (see _SKIP_OPS); running it because "
+                "you asked for it by name."
+            )
+    else:
+        cfgs = [c for c in cfgs if c.get("BENCH_OP") not in _SKIP_OPS]
+    if args.exclude:
+        drop = {o.strip() for o in args.exclude.split(",") if o.strip()}
+        before = len(cfgs)
+        cfgs = [c for c in cfgs if c.get("BENCH_OP") not in drop]
+        print(f"excluding {sorted(drop)}: {before - len(cfgs)} configurations skipped")
+    if args.skip_measured:
+        cfgs = _drop_measured(cfgs)
     cfgs = _spread(cfgs, args.limit)
     if args.export_configs:
         _write_plan(args.export_configs, cfgs)
@@ -458,7 +533,7 @@ def main():
         print(f"resuming {log}: {len(done)} of {len(cfgs)} already measured")
     print(f"\nlogging to {log}\n")
 
-    failed, ran, t0 = 0, 0, time.time()
+    failed, ran, streak, aborted, t0 = 0, 0, 0, False, time.time()
     with open(log, "a" if args.resume else "w", encoding="utf-8") as fh:
         if not args.resume:
             for line in _provenance(os.environ.get("SENCORES", "")):
@@ -486,21 +561,54 @@ def main():
                 BENCH_EMIT_RECORDS="1",
                 **env,
             )
-            p = subprocess.run(
-                [sys.executable, _HARNESS],
-                env=run_env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            fh.write(p.stdout + p.stderr)
+            # A per-configuration timeout, because without one a compile that never
+            # returns costs the whole run. A configuration that cannot finish in
+            # `--timeout` is worth strictly less than the ones behind it in the queue.
+            try:
+                p = subprocess.run(
+                    [sys.executable, _HARNESS],
+                    env=run_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=args.timeout or None,
+                )
+                out = p.stdout + p.stderr
+            except subprocess.TimeoutExpired as exc:
+                out = (exc.stdout or "") + (exc.stderr or "")
+                if isinstance(out, bytes):
+                    out = out.decode("utf-8", "replace")
+                out += f"\nFAILED reason=timeout after {args.timeout}s\n"
+                print(f"      TIMEOUT after {args.timeout}s -- skipped", flush=True)
+            fh.write(out)
             fh.flush()
-            if "SUMMARY" not in p.stdout:
+            if "SUMMARY" not in out:
                 failed += 1
+                streak += 1
                 print("      no SUMMARY -- see the log", flush=True)
+            else:
+                streak = 0
+            # A DEAD DEVICE FAILS EVERY REMAINING RUN, and it fails them fast, so a
+            # timeout never fires. On 2026-08-07 the accelerator's DDR controller
+            # stopped initialising at run 252 and the sweep spent sixteen hours on 1389
+            # runs that could not have produced anything. A long streak of failures is
+            # not a run of bad configurations; it is the machine telling you to stop.
+            if args.abort_after and streak >= args.abort_after:
+                aborted = True
+                msg = (
+                    f"\nABORTING: {streak} configurations in a row produced no "
+                    f"measurement.\nThis usually means the device needs attention "
+                    f"rather than the sweep -- check the last block of {log} for a "
+                    f"runtime error, then resume with --skip-measured."
+                )
+                print(msg, flush=True)
+                fh.write(msg + "\n")
+                break
 
     print(f"\n{ran - failed}/{ran} produced a measurement in {_hms(time.time() - t0)}")
     print(f"log: {log}")
+    if aborted:
+        print(f"stopped early: {len(cfgs) - i} configurations not attempted")
     if args.no_parse:
         print("database not updated (--no-parse)")
         return 0

@@ -1239,8 +1239,16 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
         # through HBM -- a READ-AFTER-WRITE dependency ACROSS op boundaries (§3). That
         # is a program-level / coarse-tiling effect, NOT a single-op cost, so it is
         # deliberately NOT modeled here. `add_n` is not a native op; the single-op model
-        # stays pure. See the report ("Next model") for the byte-keyed read-after-write
-        # term to unify with the coarse §17 spill.
+        # stays pure.
+        #
+        # SIZE OF THE GAP, measured on one build (2026-08-07, 78 pointwise rows): the
+        # fused chains under-predict by -9.3 % on average, rising with chain depth --
+        # add -5 %, add3 -10 %, add4 -15 %, add6 -16 %. `add_indep2` is the control that
+        # identifies it: two INDEPENDENT adds, more bytes than add3 and the same op
+        # count, predicted to -0.9 %. Two alternative readings are ruled out by the same
+        # data -- op count (add_indep2 has two ops) and the read/write ratio (add, add5
+        # and add6 all run at R:W = 2:1 and err -2 %, -15 %, -15 %). What remains is the
+        # dependency itself.
     # OUTPUT-dim (pointwise) coarse-tiling underfill: a short per-core tile underfills
     # the streaming pipeline, derating the bandwidth term. The smallest tile in the
     # bundle governs (worst underfill). 1.0 (no derate) when nothing is output-tiled.
