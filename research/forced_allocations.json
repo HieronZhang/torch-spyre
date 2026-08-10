@@ -1,0 +1,357 @@
+{
+  "cap_bytes": 1625344,
+  "cases": [
+    {
+      "label": "flash H=32 Lq=4096 Lk=4096 htiles=8 qtiles=4",
+      "measured_us": 18921.768,
+      "n_movable": 20,
+      "n_feasible": 213952,
+      "env": {
+        "FA_H": "32",
+        "FA_LQ": "4096",
+        "FA_LK": "4096",
+        "FA_H_TILES": "8",
+        "FA_LQ_TILES": "4"
+      },
+      "arms": {
+        "optimum": {
+          "lx": [
+            "b10",
+            "b11",
+            "b12",
+            "b13",
+            "b15",
+            "b16",
+            "b19",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b4",
+            "b5",
+            "b6",
+            "b8",
+            "b9"
+          ],
+          "n_lx": 16,
+          "pred_us": 669365.052095764,
+          "predicted_regret_pct": 0.0
+        },
+        "cpsat": {
+          "lx": [
+            "b10",
+            "b11",
+            "b12",
+            "b13",
+            "b15",
+            "b16",
+            "b19",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b4",
+            "b5",
+            "b6",
+            "b8",
+            "b9"
+          ],
+          "n_lx": 16,
+          "pred_us": 669365.052095764,
+          "predicted_regret_pct": 0.0
+        },
+        "greedy": {
+          "lx": [
+            "b1",
+            "b10",
+            "b11",
+            "b12",
+            "b13",
+            "b14",
+            "b16",
+            "b19",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b5",
+            "b6",
+            "b9"
+          ],
+          "n_lx": 15,
+          "pred_us": 805663.4315020068,
+          "predicted_regret_pct": 20.362338753643666
+        },
+        "bestfit": {
+          "lx": [
+            "b10",
+            "b11",
+            "b12",
+            "b13",
+            "b14",
+            "b16",
+            "b19",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b5",
+            "b6",
+            "b7",
+            "b9"
+          ],
+          "n_lx": 15,
+          "pred_us": 805663.4315020068,
+          "predicted_regret_pct": 20.362338753643666
+        }
+      },
+      "distinct_allocations": 3,
+      "duplicate_arms": [
+        [
+          "optimum",
+          "cpsat"
+        ]
+      ]
+    },
+    {
+      "label": "flash H=32 Lq=2048 Lk=2048 ktiles=2",
+      "measured_us": 12600.849,
+      "n_movable": 20,
+      "n_feasible": 992256,
+      "env": {
+        "FA_H": "32",
+        "FA_LQ": "2048",
+        "FA_LK": "2048",
+        "FA_LK_TILES": "2"
+      },
+      "arms": {
+        "optimum": {
+          "lx": [
+            "b1",
+            "b10",
+            "b11",
+            "b12",
+            "b13",
+            "b14",
+            "b15",
+            "b16",
+            "b19",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b4",
+            "b5",
+            "b6",
+            "b7",
+            "b8",
+            "b9"
+          ],
+          "n_lx": 19,
+          "pred_us": 285902.06635403266,
+          "predicted_regret_pct": 0.0
+        },
+        "cpsat": {
+          "lx": [
+            "b1",
+            "b10",
+            "b11",
+            "b12",
+            "b13",
+            "b14",
+            "b15",
+            "b16",
+            "b19",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b4",
+            "b5",
+            "b6",
+            "b7",
+            "b8",
+            "b9"
+          ],
+          "n_lx": 19,
+          "pred_us": 285902.06635403266,
+          "predicted_regret_pct": 0.0
+        },
+        "greedy": {
+          "lx": [
+            "b1",
+            "b10",
+            "b11",
+            "b12",
+            "b13",
+            "b14",
+            "b15",
+            "b16",
+            "b19",
+            "b20",
+            "b21",
+            "b22",
+            "b3",
+            "b4",
+            "b5",
+            "b9"
+          ],
+          "n_lx": 16,
+          "pred_us": 302781.1523928412,
+          "predicted_regret_pct": 5.903799945925236
+        },
+        "bestfit": {
+          "lx": [
+            "b1",
+            "b10",
+            "b11",
+            "b12",
+            "b13",
+            "b14",
+            "b15",
+            "b16",
+            "b19",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b4",
+            "b5",
+            "b6",
+            "b7",
+            "b8",
+            "b9"
+          ],
+          "n_lx": 19,
+          "pred_us": 285902.06635403266,
+          "predicted_regret_pct": 0.0
+        }
+      },
+      "distinct_allocations": 2,
+      "duplicate_arms": [
+        [
+          "optimum",
+          "cpsat",
+          "bestfit"
+        ]
+      ]
+    },
+    {
+      "label": "flash_attn H=32 Lq=2048 Lk=2048 D=128 htiles=8 qtiles=1 ktiles=1 wd=H4-Lq8-Lk8",
+      "measured_us": 11130.799,
+      "n_movable": 20,
+      "n_feasible": 345600,
+      "env": {
+        "FA_H": "32",
+        "FA_LQ": "2048",
+        "FA_LK": "2048",
+        "FA_D": "128",
+        "FA_H_TILES": "8",
+        "FA_LQ_TILES": "1",
+        "FA_LK_TILES": "1"
+      },
+      "arms": {
+        "optimum": {
+          "lx": [
+            "b11",
+            "b12",
+            "b13",
+            "b15",
+            "b16",
+            "b19",
+            "b20",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b4",
+            "b5",
+            "b6",
+            "b8",
+            "b9"
+          ],
+          "n_lx": 16,
+          "pred_us": 157841.0568259478,
+          "predicted_regret_pct": 0.0
+        },
+        "cpsat": {
+          "lx": [
+            "b11",
+            "b12",
+            "b13",
+            "b15",
+            "b16",
+            "b19",
+            "b20",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b4",
+            "b5",
+            "b6",
+            "b8",
+            "b9"
+          ],
+          "n_lx": 16,
+          "pred_us": 157841.0568259478,
+          "predicted_regret_pct": 0.0
+        },
+        "greedy": {
+          "lx": [
+            "b1",
+            "b10",
+            "b11",
+            "b12",
+            "b13",
+            "b14",
+            "b16",
+            "b19",
+            "b20",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b4",
+            "b5",
+            "b6",
+            "b9"
+          ],
+          "n_lx": 17,
+          "pred_us": 202555.68148777014,
+          "predicted_regret_pct": 28.32889335702396
+        },
+        "bestfit": {
+          "lx": [
+            "b10",
+            "b11",
+            "b12",
+            "b13",
+            "b14",
+            "b16",
+            "b19",
+            "b21",
+            "b22",
+            "b27",
+            "b3",
+            "b4",
+            "b5",
+            "b6",
+            "b7",
+            "b9"
+          ],
+          "n_lx": 16,
+          "pred_us": 192892.94883177438,
+          "predicted_regret_pct": 22.20708142145709
+        }
+      },
+      "distinct_allocations": 3,
+      "duplicate_arms": [
+        [
+          "optimum",
+          "cpsat"
+        ]
+      ]
+    }
+  ]
+}

@@ -18,10 +18,11 @@ FOUR EXPERIMENTS, run in priority order under one wall-clock budget. Each phase 
 whatever it does not spend is donated to the phases after it, so an early failure buys time
 for the sweep rather than wasting the session.
 
-  P1  flash attention x {greedy, firstfit, bestfit, cpsat}          30 min
-      The headline prediction: on two configurations the DEFAULT solver is 20.4 % and 28.3 %
-      slower than optimal, and cpsat is exactly optimal. Four real allocations of ONE
-      program, so nothing but the allocation changes.
+  P1  flash attention x ALLOCATION                                  30 min
+      The headline prediction: on two configurations the DEFAULT solver's allocation is
+      20.4 % and 28.3 % slower than the proven optimum. Each arm is pinned directly with
+      `LX_FORCE_ONLY`, so nothing but the allocation changes and no arm depends on a solver
+      choosing what we hoped it would.
   P2  flash attention across tile-count hints                       35 min
       Whether the model ranks configurations it has never been fitted on, the same test the
       2.11 toolchain got. Ranking only -- absolute error on flash is 15-45x.
@@ -31,14 +32,18 @@ for the sweep rather than wasting the session.
 
 THREE CONTROLS, without which the timings cannot be interpreted:
 
-1. **The allocations must actually differ.** If two solvers place the same buffers in LX,
-   equal runtimes confirm nothing. Every run captures its LX residency from `MODEL FEATS`
-   and P1 refuses to report a comparison whose allocations are identical.
-2. **Order must not alias onto the solver.** Thermal drift over half an hour is comparable
-   to the effect. P1 runs the solvers interleaved and in two rounds of opposite order, so
-   drift lands on all four solvers equally.
-3. **ortools must be importable**, or `cpsat` raises rather than silently degrading
-   (`ilp_solver_ortools.py:336`). Checked in preflight, before any time is spent.
+1. **The allocations must actually differ.** Comparing solvers only tests a ranking when
+   the solvers disagree, and on two of these three configurations several of them pick the
+   SAME set -- an equal runtime would then confirm nothing. So P1 pins each allocation with
+   `LX_FORCE_ONLY` (`_lx_force_override`, `scratchpad/allocator.py`), collapses arms that
+   name one set, and VERIFIES from `MODEL FEATS` that the compiler honoured the override.
+   An ignored override is the one failure that would quietly invalidate everything.
+2. **Order must not alias onto the allocation.** Thermal drift over half an hour is
+   comparable to the effect, so arms run interleaved in two rounds of opposite order and
+   the report takes the per-arm minimum.
+3. **ortools must be importable** for the `cpsat` SOLVER arm; it raises rather than
+   silently degrading (`ilp_solver_ortools.py:336`). With forced allocations the important
+   arm no longer needs it -- the proven optimum is pinned by name.
 
 SAFETY. A configuration that asks for a per-core address span past the MVLOC limit is the
 prime suspect in the 2026-08-08 card failure, so: `bmm_3d2d_k_tiling` stays quarantined,
@@ -296,10 +301,57 @@ class Recorder:
             self.done.add(row.get("key", ""))
 
 
+def solve_allocations(args):
+    """Derive P1's allocations from the measurement database, here and now.
+
+    Done inside the session on purpose. The sets are only valid for the FEATURES they were
+    solved from, so a stale `forced_allocations.json` left over from before a re-sweep would
+    pin the wrong buffers and the whole comparison would be against the wrong reference.
+    Solving takes a couple of CPU minutes against ~10^6 feasible allocations and needs no
+    device, so there is no reason to trust a file instead.
+    """
+    out_path = os.path.join(_HERE, "forced_allocations.json")
+    if args.skip_solve:
+        print("    allocations                   reusing forced_allocations.json")
+        return os.path.exists(out_path)
+    try:
+        sys.path.insert(0, os.path.join(_ROOT, "tools", "cost_model"))
+        import emit_forced_allocations as EFA
+        import eval_model as E
+
+        path = args.records or E.records_path()
+        if not os.path.exists(path):
+            print(f"    allocations                   NO DATABASE at {path}")
+            return False
+        t0 = time.time()
+        print(
+            f"    solving allocations from      {os.path.basename(path)} ...",
+            end=" ",
+            flush=True,
+        )
+        cases = EFA.emit(path, out_path, quiet=True)
+        print(f"{len(cases)} contested case(s), {time.time() - t0:.0f}s")
+        if not cases:
+            print("      no contested flash configuration in this database -- P1 will")
+            print("      fall back to comparing LAYOUT_SOLVER settings instead.")
+            return True
+        for c in cases:
+            n = c["distinct_allocations"]
+            print(f"      {c['label'][:52]:<52} {n} distinct arm(s)")
+            for grp in c.get("duplicate_arms", []):
+                print(f"        collapsed: {' == '.join(grp)}")
+        return True
+    except Exception as exc:  # noqa: BLE001 -- fall back rather than lose the session
+        print(f"FAILED ({type(exc).__name__}: {exc})")
+        print("      P1 will fall back to comparing LAYOUT_SOLVER settings.")
+        return True
+
+
 def preflight(rec, budget, args):
     """Fail fast on the things that would silently invalidate the whole session."""
     print("=== preflight ===")
     ok = True
+    solve_allocations(args)
     try:
         import ortools  # noqa: F401
 
@@ -325,52 +377,161 @@ def preflight(rec, budget, args):
     return ok
 
 
+_BUF_ID = re.compile(r"^(?:op|buf|b)(\d+)$|_buf(\d+)$")
+
+
+def _canon_buf(name):
+    """Match the allocator's canonicalisation, so op3 / buf3 / b3 compare equal."""
+    m = _BUF_ID.search(name or "")
+    return f"b{m[1] or m[2]}" if m else (name or "")
+
+
+def _short(label):
+    """A compact tag for a flash configuration."""
+    t = label.replace("flash_attn ", "").replace("flash ", "")
+    return re.sub(r"[^A-Za-z0-9]+", "_", t).strip("_")[:38] or "case"
+
+
+def _p1_arms():
+    """The allocations P1 measures, and how each is produced.
+
+    Preferred: ``forced_allocations.json`` (from ``emit_forced_allocations.py``) names exact
+    buffer sets, which ``LX_FORCE_ONLY`` pins directly. That is strictly better than picking
+    a solver and hoping -- distinct sets are guaranteed to be distinct allocations, arms
+    naming the SAME set are collapsed instead of measured twice, and the arm that matters
+    (the proven optimum) needs neither ortools installed nor CP-SAT agreeing.
+
+    Fallback when the file is absent: drive ``LAYOUT_SOLVER``, and let the report say so if
+    the solvers turn out to coincide.
+    """
+    path = os.path.join(_HERE, "forced_allocations.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:  # noqa: BLE001 -- a bad file must not end the session
+        return None
+    cases = []
+    for c in data.get("cases", []):
+        by_set: dict = {}
+        for name, a in c.get("arms", {}).items():
+            by_set.setdefault(tuple(a["lx"]), []).append((name, a))
+        arms = [
+            {
+                "label": "+".join(n for n, _ in members),
+                "lx": list(lx),
+                "pred_us": members[0][1]["pred_us"],
+                "predicted_regret_pct": members[0][1]["predicted_regret_pct"],
+            }
+            for lx, members in by_set.items()
+        ]
+        arms.sort(key=lambda a: a["predicted_regret_pct"])
+        cases.append(
+            {
+                "name": _short(c.get("label", "")),
+                "env": c.get("env", {}),
+                "arms": arms,
+                "measured_us": c.get("measured_us"),
+            }
+        )
+    return cases or None
+
+
 def phase1(rec, budget, args, cap_s):
-    """Flash attention under four solvers, interleaved and order-balanced."""
-    print(f"\n=== P1  flash x solver  (cap {cap_s / 60:.0f} min) ===")
+    """Flash attention across ALLOCATIONS, interleaved and order-balanced.
+
+    The whole point of P1 is that the allocation is the only thing that varies. Forcing the
+    set makes that literally true; selecting a solver only approximates it, and on two of
+    these three configurations several solvers pick the same set.
+    """
+    forced = _p1_arms()
+    mode = (
+        "forced allocations" if forced else "LAYOUT_SOLVER (no forced_allocations.json)"
+    )
+    print(f"\n=== P1  flash x allocation  (cap {cap_s / 60:.0f} min, via {mode}) ===")
     t_end = time.time() + cap_s
-    # Round 0 in listed order, round 1 reversed: any monotone drift hits all solvers alike.
+
     plan = []
-    for rnd in (0, 1):
-        order = SOLVERS if rnd == 0 else list(reversed(SOLVERS))
-        for case in FLASH_CASES:
-            for solver in order:
-                plan.append((rnd, case, solver))
+    if forced:
+        for rnd in (0, 1):
+            for case in forced:
+                arms = case["arms"] if rnd == 0 else list(reversed(case["arms"]))
+                for arm in arms:
+                    plan.append((rnd, case, arm))
+        n_alloc = sum(len(c["arms"]) for c in forced)
+        print(
+            f"    {len(forced)} case(s), {n_alloc} distinct allocation(s), "
+            f"2 rounds = {len(plan)} runs"
+        )
+    else:
+        for rnd in (0, 1):
+            order = SOLVERS if rnd == 0 else list(reversed(SOLVERS))
+            for case in FLASH_CASES:
+                for solver in order:
+                    plan.append(
+                        (
+                            rnd,
+                            case,
+                            {
+                                "label": solver,
+                                "solver": solver,
+                                "predicted_regret_pct": case["predict"].get(solver),
+                            },
+                        )
+                    )
+
     fails = 0
-    for rnd, case, solver in plan:
-        key = f"p1:{case['name']}:{solver}:r{rnd}"
+    for rnd, case, arm in plan:
+        key = f"p1:{case['name']}:{arm['label']}:r{rnd}"
         if time.time() > t_end:
             print("    cap reached, moving on")
             break
         if args.resume and key in rec.done:
             continue
-        env = {"BENCH_OP": "flash_attn", "SENCORES": "32", "LAYOUT_SOLVER": solver}
+        env = {"BENCH_OP": "flash_attn", "SENCORES": "32"}
         env.update(case["env"])
+        if arm.get("lx") is not None:
+            env["LX_FORCE_ONLY"] = ",".join(arm["lx"])
+        else:
+            env["LAYOUT_SOLVER"] = arm["solver"]
         s, lx, raw, dt = run_one(env, args.run_timeout, reps=args.reps)
         row = {
             "phase": 1,
             "key": key,
             "case": case["name"],
-            "solver": solver,
+            "arm": arm["label"],
             "round": rnd,
             "seconds": round(dt, 1),
             "kernel_us": (s or {}).get("kernel_us"),
             "cv": (s or {}).get("kernel_us_cv"),
-            "pred_us": (s or {}).get("pred_us"),
+            "pred_us": arm.get("pred_us") or (s or {}).get("pred_us"),
+            "requested_lx": arm.get("lx"),
             "lx": lx,
             "n_lx": len(lx) if lx else None,
-            "predicted_regret_pct": case["predict"].get(solver),
+            "predicted_regret_pct": arm.get("predicted_regret_pct"),
         }
+        # Did the override actually take? A silently-ignored LX_FORCE_ONLY would make every
+        # arm identical and the comparison worthless, so verify instead of assuming.
+        if arm.get("lx") is not None and lx is not None:
+            got = {_canon_buf(x) for x in lx}
+            want = {_canon_buf(x) for x in arm["lx"]}
+            row["override_honoured"] = got == want
+            row["lx_unexpected"] = sorted(got - want)
+            row["lx_missing"] = sorted(want - got)
         if not row["kernel_us"]:
             row["tail"] = (raw or "")[-400:]
             fails += 1
         else:
             fails = 0
         rec.add(row)
-        got = f"{row['kernel_us']:.0f} us" if row["kernel_us"] else "FAILED"
+        shown = f"{row['kernel_us']:.0f} us" if row["kernel_us"] else "FAILED"
+        flag = ""
+        if row.get("override_honoured") is False:
+            flag = f"  !! kept {len(lx or [])}, asked {len(arm['lx'])}"
         print(
-            f"    {case['name']:<22} {solver:<9} r{rnd}  {got:>12}  "
-            f"lx={row['n_lx']}  ({dt:.0f}s)"
+            f"    {case['name'][:24]:<24} {arm['label'][:18]:<18} r{rnd}  "
+            f"{shown:>12}  lx={row['n_lx']}{flag}  ({dt:.0f}s)"
         )
         if args.abort_after and fails >= args.abort_after:
             print(f"    ABORT: {fails} consecutive failures -- device may be down")
@@ -557,45 +718,70 @@ def report(rec):
 
     p1 = [r for r in rec.rows if r.get("phase") == 1 and r.get("kernel_us")]
     if p1:
-        print("\nP1  flash: predicted vs measured regret against the best solver")
-        for case in FLASH_CASES:
-            rows = [r for r in p1 if r["case"] == case["name"]]
-            if not rows:
-                continue
+        print("\nP1  flash: predicted vs measured regret, per allocation")
+        for cname in sorted({r["case"] for r in p1}):
+            rows = [r for r in p1 if r["case"] == cname]
+            arms = sorted({r["arm"] for r in rows})
             best = {}
-            for s in SOLVERS:
-                got = [r["kernel_us"] for r in rows if r["solver"] == s]
+            for a in arms:
+                got = [r["kernel_us"] for r in rows if r["arm"] == a]
                 if got:
-                    best[s] = min(got)  # min over rounds: the least drift-contaminated
+                    best[a] = min(got)  # min over rounds: least drift-contaminated
             if not best:
                 continue
             ref = min(best.values())
-            allocs = {
-                s: tuple(r["lx"] or [])
-                for s in best
+            observed = {
+                tuple(sorted(_canon_buf(x) for x in (r["lx"] or [])))
                 for r in rows
-                if r["solver"] == s and r.get("lx")
+                if r.get("lx")
             }
-            distinct = len(set(allocs.values()))
-            print(f"\n  {case['name']}   ({distinct} distinct allocation(s) observed)")
-            if distinct <= 1:
+            ignored = [r for r in rows if r.get("override_honoured") is False]
+            print(f"\n  {cname}   ({len(observed)} distinct allocation(s) observed)")
+            if len(observed) <= 1 and len(best) > 1:
                 print(
-                    "    WARNING: every solver produced the SAME allocation, so equal"
+                    "    WARNING: every arm produced the SAME allocation on device, so"
                 )
-                print("    runtimes confirm nothing about the ranking.")
+                print(
+                    "    equal runtimes confirm nothing. Check LX_FORCE_ONLY took"
+                    " effect."
+                )
+            if ignored:
+                print(
+                    f"    WARNING: {len(ignored)} run(s) did not honour LX_FORCE_ONLY"
+                )
+                for r in ignored[:3]:
+                    print(
+                        f"      {r['arm']}: extra={r.get('lx_unexpected')} "
+                        f"missing={r.get('lx_missing')}"
+                    )
             print(
-                f"    {'solver':<10}{'measured us':>13}{'meas regret':>13}"
+                f"    {'allocation':<20}{'measured us':>13}{'measured':>11}"
                 f"{'predicted':>11}"
             )
-            for s in SOLVERS:
-                if s not in best:
-                    continue
-                reg = (best[s] - ref) / ref * 100.0
-                pr = case["predict"].get(s)
+            for a in sorted(best, key=lambda a: best[a]):
+                reg = (best[a] - ref) / ref * 100.0
+                pr = next(
+                    (r.get("predicted_regret_pct") for r in rows if r["arm"] == a), None
+                )
                 print(
-                    f"    {s:<10}{best[s]:>13.1f}{reg:>12.1f}%"
+                    f"    {a[:20]:<20}{best[a]:>13.1f}{reg:>10.1f}%"
                     f"{(f'{pr:+.1f}%' if pr is not None else '-'):>11}"
                 )
+            # The claim under test is the ORDER, so state whether it survived.
+            meas_order = [a for a in sorted(best, key=lambda a: best[a])]
+            pred_order = sorted(
+                best,
+                key=lambda a: next(
+                    (r.get("predicted_regret_pct") or 0.0)
+                    for r in rows
+                    if r["arm"] == a
+                ),
+            )
+            print(f"    order  measured {' < '.join(x[:12] for x in meas_order)}")
+            print(
+                f"           predicted {' < '.join(x[:12] for x in pred_order)}"
+                f"   -> {'AGREES' if meas_order == pred_order else 'DISAGREES'}"
+            )
 
     p2 = [
         r
@@ -677,6 +863,18 @@ def main():
     ap.add_argument("--out", default=os.path.join(_HERE, "lx_session_results.jsonl"))
     ap.add_argument(
         "--resume", action="store_true", help="skip runs already recorded in --out"
+    )
+    ap.add_argument(
+        "--records",
+        default="",
+        help="measurement database P1's allocations are solved from "
+        "(default: the checked-in sweep_records.json)",
+    )
+    ap.add_argument(
+        "--skip-solve",
+        action="store_true",
+        help="reuse forced_allocations.json instead of re-solving; only safe "
+        "when the database has not changed since it was written",
     )
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument(

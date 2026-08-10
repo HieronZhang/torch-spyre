@@ -14,10 +14,12 @@
 
 import logging
 import math
+import os
 import time
 from collections.abc import Sequence
 from typing import Any, Optional
 
+import regex as re
 import sympy
 import torch
 from torch._inductor.ir import (
@@ -304,6 +306,9 @@ class ScratchpadAllocator:
             buf_user_deps: every buffer's ``(op, dep)`` users, from
                 :func:`_get_buffer_user_deps`, for the read-side advancing check.
         """
+        forced = _lx_force_override(name)
+        if forced is not None:
+            return forced
         if op is None or not self._op_output_good_for_lx_reuse(op):
             return "op not allowed"
         if not hasattr(getattr(op, "layout", None), "device_layout"):
@@ -833,6 +838,59 @@ class ScratchpadAllocator:
     def _set_one_allocation(self, buf: TensorBox | ComputedBuffer, address: int):
         layout = buf.get_layout()
         layout.allocation["lx"] = address
+
+
+_LX_BUF_ID = re.compile(r"^(?:op|buf)(\d+)$|_buf(\d+)$")
+
+
+def _lx_canon(name: str) -> str:
+    """Buffer identity independent of which side of the dependence names it.
+
+    The IR calls the same buffer ``op3`` where it is produced and ``buf3`` where it is
+    consumed, so an experiment that names buffers has to match on the number, not the
+    string. Mirrors ``_canon`` in ``research/lx_choice.py``.
+    """
+    m = _LX_BUF_ID.search(name or "")
+    return f"b{m[1] or m[2]}" if m else (name or "")
+
+
+def _lx_force_override(name: str) -> Optional[str]:
+    """EXPERIMENT HOOK: pin the LX allocation from the environment.
+
+    Inert unless one of these is set, and never used by a normal compile:
+
+    * ``LX_FORCE_ONLY="b1,b3,b19"`` -- ONLY these buffers may reside in LX. Everything
+      else is rejected here, so whichever solver is configured packs exactly the named
+      set and nothing more.
+    * ``LX_FORCE_EXCLUDE="b1"`` -- these buffers may NOT reside; the solver is otherwise
+      free.
+
+    Why this exists. Comparing ``layout_solver`` settings only tests the ranking when the
+    solvers actually choose DIFFERENT allocations, and on many programs they do not -- an
+    equal runtime then confirms nothing. This turns "hope they differ" into a direct A/B of
+    two named allocations, which is what a ranking claim needs. It also removes the
+    ortools dependency from the important arm: the allocation a search proved optimal can
+    be measured without CP-SAT being installed or agreeing.
+
+    Names are matched by buffer NUMBER (``op3``/``buf3``/``b3`` are one buffer), so the
+    sets printed by the offline harness can be pasted in unchanged.
+
+    Rejections still flow through ``reject_reasons``, so ``TORCH_LOGS`` shows exactly which
+    buffers the override moved and why -- an override that silently matched nothing would
+    otherwise look like a successful run.
+    """
+    only = os.environ.get("LX_FORCE_ONLY", "").strip()
+    excl = os.environ.get("LX_FORCE_EXCLUDE", "").strip()
+    if not only and not excl:
+        return None
+    canon = _lx_canon(name)
+    if excl:
+        if canon in {_lx_canon(x) for x in excl.split(",") if x.strip()}:
+            return "forced to HBM by LX_FORCE_EXCLUDE (experiment override)"
+    if only:
+        if canon not in {_lx_canon(x) for x in only.split(",") if x.strip()}:
+            return "not in LX_FORCE_ONLY (experiment override)"
+    return None
 
 
 def _lx_planning_size() -> int:
