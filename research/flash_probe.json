@@ -1,0 +1,257 @@
+[
+  {
+    "name": "plan#685",
+    "env": {
+      "BENCH_COLS": "128",
+      "BENCH_ROWS": "2048",
+      "BENCH_TILES": "1",
+      "FA_D": "128",
+      "FA_H": "32",
+      "FA_H_TILES": "8",
+      "FA_LK": "2048",
+      "FA_LK_TILES": "1",
+      "FA_LQ": "2048",
+      "FA_LQ_TILES": "1",
+      "FA_WD": "H:4,Lq:8,Lk:8",
+      "LX_PLANNING": "1",
+      "SENCORES": "32"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 32.1,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 262144, 1] target_stl.stride_map=[128, 1, -1, -1, 262144, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "plan#686",
+    "env": {
+      "BENCH_COLS": "128",
+      "BENCH_ROWS": "4096",
+      "BENCH_TILES": "4",
+      "FA_D": "128",
+      "FA_H": "32",
+      "FA_H_TILES": "16",
+      "FA_LK": "4096",
+      "FA_LK_TILES": "1",
+      "FA_LQ": "4096",
+      "FA_LQ_TILES": "4",
+      "FA_WD": "H:4,Lq:8,Lk:8",
+      "LX_PLANNING": "1"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 17.3,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 524288, 1] target_stl.stride_map=[128, 1, -1, -1, 524288, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "plan#687",
+    "env": {
+      "BENCH_COLS": "128",
+      "BENCH_ROWS": "4096",
+      "BENCH_TILES": "4",
+      "FA_D": "128",
+      "FA_H": "32",
+      "FA_H_TILES": "8",
+      "FA_LK": "4096",
+      "FA_LK_TILES": "1",
+      "FA_LQ": "4096",
+      "FA_LQ_TILES": "4",
+      "FA_WD": "H:8,Lq:4",
+      "LX_PLANNING": "1"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 16.5,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 524288, 1] target_stl.stride_map=[128, 1, -1, -1, 524288, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "plan#688",
+    "env": {
+      "BENCH_COLS": "16384",
+      "BENCH_ROWS": "512",
+      "BENCH_TILES": "0",
+      "FA_H": "32",
+      "FA_H_TILES": "16",
+      "FA_LK": "1024",
+      "FA_LQ": "1024",
+      "FA_LQ_TILES": "4",
+      "LX_PLANNING": "1"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 18.5,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 131072, 1] target_stl.stride_map=[128, 1, -1, -1, 131072, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "plan#689",
+    "env": {
+      "BENCH_COLS": "16384",
+      "BENCH_ROWS": "512",
+      "BENCH_TILES": "0",
+      "FA_H": "32",
+      "FA_H_TILES": "4",
+      "FA_LK": "1024",
+      "FA_LQ": "1024",
+      "FA_LQ_TILES": "2",
+      "LX_PLANNING": "1",
+      "SENCORES": "32"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 18.1,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 131072, 1] target_stl.stride_map=[128, 1, -1, -1, 131072, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "plan#690",
+    "env": {
+      "BENCH_COLS": "16384",
+      "BENCH_ROWS": "512",
+      "BENCH_TILES": "0",
+      "FA_H": "32",
+      "FA_H_TILES": "8",
+      "FA_LK": "1024",
+      "FA_LQ": "1024",
+      "FA_LQ_TILES": "2",
+      "LX_PLANNING": "1",
+      "SENCORES": "32"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 15.9,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 131072, 1] target_stl.stride_map=[128, 1, -1, -1, 131072, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "plan#691",
+    "env": {
+      "BENCH_COLS": "16384",
+      "BENCH_ROWS": "512",
+      "BENCH_TILES": "0",
+      "FA_H": "32",
+      "FA_H_TILES": "8",
+      "FA_LK": "1024",
+      "FA_LQ": "1024",
+      "FA_LQ_TILES": "4",
+      "LX_PLANNING": "1",
+      "SENCORES": "32"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 17.2,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 131072, 1] target_stl.stride_map=[128, 1, -1, -1, 131072, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "plan#692",
+    "env": {
+      "BENCH_COLS": "16384",
+      "BENCH_ROWS": "512",
+      "BENCH_TILES": "0",
+      "FA_H": "32",
+      "FA_H_TILES": "8",
+      "FA_LK": "2048",
+      "FA_LQ": "2048",
+      "FA_LQ_TILES": "4",
+      "LX_PLANNING": "1",
+      "SENCORES": "32"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 20.2,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 262144, 1] target_stl.stride_map=[128, 1, -1, -1, 262144, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "plan#693",
+    "env": {
+      "BENCH_COLS": "16384",
+      "BENCH_ROWS": "512",
+      "BENCH_TILES": "0",
+      "FA_H": "32",
+      "FA_H_TILES": "8",
+      "FA_LK": "4096",
+      "FA_LQ": "4096",
+      "FA_LQ_TILES": "4",
+      "LX_PLANNING": "1",
+      "SENCORES": "32"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 22.5,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 524288, 1] target_stl.stride_map=[128, 1, -1, -1, 524288, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "plan#694",
+    "env": {
+      "BENCH_COLS": "16384",
+      "BENCH_ROWS": "512",
+      "BENCH_TILES": "0",
+      "FA_H": "32",
+      "FA_LK": "2048",
+      "FA_LK_TILES": "2",
+      "FA_LQ": "2048",
+      "LX_PLANNING": "1",
+      "SENCORES": "32"
+    },
+    "kernel_us": null,
+    "result": "reduction-tiling",
+    "seconds": 15.3,
+    "tail": "y\", line 1107, in coarse_tile\n    plan = plan_coarse_tile_groups(operations, groups)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/wsr/coarse_tile.py\", line 266, in plan_coarse_tile_groups\n    raise Unsupported(\ntorch._inductor.exc.InductorError: Unsupported: Spyre backend does not support: reduction-dim tiling requiring carry propagation for op buf13\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "untiled_1024",
+    "env": {
+      "FA_H": "32",
+      "FA_LQ": "1024",
+      "FA_LK": "1024",
+      "FA_H_TILES": "1",
+      "FA_LQ_TILES": "1",
+      "FA_LK_TILES": "1"
+    },
+    "kernel_us": 8368.98,
+    "result": "OK",
+    "seconds": 25.1,
+    "tail": null
+  },
+  {
+    "name": "h_only_1024",
+    "env": {
+      "FA_H": "32",
+      "FA_LQ": "1024",
+      "FA_LK": "1024",
+      "FA_H_TILES": "8",
+      "FA_LQ_TILES": "1",
+      "FA_LK_TILES": "1"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 23.2,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 131072, 1] target_stl.stride_map=[128, 1, -1, -1, 131072, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "q_only_1024",
+    "env": {
+      "FA_H": "32",
+      "FA_LQ": "1024",
+      "FA_LK": "1024",
+      "FA_H_TILES": "1",
+      "FA_LQ_TILES": "4",
+      "FA_LK_TILES": "1"
+    },
+    "kernel_us": null,
+    "result": "restickify",
+    "seconds": 21.5,
+    "tail": "ctor/passes.py\", line 485, in __call__\n    pass_fn(graph)\n  File \"/home/haoyang/torch-spyre/torch_spyre/_inductor/insert_restickify.py\", line 432, in finalize_layouts\n    raise AssertionError(\ntorch._inductor.exc.InductorError: AssertionError: finalize_layouts: restickify needed but infeasible for op='buf24' input='buf25': in_stl.stride_map=[128, -1, 64, 131072, 1] target_stl.stride_map=[128, 1, -1, -1, 131072, -1]\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n\n"
+  },
+  {
+    "name": "untiled_512",
+    "env": {
+      "FA_H": "8",
+      "FA_LQ": "512",
+      "FA_LK": "512",
+      "FA_H_TILES": "1",
+      "FA_LQ_TILES": "1",
+      "FA_LK_TILES": "1"
+    },
+    "kernel_us": 192.459,
+    "result": "OK",
+    "seconds": 20.6,
+    "tail": null
+  }
+]
