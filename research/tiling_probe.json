@@ -1,0 +1,77 @@
+[
+  {
+    "op": "research:mlp_up",
+    "tiles": 4,
+    "untiled_us": 16093.205,
+    "tiled_us": null,
+    "untiled": "OK",
+    "tiled_tag": "unsupported",
+    "verdict": "TILING BROKEN (unsupported)",
+    "tiled_env": {
+      "WL_BT": "1",
+      "WL_ST": "2",
+      "WL_FT": "4"
+    },
+    "tail": "loads.py\", line 126, in torch_dynamo_resume_in_fn_at_125\n    with _tiled(B=bt, S=st, Fd=ft):\n         ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/haoyang/torch-spyre/research/workloads.py\", line 88, in _tiled\n    stack.enter_context(spyre_hint(num_tiles_per_dim={dim: n}))\n  File \"/usr/lib64/python3.12/contextlib.py\", line 524, in enter_context\n    raise TypeError(f\"'{cls.__module__}.{cls.__qualname__}' object does \"\nTypeError: 'builtins.function' object does not support the context manager protocol\n"
+  },
+  {
+    "op": "research:block_norm_mlp",
+    "tiles": 8,
+    "untiled_us": 16602.019,
+    "tiled_us": null,
+    "untiled": "OK",
+    "tiled_tag": "unsupported",
+    "verdict": "TILING BROKEN (unsupported)",
+    "tiled_env": {
+      "WL_BT": "1",
+      "WL_ST": "2",
+      "WL_FT": "8"
+    },
+    "tail": "loads.py\", line 212, in torch_dynamo_resume_in_fn_at_211\n    with _tiled(B=bt, S=st, Fd=ft):\n         ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/haoyang/torch-spyre/research/workloads.py\", line 88, in _tiled\n    stack.enter_context(spyre_hint(num_tiles_per_dim={dim: n}))\n  File \"/usr/lib64/python3.12/contextlib.py\", line 524, in enter_context\n    raise TypeError(f\"'{cls.__module__}.{cls.__qualname__}' object does \"\nTypeError: 'builtins.function' object does not support the context manager protocol\n"
+  },
+  {
+    "op": "research:prefix_block",
+    "tiles": 2,
+    "untiled_us": 0.0,
+    "tiled_us": null,
+    "untiled": "no-summary",
+    "tiled_tag": "unsupported",
+    "verdict": "op broken either way (no-summary)",
+    "tiled_env": {
+      "WL_BT": "1",
+      "WL_ST": "1",
+      "WL_FT": "2"
+    },
+    "tail": "loads.py\", line 372, in torch_dynamo_resume_in_fn_at_371\n    with _tiled(B=bt, S=st, Fd=ft):\n         ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/haoyang/torch-spyre/research/workloads.py\", line 88, in _tiled\n    stack.enter_context(spyre_hint(num_tiles_per_dim={dim: n}))\n  File \"/usr/lib64/python3.12/contextlib.py\", line 524, in enter_context\n    raise TypeError(f\"'{cls.__module__}.{cls.__qualname__}' object does \"\nTypeError: 'builtins.function' object does not support the context manager protocol\n"
+  },
+  {
+    "op": "research:attn_scores",
+    "tiles": 2,
+    "untiled_us": 435.279,
+    "tiled_us": null,
+    "untiled": "OK",
+    "tiled_tag": "unsupported",
+    "verdict": "TILING BROKEN (unsupported)",
+    "tiled_env": {
+      "WL_BT": "1",
+      "WL_HT": "2",
+      "WL_QT": "2"
+    },
+    "tail": "loads.py\", line 172, in torch_dynamo_resume_in_fn_at_171\n    with _tiled(B=bt, H=ht, Lq=qt):\n         ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/haoyang/torch-spyre/research/workloads.py\", line 88, in _tiled\n    stack.enter_context(spyre_hint(num_tiles_per_dim={dim: n}))\n  File \"/usr/lib64/python3.12/contextlib.py\", line 524, in enter_context\n    raise TypeError(f\"'{cls.__module__}.{cls.__qualname__}' object does \"\nTypeError: 'builtins.function' object does not support the context manager protocol\n"
+  },
+  {
+    "op": "research:decode_block",
+    "tiles": 2,
+    "untiled_us": 24246.459,
+    "tiled_us": null,
+    "untiled": "OK",
+    "tiled_tag": "unsupported",
+    "verdict": "TILING BROKEN (unsupported)",
+    "tiled_env": {
+      "WL_BT": "1",
+      "WL_HT": "2",
+      "WL_FT": "2"
+    },
+    "tail": "loads.py\", line 291, in torch_dynamo_resume_in_fn_at_290\n    with _tiled(B=bt, H=ht, Fd=ft):\n         ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/haoyang/torch-spyre/research/workloads.py\", line 88, in _tiled\n    stack.enter_context(spyre_hint(num_tiles_per_dim={dim: n}))\n  File \"/usr/lib64/python3.12/contextlib.py\", line 524, in enter_context\n    raise TypeError(f\"'{cls.__module__}.{cls.__qualname__}' object does \"\nTypeError: 'builtins.function' object does not support the context manager protocol\n"
+  }
+]
