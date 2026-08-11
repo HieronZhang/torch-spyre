@@ -841,7 +841,63 @@ def _prefix_block_workload():
     )
 
 
+def _research_workload(name):
+    """Run a case-study program from ``research/workloads.py`` as a BENCH_OP.
+
+    ``BENCH_OP=research:mlp_up`` selects the factory; every ``WL_<param>`` environment
+    variable becomes a keyword argument, lower-cased, so the same knobs the offline screen
+    sweeps are reachable here without a per-workload wrapper:
+
+        BENCH_OP=research:block_norm_mlp WL_BT=1 WL_ST=2 WL_FT=8 SENCORES=8
+
+    One dispatch rather than one function per program, because the case studies exist to be
+    varied -- a wrapper per program would have to be edited every time one is added, and the
+    factories already take their tile counts as arguments.
+    """
+    import importlib.util
+
+    from torch._inductor.codecache import FxGraphCache
+
+    global _PREPARE
+    root = os.path.dirname(  # .../docs/source/user_guide/examples -> repo root
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
+    )
+    path = os.path.join(root, "research", "workloads.py")
+    spec = importlib.util.spec_from_file_location("research_workloads", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if name not in mod.WORKLOADS:
+        raise SystemExit(
+            f"unknown research workload {name!r} (have {sorted(mod.WORKLOADS)})"
+        )
+
+    kwargs = {}
+    for key, val in os.environ.items():
+        if key.startswith("WL_") and val:
+            try:
+                kwargs[key[3:].lower()] = int(val)
+            except ValueError:
+                pass
+    fn, build = mod.WORKLOADS[name](**kwargs)
+    args = build()
+    fn(
+        *args
+    )  # eager reference call: declares named dims before the compile, as flash does
+    torch._dynamo.reset_code_caches()
+    FxGraphCache.clear()
+    # The factories re-declare their dims inside `fn`, so every retrace is already covered
+    # and there is no separate prepare step to register.
+    _PREPARE = None
+    return torch.compile(fn), tuple(a.to(DEVICE) for a in args)
+
+
 def make_workload():
+    if OP.startswith(
+        "research:"
+    ):  # case studies from research/workloads.py (WL_* knobs)
+        return _research_workload(OP.split(":", 1)[1])
     if OP == "prefix_block":  # chunked-prefill block (PB_* knobs); mixed transports
         return _prefix_block_workload()
     if OP in _UNARY:
