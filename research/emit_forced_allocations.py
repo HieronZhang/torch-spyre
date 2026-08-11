@@ -46,7 +46,7 @@ import lx_experiment as X  # noqa: E402
 CAP = L.LX_CAPACITY_BYTES
 
 
-def build_cases(records, op="flash_attn"):
+def build_cases(records, op="flash_attn", min_regret=0.0):
     """Every contested configuration of ``op``, with each policy's allocation solved exactly.
 
     Importable so the session runner can regenerate the sets itself instead of depending on
@@ -67,6 +67,8 @@ def build_cases(records, op="flash_attn"):
         if L.peak_footprint(feats, set(movable)) <= CAP:
             continue  # capacity does not bind: every arm would be identical
         exact, evaluate, n_eval = L.exhaustive_policies(feats, CAP)
+        if n_eval < 2:
+            continue  # only the empty allocation fits: nothing to choose between
         seq = X.solver_allocations(feats)
         arms = {
             "optimum": exact["time"],
@@ -81,7 +83,8 @@ def build_cases(records, op="flash_attn"):
             "measured_us": r.get("kernel_us"),
             "n_movable": len(movable),
             "n_feasible": n_eval,
-            "env": _env_from_label(label),
+            "env": _env_from_record(r),
+            "bench_op": r.get("op") or op,
             "arms": {},
         }
         for name, s in arms.items():
@@ -102,11 +105,17 @@ def build_cases(records, op="flash_attn"):
     return out
 
 
-def emit(records_path, out_path, op="flash_attn", quiet=False):
+def emit(records_path, out_path, op="flash_attn", quiet=False, top=0):
     """Solve, write the JSON, and describe what was found. Returns the case list."""
     with open(records_path, encoding="utf-8") as fh:
         records = json.load(fh)["records"]
     cases = build_cases(records, op)
+    # Most contested first, so a capped session spends its runs where the spread is.
+    cases.sort(
+        key=lambda c: -max(a["predicted_regret_pct"] for a in c["arms"].values())
+    )
+    if top:
+        cases = cases[:top]
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump({"cap_bytes": CAP, "cases": cases}, fh, indent=2)
     if not quiet:
@@ -143,13 +152,45 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--records", default="")
     ap.add_argument("--op", default="flash_attn")
+    ap.add_argument(
+        "--top",
+        type=int,
+        default=0,
+        help="keep only the N most contested cases (0 = all)",
+    )
     ap.add_argument("--out", default=os.path.join(_HERE, "forced_allocations.json"))
     args = ap.parse_args()
 
     import eval_model as E
 
-    emit(args.records or E.records_path(), args.out, args.op)
+    emit(args.records or E.records_path(), args.out, args.op, top=args.top)
     return 0
+
+
+def _env_from_record(r):
+    """The environment that reproduces a recorded configuration.
+
+    Built from the record's STRUCTURED fields (``rows``/``cols``/``tiles``/``cores``) where
+    they exist, and only falling back to parsing the label for flash, whose FA_* knobs are
+    not stored as columns. Parsing prose is the last resort, not the first.
+    """
+    env = {}
+    if r.get("rows"):
+        env["BENCH_ROWS"] = str(int(r["rows"]))
+    if r.get("cols"):
+        env["BENCH_COLS"] = str(int(r["cols"]))
+    if r.get("tiles") is not None:
+        env["BENCH_TILES"] = str(int(r["tiles"]))
+    if r.get("cores"):
+        env["SENCORES"] = str(int(r["cores"]))
+    if r.get("lx") is not None:
+        env["LX_PLANNING"] = str(int(r["lx"]))
+    if (r.get("op") or "") == "flash_attn":
+        env.update(_env_from_label(r.get("label") or ""))
+        env.pop("BENCH_ROWS", None)
+        env.pop("BENCH_COLS", None)
+        env.pop("BENCH_TILES", None)
+    return env
 
 
 def _env_from_label(label):

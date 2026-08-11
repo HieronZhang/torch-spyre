@@ -2,354 +2,265 @@
   "cap_bytes": 1625344,
   "cases": [
     {
-      "label": "flash H=32 Lq=4096 Lk=4096 htiles=8 qtiles=4",
-      "measured_us": 18921.768,
-      "n_movable": 20,
-      "n_feasible": 213952,
+      "label": "softmax_row_tiling ROWS=4096 COLS=2048 tiles=1 sencores=16",
+      "measured_us": 607.057,
+      "n_movable": 4,
+      "n_feasible": 12,
       "env": {
-        "FA_H": "32",
-        "FA_LQ": "4096",
-        "FA_LK": "4096",
-        "FA_H_TILES": "8",
-        "FA_LQ_TILES": "4"
+        "BENCH_ROWS": "4096",
+        "BENCH_COLS": "2048",
+        "BENCH_TILES": "1",
+        "SENCORES": "16",
+        "LX_PLANNING": "1"
       },
+      "bench_op": "softmax_row_tiling",
       "arms": {
         "optimum": {
           "lx": [
-            "b10",
-            "b11",
-            "b12",
-            "b13",
-            "b15",
-            "b16",
-            "b19",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b4",
-            "b5",
-            "b6",
-            "b8",
-            "b9"
+            "b2",
+            "b3"
           ],
-          "n_lx": 16,
-          "pred_us": 669365.052095764,
+          "n_lx": 2,
+          "pred_us": 636.3384510474613,
           "predicted_regret_pct": 0.0
         },
         "cpsat": {
           "lx": [
-            "b10",
-            "b11",
-            "b12",
-            "b13",
-            "b15",
-            "b16",
-            "b19",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b4",
-            "b5",
-            "b6",
-            "b8",
-            "b9"
+            "b0",
+            "b2",
+            "b3"
           ],
-          "n_lx": 16,
-          "pred_us": 669365.052095764,
-          "predicted_regret_pct": 0.0
+          "n_lx": 3,
+          "pred_us": 639.9948663466668,
+          "predicted_regret_pct": 0.5746022880099033
         },
         "greedy": {
           "lx": [
+            "b0",
             "b1",
-            "b10",
-            "b11",
-            "b12",
-            "b13",
-            "b14",
-            "b16",
-            "b19",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b5",
-            "b6",
-            "b9"
+            "b3"
           ],
-          "n_lx": 15,
-          "pred_us": 805663.4315020068,
-          "predicted_regret_pct": 20.362338753643666
+          "n_lx": 3,
+          "pred_us": 751.8429730133332,
+          "predicted_regret_pct": 18.15142897238769
         },
         "bestfit": {
           "lx": [
-            "b10",
-            "b11",
-            "b12",
-            "b13",
-            "b14",
-            "b16",
-            "b19",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b5",
-            "b6",
-            "b7",
-            "b9"
+            "b0",
+            "b1",
+            "b3"
           ],
-          "n_lx": 15,
-          "pred_us": 805663.4315020068,
-          "predicted_regret_pct": 20.362338753643666
+          "n_lx": 3,
+          "pred_us": 751.8429730133332,
+          "predicted_regret_pct": 18.15142897238769
         }
       },
       "distinct_allocations": 3,
       "duplicate_arms": [
         [
-          "optimum",
-          "cpsat"
+          "greedy",
+          "bestfit"
         ]
       ]
     },
     {
-      "label": "flash H=32 Lq=2048 Lk=2048 ktiles=2",
-      "measured_us": 12600.849,
-      "n_movable": 20,
-      "n_feasible": 992256,
+      "label": "softmax_row_tiling ROWS=2048 COLS=512 tiles=1 sencores=2",
+      "measured_us": 292.906,
+      "n_movable": 4,
+      "n_feasible": 12,
       "env": {
-        "FA_H": "32",
-        "FA_LQ": "2048",
-        "FA_LK": "2048",
-        "FA_LK_TILES": "2"
+        "BENCH_ROWS": "2048",
+        "BENCH_COLS": "512",
+        "BENCH_TILES": "1",
+        "SENCORES": "2",
+        "LX_PLANNING": "1"
       },
+      "bench_op": "softmax_row_tiling",
       "arms": {
         "optimum": {
           "lx": [
-            "b1",
-            "b10",
-            "b11",
-            "b12",
-            "b13",
-            "b14",
-            "b15",
-            "b16",
-            "b19",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b4",
-            "b5",
-            "b6",
-            "b7",
-            "b8",
-            "b9"
+            "b0",
+            "b2",
+            "b3"
           ],
-          "n_lx": 19,
-          "pred_us": 285902.06635403266,
+          "n_lx": 3,
+          "pred_us": 79.99935829333334,
           "predicted_regret_pct": 0.0
         },
         "cpsat": {
           "lx": [
-            "b1",
-            "b10",
-            "b11",
-            "b12",
-            "b13",
-            "b14",
-            "b15",
-            "b16",
-            "b19",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b4",
-            "b5",
-            "b6",
-            "b7",
-            "b8",
-            "b9"
+            "b0",
+            "b2",
+            "b3"
           ],
-          "n_lx": 19,
-          "pred_us": 285902.06635403266,
+          "n_lx": 3,
+          "pred_us": 79.99935829333334,
           "predicted_regret_pct": 0.0
         },
         "greedy": {
           "lx": [
+            "b0",
             "b1",
-            "b10",
-            "b11",
-            "b12",
-            "b13",
-            "b14",
-            "b15",
-            "b16",
-            "b19",
-            "b20",
-            "b21",
-            "b22",
-            "b3",
-            "b4",
-            "b5",
-            "b9"
+            "b3"
           ],
-          "n_lx": 16,
-          "pred_us": 302781.1523928412,
-          "predicted_regret_pct": 5.903799945925236
+          "n_lx": 3,
+          "pred_us": 93.98037162666665,
+          "predicted_regret_pct": 17.476406850751452
         },
         "bestfit": {
           "lx": [
+            "b0",
             "b1",
-            "b10",
-            "b11",
-            "b12",
-            "b13",
-            "b14",
-            "b15",
-            "b16",
-            "b19",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b4",
-            "b5",
-            "b6",
-            "b7",
-            "b8",
-            "b9"
+            "b3"
           ],
-          "n_lx": 19,
-          "pred_us": 285902.06635403266,
-          "predicted_regret_pct": 0.0
+          "n_lx": 3,
+          "pred_us": 93.98037162666665,
+          "predicted_regret_pct": 17.476406850751452
         }
       },
       "distinct_allocations": 2,
       "duplicate_arms": [
         [
           "optimum",
-          "cpsat",
+          "cpsat"
+        ],
+        [
+          "greedy",
           "bestfit"
         ]
       ]
     },
     {
-      "label": "flash_attn H=32 Lq=2048 Lk=2048 D=128 htiles=8 qtiles=1 ktiles=1 wd=H4-Lq8-Lk8",
-      "measured_us": 11130.799,
-      "n_movable": 20,
-      "n_feasible": 345600,
+      "label": "softmax [8192,4096] tiles=2 (ROWS/tile=4096)",
+      "measured_us": 1573.523,
+      "n_movable": 4,
+      "n_feasible": 12,
       "env": {
-        "FA_H": "32",
-        "FA_LQ": "2048",
-        "FA_LK": "2048",
-        "FA_D": "128",
-        "FA_H_TILES": "8",
-        "FA_LQ_TILES": "1",
-        "FA_LK_TILES": "1"
+        "BENCH_ROWS": "8192",
+        "BENCH_COLS": "4096",
+        "BENCH_TILES": "2",
+        "SENCORES": "32",
+        "LX_PLANNING": "1"
       },
+      "bench_op": "softmax_row_tiling",
       "arms": {
         "optimum": {
           "lx": [
-            "b11",
-            "b12",
-            "b13",
-            "b15",
-            "b16",
-            "b19",
-            "b20",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b4",
-            "b5",
-            "b6",
-            "b8",
-            "b9"
+            "b0",
+            "b2",
+            "b3"
           ],
-          "n_lx": 16,
-          "pred_us": 157841.0568259478,
+          "n_lx": 3,
+          "pred_us": 2488.187697701447,
           "predicted_regret_pct": 0.0
         },
         "cpsat": {
           "lx": [
-            "b11",
-            "b12",
-            "b13",
-            "b15",
-            "b16",
-            "b19",
-            "b20",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b4",
-            "b5",
-            "b6",
-            "b8",
-            "b9"
+            "b0",
+            "b2",
+            "b3"
           ],
-          "n_lx": 16,
-          "pred_us": 157841.0568259478,
+          "n_lx": 3,
+          "pred_us": 2488.187697701447,
           "predicted_regret_pct": 0.0
         },
         "greedy": {
           "lx": [
+            "b0",
             "b1",
-            "b10",
-            "b11",
-            "b12",
-            "b13",
-            "b14",
-            "b16",
-            "b19",
-            "b20",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b4",
-            "b5",
-            "b6",
-            "b9"
+            "b3"
           ],
-          "n_lx": 17,
-          "pred_us": 202555.68148777014,
-          "predicted_regret_pct": 28.32889335702396
+          "n_lx": 3,
+          "pred_us": 2778.0849012085487,
+          "predicted_regret_pct": 11.650937900501015
         },
         "bestfit": {
           "lx": [
-            "b10",
-            "b11",
-            "b12",
-            "b13",
-            "b14",
-            "b16",
-            "b19",
-            "b21",
-            "b22",
-            "b27",
-            "b3",
-            "b4",
-            "b5",
-            "b6",
-            "b7",
-            "b9"
+            "b0",
+            "b1",
+            "b3"
           ],
-          "n_lx": 16,
-          "pred_us": 192892.94883177438,
-          "predicted_regret_pct": 22.20708142145709
+          "n_lx": 3,
+          "pred_us": 2778.0849012085487,
+          "predicted_regret_pct": 11.650937900501015
         }
       },
-      "distinct_allocations": 3,
+      "distinct_allocations": 2,
       "duplicate_arms": [
         [
           "optimum",
           "cpsat"
+        ],
+        [
+          "greedy",
+          "bestfit"
+        ]
+      ]
+    },
+    {
+      "label": "softmax_row_tiling [16384,2048] tiles=2",
+      "measured_us": 1652.863,
+      "n_movable": 4,
+      "n_feasible": 12,
+      "env": {
+        "BENCH_ROWS": "16384",
+        "BENCH_COLS": "2048",
+        "BENCH_TILES": "2",
+        "SENCORES": "32",
+        "LX_PLANNING": "1"
+      },
+      "bench_op": "softmax_row_tiling",
+      "arms": {
+        "optimum": {
+          "lx": [
+            "b0",
+            "b2",
+            "b3"
+          ],
+          "n_lx": 3,
+          "pred_us": 2488.187697701447,
+          "predicted_regret_pct": 0.0
+        },
+        "cpsat": {
+          "lx": [
+            "b0",
+            "b2",
+            "b3"
+          ],
+          "n_lx": 3,
+          "pred_us": 2488.187697701447,
+          "predicted_regret_pct": 0.0
+        },
+        "greedy": {
+          "lx": [
+            "b0",
+            "b1",
+            "b3"
+          ],
+          "n_lx": 3,
+          "pred_us": 2778.0849012085487,
+          "predicted_regret_pct": 11.650937900501015
+        },
+        "bestfit": {
+          "lx": [
+            "b0",
+            "b1",
+            "b3"
+          ],
+          "n_lx": 3,
+          "pred_us": 2778.0849012085487,
+          "predicted_regret_pct": 11.650937900501015
+        }
+      },
+      "distinct_allocations": 2,
+      "duplicate_arms": [
+        [
+          "optimum",
+          "cpsat"
+        ],
+        [
+          "greedy",
+          "bestfit"
         ]
       ]
     }

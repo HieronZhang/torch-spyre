@@ -273,6 +273,57 @@ def run_one(env_extra, timeout_s, reps=7, emit_records=True):
     return parse_summary(raw), parse_lx_set(raw), raw, time.time() - t0
 
 
+_COMPILE_ERR = (
+    "InductorError",
+    "finalize_layouts",
+    "NotImplementedError",
+    "Traceback (most recent call last)",
+)
+
+
+def classify_failure(raw):
+    """Why did this run produce no measurement -- the CONFIG, or the DEVICE?
+
+    The distinction decides whether to skip one configuration or end the session. A compile
+    error means this program cannot be built on this toolchain: every later arm of the SAME
+    configuration will fail identically, but other configurations are unaffected, so it must
+    NOT trip the device-death counter. Only a timeout or an unexplained silent failure
+    suggests the card itself, which is what `--abort-after` exists for.
+
+    Learned the hard way: flash at Lq=Lk=4096 stopped compiling ("restickify needed but
+    infeasible"), and under the original rule its four arms would have aborted the run and
+    taken P2, P3 and the re-sweep with them.
+    """
+    if raw == "TIMEOUT":
+        return "timeout"
+    if any(marker in (raw or "") for marker in _COMPILE_ERR):
+        return "compile"
+    if "span_overflow" in (raw or ""):
+        return "span_overflow"
+    return "device"
+
+
+_LOGDIR = os.path.join(_HERE, "lx_session_logs")
+
+
+def _save_log(key, raw):
+    """Keep the FULL output of a failed run, not just the tail in the JSONL.
+
+    400 characters is enough to notice a failure and rarely enough to diagnose one -- a
+    compile traceback and the span-guard report are both longer than that. Written per run
+    so a failing arm can be handed over or re-read without re-running the device.
+    """
+    try:
+        os.makedirs(_LOGDIR, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", key or "run")
+        path = os.path.join(_LOGDIR, f"{safe}.log")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(raw or "(no output)")
+        return path
+    except OSError:
+        return None
+
+
 class Recorder:
     """Crash-safe results: every run is flushed to JSONL the moment it finishes."""
 
@@ -521,7 +572,10 @@ def phase1(rec, budget, args, cap_s):
             row["lx_missing"] = sorted(want - got)
         if not row["kernel_us"]:
             row["tail"] = (raw or "")[-400:]
-            fails += 1
+            row["log"] = _save_log(key, raw)
+            row["failure"] = classify_failure(raw)
+            # A config that cannot be compiled is not a dead card; skip it, do not abort.
+            fails = fails + 1 if row["failure"] in ("device", "timeout") else fails
         else:
             fails = 0
         rec.add(row)
@@ -570,7 +624,10 @@ def phase2(rec, budget, args, cap_s):
         }
         if not row["kernel_us"]:
             row["tail"] = (raw or "")[-400:]
-            fails += 1
+            row["log"] = _save_log(key, raw)
+            row["failure"] = classify_failure(raw)
+            # A config that cannot be compiled is not a dead card; skip it, do not abort.
+            fails = fails + 1 if row["failure"] in ("device", "timeout") else fails
         else:
             fails = 0
         rec.add(row)
@@ -622,7 +679,9 @@ def phase3(rec, budget, args, cap_s):
             }
             if not row["kernel_us"]:
                 row["tail"] = (raw or "")[-400:]
-                fails += 1
+                row["log"] = _save_log(key, raw)
+                row["failure"] = classify_failure(raw)
+                fails = fails + 1 if row["failure"] in ("device", "timeout") else fails
             else:
                 fails = 0
             rec.add(row)
@@ -918,7 +977,11 @@ def main():
     for ph in (1, 2, 3):
         if ph in want and budget.remaining() > 60:
             if not fns[ph](rec, budget, args, budget.phase_cap(caps[ph])):
-                print(f"P{ph} aborted; skipping the rest of the session")
+                # Only a device-level abort reaches here now; a config that fails to
+                # compile is skipped inside the phase. So this really is fatal.
+                print(
+                    f"P{ph} aborted on repeated DEVICE failures; stopping the session"
+                )
                 want.discard(4)
                 break
     if 4 in want and budget.remaining() > 120:
