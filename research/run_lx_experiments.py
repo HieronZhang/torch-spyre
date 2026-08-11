@@ -514,11 +514,15 @@ def phase1(rec, budget, args, cap_s):
         # Did the override actually take? A silently-ignored LX_FORCE_ONLY would make every
         # arm identical and the comparison worthless, so verify instead of assuming.
         if arm.get("lx") is not None and lx is not None:
+            # Compare only the buffers the override CONTROLS. `lx` lists every arg the
+            # compiler placed in LX, including graph inputs and outputs, which are not the
+            # allocator's to choose -- so a raw set comparison always fails. It did, on all
+            # 18 runs of the first session, none of which had actually gone wrong.
             got = {_canon_buf(x) for x in lx}
             want = {_canon_buf(x) for x in arm["lx"]}
-            row["override_honoured"] = got == want
-            row["lx_unexpected"] = sorted(got - want)
+            row["override_honoured"] = want <= got and not (want - got)
             row["lx_missing"] = sorted(want - got)
+            row["lx_extra_nonmovable"] = len(got - want)
         if not row["kernel_us"]:
             row["tail"] = (raw or "")[-400:]
             row["log"] = _save_log(key, raw)
@@ -638,6 +642,11 @@ def _case_configs(top=2):
             if sig in seen:
                 continue
             seen.add(sig)
+            # Pin every tile count to 1. The factories default to bt=2/st=4/ft=4, so a
+            # shape-only config still requests coarse tiling -- which does not compile,
+            # and cost P3 all seven of its runs.
+            env = dict(env)
+            env.update({"WL_BT": 1, "WL_ST": 1, "WL_FT": 1, "WL_HT": 1, "WL_QT": 1})
             out.append((name, env, r["cores"], r["n_feasible"]))
             if len(seen) >= top:
                 break

@@ -855,6 +855,7 @@ def _research_workload(name):
     factories already take their tile counts as arguments.
     """
     import importlib.util
+    import inspect
 
     from torch._inductor.codecache import FxGraphCache
 
@@ -873,14 +874,28 @@ def _research_workload(name):
             f"unknown research workload {name!r} (have {sorted(mod.WORKLOADS)})"
         )
 
-    kwargs = {}
+    factory = mod.WORKLOADS[name]
+    # Only pass what this factory actually accepts. The knob set is shared across programs
+    # -- WL_HT/WL_QT mean something to `attn_scores` and nothing to `mlp_up` -- so an
+    # unfiltered splat raises TypeError on whichever program lacks a knob.
+    accepted = set(inspect.signature(factory).parameters)
+    kwargs: dict = {}
+    ignored: list = []
     for key, val in os.environ.items():
-        if key.startswith("WL_") and val:
-            try:
-                kwargs[key[3:].lower()] = int(val)
-            except ValueError:
-                pass
-    fn, build = mod.WORKLOADS[name](**kwargs)
+        if not key.startswith("WL_") or not val:
+            continue
+        arg = key[3:].lower()
+        try:
+            parsed = int(val)
+        except ValueError:
+            continue
+        if arg in accepted:
+            kwargs[arg] = parsed
+        else:
+            ignored.append(arg)
+    if ignored:
+        print(f"NOTE: {name} ignores {sorted(ignored)} (not in its signature)")
+    fn, build = factory(**kwargs)
     args = build()
     fn(
         *args

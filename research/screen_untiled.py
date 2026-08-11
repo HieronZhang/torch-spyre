@@ -133,7 +133,16 @@ def wl_env(prog_name, dims):
         if dim == "B":
             out["WL_BATCH"] = val
         elif dim in ("S", "Sn"):
-            out["WL_SEQ" if prog_name != "decode_block" else "WL_NEW_LEN"] = val
+            # Each factory names this dimension differently; WL_* maps to the keyword
+            # argument, so the name has to match the signature exactly. P3 lost seven runs
+            # to `prefix_block() got an unexpected keyword argument 'seq'`.
+            if prog_name == "decode_block":
+                out["WL_NEW_LEN"] = val
+            elif prog_name == "prefix_block":
+                out["WL_PREFIX_LEN"] = val // 2
+                out["WL_NEW_LEN"] = val - val // 2
+            else:
+                out["WL_SEQ"] = val
         elif dim == "Fd":
             out["WL_D_FF"] = val
         elif dim == "D":
