@@ -18,17 +18,20 @@ FOUR EXPERIMENTS, run in priority order under one wall-clock budget. Each phase 
 whatever it does not spend is donated to the phases after it, so an early failure buys time
 for the sweep rather than wasting the session.
 
-  P1  flash attention x ALLOCATION                                  30 min
+  P1  UNTILED flash attention x ALLOCATION                          30 min
       The headline prediction: on two configurations the DEFAULT solver's allocation is
       20.4 % and 28.3 % slower than the proven optimum. Each arm is pinned directly with
       `LX_FORCE_ONLY`, so nothing but the allocation changes and no arm depends on a solver
       choosing what we hoped it would.
-  P2  flash attention across tile-count hints                       35 min
-      Whether the model ranks configurations it has never been fitted on, the same test the
-      2.11 toolchain got. Ranking only -- absolute error on flash is 15-45x.
-  P3  the new real-model programs                                   25 min
-      Same design as P1 on programs with mixed transports.
-  P4  the rest of the re-sweep, matmul and coarse tiling first      remainder
+  P2  untiled flash across SHAPE and CORES                          35 min
+      Whether the model ranks configurations it was never fitted on. Coarse tiling no
+      longer compiles, so shape and core count replace the tile-hint ladder -- they vary
+      the same underlying quantities and need no hint. Nine points already give tau +0.78
+      at 0.3-1.0x absolute error.
+  P3  the case studies, UNTILED, at their most contested shapes     45 min
+      Feature EXTRACTION, not yet a comparison: these programs have no measured features,
+      and their allocations cannot be solved until they do.
+  P4  the rest of the re-sweep, matmul first, tiled ops skipped     remainder
 
 THREE CONTROLS, without which the timings cannot be interpreted:
 
@@ -44,6 +47,11 @@ THREE CONTROLS, without which the timings cannot be interpreted:
 3. **ortools must be importable** for the `cpsat` SOLVER arm; it raises rather than
    silently degrading (`ilp_solver_ortools.py:336`). With forced allocations the important
    arm no longer needs it -- the proven optimum is pinned by name.
+
+COARSE TILING IS BROKEN on this toolchain -- every program tested compiles untiled and
+fails tiled. That is why P1-P3 are untiled throughout and P4 consults `tiling_probe.json`
+to skip ops that cannot build. Contention never needed tiling: a bundle is contested when
+one buffer fits the budget and several do not, which shape and core count reach directly.
 
 SAFETY. A configuration that asks for a per-core address span past the MVLOC limit is the
 prime suspect in the 2026-08-08 card failure, so: `bmm_3d2d_k_tiling` stays quarantined,
@@ -79,99 +87,35 @@ _FEATS = re.compile(r"^MODEL FEATS (.+)$", re.M)
 #: each solver against the proven optimum (`research/flash_lx_findings.md`). `spread` is what
 #: the measurement has to resolve; case 3 is included as a NEGATIVE control -- the model says
 #: cpsat, bestfit and the optimum coincide there, so the three should measure alike.
-FLASH_CASES = [
-    {
-        "name": "case1_lq4096_h8_q4",
-        "env": {
-            "FA_H": "32",
-            "FA_LQ": "4096",
-            "FA_LK": "4096",
-            "FA_H_TILES": "8",
-            "FA_LQ_TILES": "4",
-        },
-        "predict": {"greedy": 20.4, "firstfit": 20.4, "bestfit": 20.4, "cpsat": 0.0},
-    },
-    {
-        "name": "case2_lq2048_h8_q1",
-        "env": {
-            "FA_H": "32",
-            "FA_LQ": "2048",
-            "FA_LK": "2048",
-            "FA_D": "128",
-            "FA_H_TILES": "8",
-            "FA_LQ_TILES": "1",
-            "FA_LK_TILES": "1",
-        },
-        "predict": {"greedy": 28.3, "firstfit": 22.2, "bestfit": 22.2, "cpsat": 0.0},
-    },
-    {
-        "name": "case3_lq2048_k2",
-        "env": {"FA_H": "32", "FA_LQ": "2048", "FA_LK": "2048", "FA_LK_TILES": "2"},
-        "predict": {"greedy": 5.9, "firstfit": 0.0, "bestfit": 0.0, "cpsat": 0.0},
-    },
-]
+#: P1 falls back to comparing solvers if no forced-allocation file exists. Kept only as a
+#: degraded path -- forced allocations are strictly better, see `_p1_arms`.
 SOLVERS = ["greedy", "firstfit", "bestfit", "cpsat"]
 
-#: P2: tile-count hints at a fixed shape. Only the hint changes, so the model is being asked
-#: the question it will face in a scheduler: given this program, which tiling is fastest?
-#: Every count divides its dimension exactly (`coarse_tile.py:855` raises otherwise).
-FLASH_HINTS = [
-    {"FA_H_TILES": h, "FA_LQ_TILES": q, "FA_LK_TILES": k}
-    for h, q, k in [
-        ("1", "1", "1"),
-        ("2", "1", "1"),
-        ("4", "1", "1"),
-        ("8", "1", "1"),
-        ("16", "1", "1"),
-        ("32", "1", "1"),
-        ("8", "2", "1"),
-        ("8", "4", "1"),
-        ("8", "8", "1"),
-        ("8", "16", "1"),
-        ("4", "4", "1"),
-        ("16", "2", "1"),
-        ("2", "8", "1"),
-        ("4", "8", "1"),
-        ("8", "1", "2"),
-        ("8", "1", "4"),
-        ("8", "2", "2"),
-        ("4", "2", "2"),
-        ("16", "4", "1"),
-        ("32", "2", "1"),
-        ("2", "2", "1"),
-        ("1", "4", "1"),
+#: P2: UNTILED flash across shape and core count. Coarse tiling no longer compiles, so the
+#: hint ladder the original P2 swept is unavailable -- but varying the hint was never the
+#: point. The question is whether the model RANKS configurations it was not fitted on, and
+#: shape and cores vary the same underlying quantities (bytes moved, per-core work) without
+#: needing a tile hint. Nine such points already give Kendall tau +0.78 at 0.3-1.0x absolute
+#: error; this widens the grid so the rank statistic rests on more than nine.
+UNTILED_GRID = [
+    (h, ell, cores)
+    for h, ell in [
+        (4, 512),
+        (8, 512),
+        (16, 512),
+        (32, 512),
+        (4, 1024),
+        (8, 1024),
+        (16, 1024),
+        (4, 2048),
+        (8, 2048),
     ]
+    for cores in (32, 8)
 ]
-#: A single mid-sized shape so 22 hint settings fit the budget; flash at 4096 is ~4x slower.
-FLASH_HINT_SHAPE = {"FA_H": "32", "FA_LQ": "2048", "FA_LK": "2048", "FA_D": "128"}
 
-#: P3: the new programs, each run under all four solvers like P1. They are NOT yet
-#: registered as BENCH_OPs -- `--phases 3` is skipped with a clear message until they are,
-#: rather than failing 20 runs in a row and burning the abort counter.
-NEW_CASES = [
-    {
-        "name": "prefix_block",
-        "op": "prefix_block",
-        "env": {
-            "PB_B": "4",
-            "PB_SP": "512",
-            "PB_SN": "512",
-            "PB_S_TILES": "1",
-            "PB_F_TILES": "2",
-        },
-    },
-    {
-        "name": "prefix_block_ft1",
-        "op": "prefix_block",
-        "env": {
-            "PB_B": "4",
-            "PB_SP": "512",
-            "PB_SN": "512",
-            "PB_S_TILES": "1",
-            "PB_F_TILES": "1",
-        },
-    },
-]
+#: P3: the case studies, UNTILED, at the shapes `screen_untiled.py` finds most contested.
+#: Read from that screen at run time rather than copied here, so the two never disagree.
+CASE_PROGRAMS = ["decode_block", "block_norm_mlp", "attn_scores", "prefix_block"]
 
 #: P4: the re-sweep, matmul and coarse-tiling families first as requested. Ordered by how
 #: much of the model's structure each family constrains. `bmm_3d2d_k_tiling` is absent on
@@ -352,6 +296,21 @@ class Recorder:
             self.done.add(row.get("key", ""))
 
 
+def _default_records():
+    """Prefer the untiled-flash records: they are the only contested set that compiles.
+
+    The checked-in database was measured with coarse tiling, which no longer builds, so its
+    flash features describe programs this toolchain cannot produce. `probe_untiled_flash.py`
+    writes replacements extracted by today's compiler.
+    """
+    untiled = os.path.join(_HERE, "untiled_flash_records.json")
+    if os.path.exists(untiled):
+        return untiled
+    import eval_model as E
+
+    return E.records_path()
+
+
 def solve_allocations(args):
     """Derive P1's allocations from the measurement database, here and now.
 
@@ -368,9 +327,8 @@ def solve_allocations(args):
     try:
         sys.path.insert(0, os.path.join(_ROOT, "tools", "cost_model"))
         import emit_forced_allocations as EFA
-        import eval_model as E
 
-        path = args.records or E.records_path()
+        path = args.records or _default_records()
         if not os.path.exists(path):
             print(f"    allocations                   NO DATABASE at {path}")
             return False
@@ -516,21 +474,12 @@ def phase1(rec, budget, args, cap_s):
             f"2 rounds = {len(plan)} runs"
         )
     else:
-        for rnd in (0, 1):
-            order = SOLVERS if rnd == 0 else list(reversed(SOLVERS))
-            for case in FLASH_CASES:
-                for solver in order:
-                    plan.append(
-                        (
-                            rnd,
-                            case,
-                            {
-                                "label": solver,
-                                "solver": solver,
-                                "predicted_regret_pct": case["predict"].get(solver),
-                            },
-                        )
-                    )
+        # No forced allocations means no contested set was solved -- which now means the
+        # records file has no compilable contested configuration, not that solvers should
+        # be compared instead. Say so rather than measuring something uninformative.
+        print("    NO forced allocations. P1 needs a records file with a contested")
+        print("    configuration; run research/probe_untiled_flash.py first.")
+        return True
 
     fails = 0
     for rnd, case, arm in plan:
@@ -594,31 +543,48 @@ def phase1(rec, budget, args, cap_s):
 
 
 def phase2(rec, budget, args, cap_s):
-    """Flash across tile hints: can the model rank configurations it never saw?"""
-    print(f"\n=== P2  flash x tile hints  (cap {cap_s / 60:.0f} min) ===")
+    """Untiled flash across shape and cores: does the model RANK what it never saw?
+
+    Reports Kendall tau over every measured pair, and whether the configuration the model
+    calls fastest actually is. Both are ranking statistics on purpose -- ranking is what a
+    scheduler needs, and it survives a constant scale error.
+    """
+    print(f"\n=== P2  untiled flash x (shape, cores)  (cap {cap_s / 60:.0f} min) ===")
     t_end = time.time() + cap_s
     fails = 0
-    for hint in FLASH_HINTS:
-        tag = f"h{hint['FA_H_TILES']}_q{hint['FA_LQ_TILES']}_k{hint['FA_LK_TILES']}"
+    for h, ell, cores in UNTILED_GRID:
+        tag = f"H{h}_L{ell}_c{cores}"
         key = f"p2:{tag}"
         if time.time() > t_end:
             print("    cap reached, moving on")
             break
         if args.resume and key in rec.done:
             continue
-        env = {"BENCH_OP": "flash_attn", "SENCORES": "32"}
-        env.update(FLASH_HINT_SHAPE)
-        env.update(hint)
-        s, lx, raw, dt = run_one(env, args.run_timeout, reps=args.reps)
+        env = {
+            "BENCH_OP": "flash_attn",
+            "SENCORES": str(cores),
+            "FA_B": "1",
+            "FA_H": str(h),
+            "FA_LQ": str(ell),
+            "FA_LK": str(ell),
+            "FA_D": "128",
+            "FA_H_TILES": "1",
+            "FA_LQ_TILES": "1",
+            "FA_LK_TILES": "1",
+        }
+        s_, lx, raw, dt = run_one(env, args.run_timeout, reps=args.reps)
         row = {
             "phase": 2,
             "key": key,
             "hint": tag,
+            "H": h,
+            "L": ell,
+            "cores": cores,
             "seconds": round(dt, 1),
-            "kernel_us": (s or {}).get("kernel_us"),
-            "pred_us": (s or {}).get("pred_us"),
-            "cv": (s or {}).get("kernel_us_cv"),
-            "err_pct": (s or {}).get("err_pct"),
+            "kernel_us": (s_ or {}).get("kernel_us"),
+            "pred_us": (s_ or {}).get("pred_us"),
+            "cv": (s_ or {}).get("kernel_us_cv"),
+            "err_pct": (s_ or {}).get("err_pct"),
             "lx": lx,
             "n_lx": len(lx) if lx else None,
         }
@@ -626,73 +592,112 @@ def phase2(rec, budget, args, cap_s):
             row["tail"] = (raw or "")[-400:]
             row["log"] = _save_log(key, raw)
             row["failure"] = classify_failure(raw)
-            # A config that cannot be compiled is not a dead card; skip it, do not abort.
             fails = fails + 1 if row["failure"] in ("device", "timeout") else fails
         else:
             fails = 0
         rec.add(row)
-        got = f"{row['kernel_us']:.0f} us" if row["kernel_us"] else "FAILED"
+        shown = f"{row['kernel_us']:.0f} us" if row["kernel_us"] else "FAILED"
         pred = f"{row['pred_us']:.0f}" if row["pred_us"] else "-"
-        print(f"    {tag:<16} meas {got:>12}  pred {pred:>10}  ({dt:.0f}s)")
+        print(f"    {tag:<16} meas {shown:>12}  pred {pred:>10}  ({dt:.0f}s)")
         if args.abort_after and fails >= args.abort_after:
-            print(f"    ABORT: {fails} consecutive failures")
+            print(f"    ABORT: {fails} consecutive DEVICE failures")
             return False
     return True
 
 
+def _case_configs(top=2):
+    """The most contested untiled configuration(s) per case study, from the screen.
+
+    Taken from `screen_untiled.py` at run time so the session and the screen cannot drift
+    apart. Returns (program, WL_* env, cores, feasible-allocation count).
+    """
+    try:
+        import itertools as _it
+
+        import screen_untiled as SU
+        from screen_configs import PROGRAMS
+    except Exception:  # noqa: BLE001 -- the screen is optional; P3 just gets nothing
+        return []
+    out = []
+    for name in CASE_PROGRAMS:
+        prog = PROGRAMS.get(name)
+        if prog is None:
+            continue
+        rows = []
+        for scale, cores in _it.product(SU.SCALES, SU.CORES):
+            r = SU.screen(prog, scale, cores)
+            if r and r["binds"] and r["keeps"] > 0:
+                rows.append(r)
+        rows.sort(key=lambda r: (-r["n_feasible"], -r["spread"]))
+        seen = set()
+        for r in rows:
+            env = SU.wl_env(name, r["dims"])
+            # Different scalings can land on the same shape when a program lacks the dim
+            # being scaled -- attn_scores has no d_ff, so every /F variant is one config.
+            sig = (tuple(sorted(env.items())), r["cores"])
+            if sig in seen:
+                continue
+            seen.add(sig)
+            out.append((name, env, r["cores"], r["n_feasible"]))
+            if len(seen) >= top:
+                break
+    return out
+
+
 def phase3(rec, budget, args, cap_s):
-    """The new programs under four solvers -- P1's design on mixed-transport programs."""
-    print(f"\n=== P3  new real-model cases  (cap {cap_s / 60:.0f} min) ===")
-    known = _known_bench_ops()
-    todo = [c for c in NEW_CASES if not known or c["op"] in known]
-    missing = [c["op"] for c in NEW_CASES if known and c["op"] not in known]
-    if missing:
-        print(f"    NOT REGISTERED as BENCH_OPs, skipping: {', '.join(missing)}")
-        print("    (add them to profile_ops.py's workload table to include this phase)")
-    if not todo:
-        print("    nothing runnable -- donating the whole cap to P4")
+    """The case studies, untiled, at their most contested shapes.
+
+    Same design as P1 -- vary only the allocation -- but these programs have no measured
+    features yet, so this pass EXTRACTS them (`BENCH_EMIT_RECORDS=1`). What it produces is
+    the input to a forced-allocation comparison, not the comparison itself: the allocations
+    cannot be solved until the features exist.
+    """
+    print(f"\n=== P3  untiled case studies  (cap {cap_s / 60:.0f} min) ===")
+    cfgs = _case_configs()
+    if not cfgs:
+        print("    screen unavailable; nothing to run")
         return True
+    print(f"    {len(cfgs)} configuration(s) across {len(CASE_PROGRAMS)} program(s)")
     t_end = time.time() + cap_s
     fails = 0
-    for case in todo:
-        for solver in SOLVERS:
-            key = f"p3:{case['name']}:{solver}"
-            if time.time() > t_end:
-                print("    cap reached, moving on")
-                return True
-            if args.resume and key in rec.done:
-                continue
-            env = {"BENCH_OP": case["op"], "SENCORES": "32", "LAYOUT_SOLVER": solver}
-            env.update(case["env"])
-            s, lx, raw, dt = run_one(env, args.run_timeout, reps=args.reps)
-            row = {
-                "phase": 3,
-                "key": key,
-                "case": case["name"],
-                "solver": solver,
-                "seconds": round(dt, 1),
-                "kernel_us": (s or {}).get("kernel_us"),
-                "pred_us": (s or {}).get("pred_us"),
-                "cv": (s or {}).get("kernel_us_cv"),
-                "lx": lx,
-                "n_lx": len(lx) if lx else None,
-            }
-            if not row["kernel_us"]:
-                row["tail"] = (raw or "")[-400:]
-                row["log"] = _save_log(key, raw)
-                row["failure"] = classify_failure(raw)
-                fails = fails + 1 if row["failure"] in ("device", "timeout") else fails
-            else:
-                fails = 0
-            rec.add(row)
-            got = f"{row['kernel_us']:.0f} us" if row["kernel_us"] else "FAILED"
-            print(
-                f"    {case['name']:<18} {solver:<9} {got:>12}  lx={row['n_lx']}"
-                f"  ({dt:.0f}s)"
-            )
-            if args.abort_after and fails >= args.abort_after:
-                print(f"    ABORT: {fails} consecutive failures")
-                return False
+    for name, wl, cores, nfeas in cfgs:
+        key = f"p3:{name}:{'_'.join(f'{k}{v}' for k, v in sorted(wl.items()))}:c{cores}"
+        if time.time() > t_end:
+            print("    cap reached, moving on")
+            break
+        if args.resume and key in rec.done:
+            continue
+        env = {"BENCH_OP": f"research:{name}", "SENCORES": str(cores)}
+        env.update({k: str(v) for k, v in wl.items()})
+        s_, lx, raw, dt = run_one(env, args.run_timeout, reps=args.reps)
+        row = {
+            "phase": 3,
+            "key": key,
+            "case": name,
+            "wl": wl,
+            "cores": cores,
+            "screened_feasible": nfeas,
+            "seconds": round(dt, 1),
+            "kernel_us": (s_ or {}).get("kernel_us"),
+            "pred_us": (s_ or {}).get("pred_us"),
+            "cv": (s_ or {}).get("kernel_us_cv"),
+            "lx": lx,
+            "n_lx": len(lx) if lx else None,
+        }
+        if not row["kernel_us"]:
+            row["tail"] = (raw or "")[-400:]
+            row["log"] = _save_log(key, raw)
+            row["failure"] = classify_failure(raw)
+            fails = fails + 1 if row["failure"] in ("device", "timeout") else fails
+        else:
+            fails = 0
+        rec.add(row)
+        shown = f"{row['kernel_us']:.0f} us" if row["kernel_us"] else "FAILED"
+        wls = " ".join(f"{k}={v}" for k, v in sorted(wl.items()))
+        print(f"    {name:<16}{cores:>3}c {wls[:34]:<36}{shown:>12}  ({dt:.0f}s)")
+        if args.abort_after and fails >= args.abort_after:
+            print(f"    ABORT: {fails} consecutive DEVICE failures")
+            return False
     return True
 
 
@@ -708,16 +713,40 @@ def _known_bench_ops():
     )
 
 
+def _tiling_broken():
+    """Ops `probe_tiling.py` found compile untiled but fail tiled. Empty if it never ran."""
+    path = os.path.join(_HERE, "tiling_probe.json")
+    if not os.path.exists(path):
+        return set()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = json.load(fh)
+    except Exception:  # noqa: BLE001
+        return set()
+    return {
+        r["op"] for r in rows if str(r.get("verdict", "")).startswith("TILING BROKEN")
+    }
+
+
 def phase4(rec, budget, args, cap_s):
     """The re-sweep, matmul and coarse tiling first, resuming by database."""
     print(
         f"\n=== P4  re-sweep (matmul + coarse tiling first)  "
         f"(cap {cap_s / 60:.0f} min) ==="
     )
+    # Most of the plan tiles, and tiling currently fails on every program tested. Running
+    # it anyway would spend the tail of the session collecting compile errors, so consult
+    # the probe if it has run and drop the ops it found broken.
+    broken = _tiling_broken()
+    if broken:
+        print(
+            f"    tiling probe says these do NOT tile, skipping: "
+            f"{', '.join(sorted(broken)[:8])}"
+        )
     t_end = time.time() + cap_s
     logdir = os.path.join(_ROOT, "sweep_logs")
     os.makedirs(logdir, exist_ok=True)
-    for op in SWEEP_PRIORITY:
+    for op in [o for o in SWEEP_PRIORITY if o not in broken]:
         left = t_end - time.time()
         if left < 120:
             print("    cap reached, stopping the sweep")
@@ -848,7 +877,10 @@ def report(rec):
         if r.get("phase") == 2 and r.get("kernel_us") and r.get("pred_us")
     ]
     if len(p2) >= 3:
-        print(f"\nP2  flash tile hints: does the model RANK correctly?  (n={len(p2)})")
+        print(
+            f"\nP2  untiled flash across shape/cores: does the model RANK correctly?"
+            f"  (n={len(p2)})"
+        )
         conc = disc = 0
         for i in range(len(p2)):
             for j in range(i + 1, len(p2)):
@@ -866,6 +898,18 @@ def report(rec):
                 f"   Kendall tau = {tau:+.2f}"
             )
             print("    (tau +1 = perfect ranking, 0 = no better than chance)")
+        # Absolute scale, now that features come from this compiler rather than from the
+        # pre-fix tile_rows_per_core era that made flash read 15-45x high.
+        rat = [r["pred_us"] / r["kernel_us"] for r in p2 if r["kernel_us"]]
+        if rat:
+            print(f"    absolute pred/meas: {min(rat):.2f}x to {max(rat):.2f}x")
+        by_cores: dict = {}
+        for r in p2:
+            by_cores.setdefault(r.get("cores"), []).append(
+                r["pred_us"] / r["kernel_us"]
+            )
+        for c, v in sorted(by_cores.items(), key=lambda kv: -(kv[0] or 0)):
+            print(f"      {c} cores: {sum(v) / len(v):.2f}x mean over {len(v)}")
         fastest_m = min(p2, key=lambda r: r["kernel_us"])
         fastest_p = min(p2, key=lambda r: r["pred_us"])
         print(
@@ -950,12 +994,11 @@ def main():
         return 0
 
     budget = Budget(args.budget_min * 60)
-    caps = {1: 30 * 60, 2: 35 * 60, 3: 25 * 60}
-    n_runs = (
-        len(FLASH_CASES) * len(SOLVERS) * 2
-        + len(FLASH_HINTS)
-        + len(NEW_CASES) * len(SOLVERS)
-    )
+    # 150 minutes: P1 is the headline and cheap (untiled flash runs in under a
+    # millisecond; compile dominates), P2 needs breadth for its rank statistic, P3 has the
+    # most configurations and the least certainty, P4 takes whatever is left.
+    caps = {1: 30 * 60, 2: 35 * 60, 3: 45 * 60}
+    n_runs = len(UNTILED_GRID) + len(_case_configs()) + 16
     print(
         f"budget {args.budget_min:.0f} min | phases {sorted(want)} | "
         f"{n_runs} device runs planned before P4"
