@@ -107,9 +107,14 @@ def solver_allocations(feats):
         "cpsat": climb_objective(
             feats, lambda s: sum((rc.get(n, 0) + 1) * fp[n] for n in s)
         ),
-        # firstfit_bestfit_solver.py:204 -- (lifetime - discount)/uses ascending. Both
-        # solvers share the ordering and differ only in gap choice, which does not change
-        # the residency set.
+        # firstfit_bestfit_solver.py:204 -- (lifetime - discount)/uses ascending, shared by
+        # firstfit and bestfit. This reconstructs the ORDERING only. It does NOT reproduce
+        # the gap-selection difference between them: `BestFitLayoutSolver` overrides
+        # `_pick_gap` to take the tightest gap rather than the first adequate one, and a
+        # buffer is spilled exactly when `_pick_gap` returns None. Different gap choices
+        # leave different fragmentation, so the two CAN differ in which buffers stay
+        # resident -- an earlier version of this comment claimed they could not. Treat this
+        # as bestfit's set; firstfit is unmeasured.
         "bestfit": sequential(
             feats,
             sorted(

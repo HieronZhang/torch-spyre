@@ -1108,12 +1108,17 @@ def _print_model(feats: list) -> float:
     )
     turn = p.rw_turnaround_ns_per_byte * min(r, w)
     # Underfill derate (output-dim tiling): smallest per-core tile governs.
-    eff, eff_rows = 1.0, 0.0
+    eff, eff_rows, eff_cols = 1.0, 0.0, 0.0
     for o in feats:
         if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
-            e = cost_model.coarse_underfill_eff(o.tile_rows_per_core, p)
+            cols = cost_model._op_cols(o)
+            e = (
+                cost_model.coarse_underfill_eff_matmul(o.tile_rows_per_core, p)
+                if is_mm
+                else cost_model.coarse_underfill_eff(o.tile_rows_per_core, cols, p)
+            )
             if e < eff:
-                eff, eff_rows = e, o.tile_rows_per_core
+                eff, eff_rows, eff_cols = e, o.tile_rows_per_core, cols
     # Matmul compute term (additive).
     mm_us, mm_lines = 0.0, []
     for o in feats:
@@ -1149,10 +1154,22 @@ def _print_model(feats: list) -> float:
         f"= {turn / 1000:.2f} us"
     )
     if eff < 1.0:
+        if is_mm:
+            _shape = (
+                f"({eff_rows:.1f}/{p.coarse_underfill_rfull_matmul:g})"
+                f"**{p.coarse_underfill_exp_matmul}"
+            )
+            _ceil = p.coarse_underfill_cap_matmul
+        else:
+            _shape = (
+                f"({eff_rows:.1f}/{p.coarse_underfill_rfull:g})"
+                f"**{p.coarse_underfill_exp}"
+                f" * ({eff_cols:.0f}/{p.coarse_underfill_col_ref:.0f})"
+                f"**{p.coarse_underfill_col_exp}"
+            )
+            _ceil = p.coarse_underfill_cap
         _emit(
-            f"MODEL   eff_underfill = min({p.coarse_underfill_cap},"
-            f"({eff_rows:.1f}/{p.coarse_underfill_rfull:.0f})"
-            f"**{p.coarse_underfill_exp}) = {eff:.3f} "
+            f"MODEL   eff_underfill = min({_ceil}, {_shape}) = {eff:.3f} "
             f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
         )
     _emit(f"MODEL   => T_model = {t / 1000:.2f} us")

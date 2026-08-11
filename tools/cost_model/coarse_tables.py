@@ -155,8 +155,22 @@ def emit_params():
         ("matmul spill exp", f"{p.mm_spill_ws_exp}", "spilled-traffic derate"),
         (
             "coarse underfill",
-            f"r_full={p.coarse_underfill_rfull:.0f}, exp={p.coarse_underfill_exp}, cap={p.coarse_underfill_cap}",
-            "short-tile pipeline fill (softmax-calibrated)",
+            f"r_full={p.coarse_underfill_rfull:g} at COLS {p.coarse_underfill_col_ref:.0f}, "
+            f"exp={p.coarse_underfill_exp}, col_exp={p.coarse_underfill_col_exp}, "
+            f"cap={p.coarse_underfill_cap}",
+            "small-tile pipeline fill (softmax-calibrated)",
+        ),
+        (
+            "coarse underfill (matmul)",
+            f"r_full={p.coarse_underfill_rfull_matmul:g}, "
+            f"exp={p.coarse_underfill_exp_matmul}, "
+            f"cap={p.coarse_underfill_cap_matmul}",
+            "same term, pre-re-fit rows-only curve, frozen",
+        ),
+        (
+            "softmax spill exp",
+            f"{p.lx_spill_exp}",
+            "large-tile decline, re-fit jointly with the underfill surface",
         ),
     ]
     for n, v, d in rows:
@@ -221,6 +235,120 @@ def emit_summary(rows):
         )
 
 
+def underfill_surface():
+    """§16's surface table: the efficiency the MEASUREMENT requires at each (h, COLS),
+    beside the one the model supplies.
+
+    "Requires" is backed out per run rather than fitted to: with BOTH the underfill and
+    the LX-spill derates switched off, ``eff_needed = predicted / measured`` -- valid
+    because these kernels are memory-bound, and it is solved through the real
+    ``predict_ops`` so the fill constant and the byte accounting are handled exactly. Cell
+    = the mean over every run at that (h, COLS); n is how many. 32 cores only (below that
+    the memory term has no core-count scaling, an unmodelled gap this table must not
+    absorb) and tiled runs only.
+    """
+    with open(RECORDS(), encoding="utf-8") as f:
+        recs = json.load(f)["records"]
+    dp = cm.CostParams()
+    _uf, _sp = cm.coarse_underfill_eff, cm._lx_spill_bw_derate
+    cells = collections.defaultdict(list)
+    for r in recs:
+        if r.get("op") != "softmax_row_tiling" or r.get("failed"):
+            continue
+        if not r.get("kernel_us") or r.get("cores") != 32 or not em.in_scope(r):
+            continue
+        feats, _ = em.features_for(r, dp)
+        if feats is None:
+            continue
+        h = min(
+            (
+                o.tile_rows_per_core
+                for o in feats
+                if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0
+            ),
+            default=0.0,
+        )
+        if not h:
+            continue
+        cm.coarse_underfill_eff = lambda *a, **k: 1.0
+        cm._lx_spill_bw_derate = lambda *a, **k: 1.0
+        try:
+            bare = cm.predict_ops(feats, dp) / 1000.0
+        finally:
+            cm.coarse_underfill_eff, cm._lx_spill_bw_derate = _uf, _sp
+        cells[(h, r["cols"])].append(bare / r["kernel_us"])
+
+    widths = sorted({c for _, c in cells})
+    print(
+        "\n### §16 -- the efficiency each tile requires, and the one the model gives\n"
+    )
+    print("| `h` | " + " | ".join(f"COLS {c}" for c in widths) + " |")
+    print("|---:|" + "---:|" * len(widths))
+    # A LADDER of heights, not every one: the climb is the informative part and the plateau
+    # repeats itself. Same convention as emit_table -- thin, and say so below.
+    heights = sorted({hh for hh, _ in cells})
+    ladder = [h for h in heights if h in (2, 4, 8, 16, 64, 256)] or heights
+    for h in ladder:
+        out = []
+        for c in widths:
+            v = cells.get((h, c))
+            if not v:
+                out.append("—")
+                continue
+            need = st.mean(v)
+            ws = 2.0 * h * c * 2  # ~2 live intermediate tiles, fp16
+            spill = (
+                min(1.0, (dp.lx_spill_cap_bytes / ws) ** dp.lx_spill_exp)
+                if ws > dp.lx_spill_cap_bytes
+                else 1.0
+            )
+            got = cm.coarse_underfill_eff(h, c, dp) * spill
+            out.append(
+                f"{need:.2f} / {got:.2f}" + (f" ({len(v)})" if len(v) > 1 else "")
+            )
+        print(f"| {h:g} | " + " | ".join(out) + " |")
+    print(
+        f"\nEach cell is `required / modelled`, averaged over the runs at that shape "
+        f"(count in brackets). {len(ladder)} of the {len(heights)} tile heights measured; "
+        f"the widths below 1024 that identify the width term are in the figure."
+    )
+
+
+def spill_bands():
+    """§17's table: achieved bandwidth against the working set one core holds.
+
+    Pure measurement -- no model term enters -- but it belongs here rather than typed into
+    the section, because both the levels and the run counts move with the compiler build.
+    Same population as §16's surface table: tiled softmax, 32 cores, in scope.
+    """
+    with open(RECORDS(), encoding="utf-8") as f:
+        recs = json.load(f)["records"]
+    bands = [(0.0, 0.25), (0.25, 0.5), (0.5, 1.0), (1.0, 2.0), (2.0, float("inf"))]
+    got = collections.defaultdict(list)
+    for r in recs:
+        if r.get("op") != "softmax_row_tiling" or r.get("failed"):
+            continue
+        if not r.get("kernel_us") or r.get("cores") != 32 or not em.in_scope(r):
+            continue
+        t = int(r.get("tiles") or 1)
+        if t < 2 or not r.get("io_hbm_bytes"):
+            continue
+        ws = 2 * (r["rows"] / (32 * t)) * r["cols"] * 2 / 1e6
+        for lo, hi in bands:
+            if lo <= ws < hi:
+                got[(lo, hi)].append(int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"])
+                break
+    print("\n### §17 -- achieved bandwidth by per-core working set\n")
+    print("| per-core working set (MB) | runs | achieved bandwidth (GB/s) |")
+    print("|---|---:|---:|")
+    for lo, hi in bands:
+        v = got.get((lo, hi))
+        if not v:
+            continue
+        lab = f"above {lo:g}" if hi == float("inf") else f"{lo:g} – {hi:g}"
+        print(f"| {lab} | {len(v)} | {st.mean(v):.1f} |")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -230,6 +358,8 @@ def main():
     rows = collect(target_only=not args.all)
     emit_params()
     emit_summary(rows)
+    underfill_surface()
+    spill_bands()
     emit_table(rows)
 
 

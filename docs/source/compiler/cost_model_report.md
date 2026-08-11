@@ -105,7 +105,7 @@ T   = max( compute , mem ) + split          mem = HBM / (eff · s_lx)
 
   HBM     = [ (R+W)/BW + α·min(R,W) ]  +  spill  +  reread
   compute = MACs / cores / (peak · pt_eff)
-  s_lx    = min(1, (cap / ws)^0.15)     for a coarse-tiled kernel with ws > cap    (else 1)
+  s_lx    = min(1, (cap / ws)^s)        for a coarse-tiled kernel with ws > cap    (else 1)
 ```
 
 | term | form | derived in |
@@ -116,8 +116,8 @@ T   = max( compute , mem ) + split          mem = HBM / (eff · s_lx)
 | `split` | `max(0,area−a₀)·[c_L·max(0,log₂(fan_long/8)) + c_S·max(0,log₂(fan_short/16))]`, `area=(M/m)·(N/n)`, `a₀ = 131072 elements`, `c_L = 2.6e−3`, `c_S = 2.9e−3 µs per element` — extra matmul operand re-read when a **large** per-core tile is **also** split many ways; two-sided (splitting the longer output dim bites sooner than the shorter); 0 for balanced or small tiles | §12 |
 | `compute` | `multiply-accumulates / cores / (peak · pt_eff)`, `peak = 1140 per nanosecond per core`; a batched matmul (B≥4, cores≥8) in the compiler's default operand layout takes `peak = 160` instead; 0 for non-matmul. Combined with memory as `max(compute, memory)` — the two overlap | §9, §13 |
 | `pt_eff` — **array fill** (derates arithmetic) | how full the arithmetic array is: `min(1,(rows/64)^0.35)` (`rows` = per-core rows); a coarse-tiled matmul's extra per-tile underfill is flagged, not modeled (`pt_eff=1`) | §9, §16 |
-| `eff` — **pipeline fill** (derates memory) | `min(0.95, (h/13)^0.68)`, `h = per-core tile height = ROWS/(cores·tiles)` — how full the memory pipeline is, for a coarse-tiled memory-bound kernel | §16 |
-| `s_lx` — **spill derate** (derates memory) | `min(1, (cap/ws)^0.15)` for `ws > cap`, `ws` (the working set one core holds) `= 2·(rows per core)·COLS·2 bytes`; `cap` = 512 KB for a tiled reduction, 2 MB for a tiled matmul — a per-core tile too large for LX moves at a lower rate | §17 |
+| `eff` — **pipeline fill** (derates memory) | `min(1.08, (h/7.9)^0.50·(COLS/2048)^0.38)`, `h = per-core tile height = ROWS/(cores·tiles)` — how full the memory pipeline is, set by the **size** of the tile a core streams, not its height alone; a tiled multiply keeps the older rows-only form `min(0.95, (h/13)^0.68)` | §16 |
+| `s_lx` — **spill derate** (derates memory) | `min(1, (cap/ws)^s)` for `ws > cap`, `ws` (the working set one core holds) `= 2·(rows per core)·COLS·2 bytes`; `cap` = 512 KB and `s = 0.06` for a tiled reduction, 2 MB and `s = 0.15` for a tiled matmul — a per-core tile too large for LX moves at a lower rate | §17 |
 | `moves` (scales **every** arg) | `Π over loop levels of (the loop's trip count if the tensor's address does not vary along the dimension that level tiles, else 1)` — how many times a coarse-tiled loop transfers each tensor; 1 when there is no loop | §14 |
 | `reread` | `size · (moves−1) · 0.85` — the repeated pass a loop-invariant operand makes, charged at peak and exempt from `eff`/`s_lx` | §15 |
 
@@ -1115,81 +1115,137 @@ it is chosen to fit, it sits below 1.0 without a reason that predicts *how far* 
 it acts on the same runs as the underfill term of §16, so the present data does not divide
 the two.
 
-### §16. Underfill: a short per-core tile runs the pipeline below peak — the `eff` term
+### §16. Underfill: a small per-core tile runs the pipeline below peak — the `eff` term
 
-**Observation.** Setting aside the spilling case of §17, a coarse-tiled kernel's speed still
-depends on the **per-core tile height** — the rows each core streams per tile,
-`h = ROWS / (cores · tiles)`: with too few rows the **effective bandwidth drops**. Sweeping the
-tile count on softmax over the scored population — 32 cores, at least 1024 columns, and only the
-runs whose working set fits in LX — the effective bandwidth climbs from ~48 GB/s at a 2-row tile
-(`h = 2`) to a ~150 GB/s plateau by `h ≈ 16`, then mildly declines (figure).
+**Observation.** Tiling an output dimension hands each core a tile `h = ROWS / (cores · tiles)`
+rows tall and `COLS` wide. Make that tile small and the **effective bandwidth drops** — from
+about 120 GB/s to 19 GB/s at the smallest tile measured. **Both** dimensions matter: at 2048
+columns a 16-row tile already runs at full speed, while at 128 columns even a 64-row tile
+reaches only 84 GB/s.
 
-![§16 the coarse underfill: softmax effective BW climbs with the per-core tile height, plateaus at h≈16](cost_model_figures/s17_underfill.png)
+![§16 the coarse underfill: softmax effective BW climbs with the per-core tile, and the height at which it plateaus falls as the tensor gets wider — one curve per width](cost_model_figures/s17_underfill.png)
 
-**Model (calibrated).** A pipeline-fill efficiency `eff ≤ 1` multiplies the memory term, keyed on
-the per-core tile height `h = ROWS / (cores · tiles)`:
+**It is the tile's size that governs, not its height.** This section previously reported the
+opposite, on the strength of a control at 2048 versus 4096 columns that found the per-byte cost
+equal to ±4 %. That control was blind rather than wrong: at both those widths the efficiency is
+already at its plateau for every height it sampled. Sweeping down to 128 columns, the
+efficiency a fixed 4-row tile requires runs **0.18 / 0.32 / 0.49 / 0.68** at 128 / 256 / 512 /
+2048 columns. Fitting both exponents freely gives 0.50 on height and 0.38 on width — close
+enough that the quantity the pipeline responds to is roughly `h · COLS`, the elements a core
+streams per tile. That is what the mechanism predicts: a stream too short to amortise pipeline
+fill.
+
+**Model.** An efficiency keyed on both dimensions of the tile multiplies the memory term:
 
 ```text
-eff = min(0.95,  (h / 13)^0.68)          memory term = (R + W) / BW_eff / eff
+raw = (h / 7.9) ^ 0.50 · (COLS / 2048) ^ 0.38
+
+raw >= 0.248 :  eff = min(1.08, raw)
+raw <  0.248 :  eff = 0.248 · (raw / 0.248) ^ 0.1      anchored, NOT the fitted exponent
 ```
 
-It plateaus at 0.95 by `h ≈ 16` and derates below (≈0.45 at `h = 4`, ≈0.28 at `h = 2`). A
-cross-`COLS` control (same `h`, double the tile bytes → same per-byte cost) confirmed it keys
-on **rows (`h`), not tile bytes**. **On the softmax regime where the intermediates fit LX, this
-gives RMS 5.9 %** (mean −1.2 %, over 45 points) — the coarse-tiling model is accurate once §17's
-spill is set aside.
+`7.9` is the height at which the pipeline fills **at 2048 columns**; halve the width and it
+takes about 1.7× the height. The second line stops the curve being read below the smallest tile
+ever measured (128 columns, 4 rows): as an unbounded power law it reached `eff = 0.0065` on a
+flash bundle whose tile is 0.0078 rows per core — less than one row, which the hardware cannot
+be in — and inflated that bundle's prediction **42×**. A tiled matrix multiply keeps the earlier
+rows-only form, `min(0.95, (h/13)^0.68)`: every run behind this surface is a softmax run.
 
-**Two residuals, both left unmodeled.** (1) Above `h ≈ 32` the efficiency mildly declines
-(150 → 131 GB/s) while the model holds the 0.95 cap — a small, rows-driven droop. (2) A **tiled
-matmul** (`matmul_row_tiling`) appears to underfill on *compute* the way softmax underfills on
-memory — beyond a few tiles its time climbs as each tile gets fewer rows — but the available data
-is thin, non-current, and partly non-monotonic, so it is **flagged, not modeled** (tiled matmuls
-take `pt_eff = 1`; a clean tile-count sweep is queued).
+**How well it does.** The efficiency each run *requires* is backed out of the measurement with
+this derate and §17's both switched off — `required = predicted / measured`, valid because these
+kernels are memory-bound — and set beside the one the model supplies:
 
-**How well understood is this term?** *The cause is clear, the curve is fitted.* A
-pipeline that is handed too few rows cannot fill, and the measured rate climbs and then
-plateaus exactly as that predicts. The three constants describing the climb are fitted on
-reductions and reused for multiplies without independent calibration.
+| `h` | COLS 2048 | COLS 4096 |
+|---:|---:|---:|
+| 2 | 0.43 / 0.50 | — |
+| 4 | 0.68 / 0.71 (2) | — |
+| 8 | 0.96 / 1.01 (3) | — |
+| 16 | 1.11 / 1.08 (4) | 1.13 / 1.08 (2) |
+| 64 | 1.05 / 1.08 (2) | 1.06 / 1.04 (2) |
+| 256 | 0.98 / 0.99 | — |
+
+Cells are `required / modelled`, averaged over the runs at that shape (count in brackets), for 6
+of the 11 tile heights measured. Over the 33 scored softmax runs on the full machine this takes
+the error from **26.6 % to 12.0 % RMS** and the worst over-prediction from **+54 % to +22 %** —
+and that +22 % is an *untiled* run, which this term never touches.
+
+**How well understood is this term?** *The mechanism is clear and the surface now agrees with
+it; two things around it do not.* A pipeline handed too little data per tile cannot fill, and
+the measured rate climbs and plateaus as a function of tile size exactly as that predicts, which
+is why the width term reads as a correction the mechanism wanted rather than a curve bolted on.
+Against that:
+
+*The plateau does double duty.* `1.08` is not a physical efficiency — nothing runs at 108 % of
+peak. A coarse-tiled softmax with a large tile simply runs about 8 % faster than the modelled
+memory term, and because that offset is specific to this kernel family it is absorbed here
+rather than in `BW`. Telling a base-rate offset from a tiling one needs an untiled width sweep
+on the full machine.
+
+*Below 32 cores the memory term has no core-count scaling at all,* and a coarse-tiled softmax
+badly needs one: at matched tile shape the achieved rate falls to 0.60× at 16 cores and 0.44× at
+8, so those runs are under-predicted by 30–50 %. That is a base-rate gap rather than this term
+in disguise — at matched shape the per-core tile is *identical* and only the core count differs,
+and pointwise on 8 cores misses by only −13 % against −42 % for softmax. It is left unmodelled:
+the deciding experiment is a width × rows core ladder with repeats, and the cells that exist are
+one shape, one run apiece.
 
 ### §17. A tile too large for LX moves at a lower rate — the `s_lx` term
 
-**Observation.** §16 explained why a *short* tile is slow. A *tall* tile is slow too, for an
-unrelated reason. Grouping the tiled softmax runs on the full machine by the working set
+**Observation.** §16 explained why a *small* tile is slow. A tile too *large* is slow too, for
+an unrelated reason. Grouping the tiled softmax runs on the full machine by the working set
 each core holds — about `2 × (rows per core) × columns × 2 bytes` — the achieved bandwidth
-falls steadily as that working set grows:
+peaks once the tile is big enough to fill the pipeline and then falls steadily as that working
+set keeps growing:
 
 | per-core working set (MB) | runs | achieved bandwidth (GB/s) |
 |---|---:|---:|
-| 0.25 – 0.5 | 18 | 99.4 |
-| 0.5 – 1 | 9 | 96.2 |
-| 1 – 2 | 8 | 89.7 |
-| above 2 | 8 | 78.2 |
+| 0 – 0.25 | 10 | 95.2 |
+| 0.25 – 0.5 | 5 | 118.5 |
+| 0.5 – 1 | 4 | 113.7 |
+| 1 – 2 | 5 | 107.2 |
+| above 2 | 6 | 96.8 |
+
+(`tools/cost_model/coarse_tables.py`; the smallest band is the *underfill* end of §16, where
+the tile is too small rather than too large — the spill trend is the four bands above it.)
 
 **Question.** Are those bytes being missed by the byte count, or are the same bytes simply
 moving more slowly?
 
 **They are moving more slowly.** At the largest working set the byte count already marks
-those intermediates as memory traffic and includes them — 604 MB of reads and writes for
-the tallest tile measured. If bytes were missing, the predicted *traffic* would be too low;
-what is wrong instead is the predicted *rate*.
+those intermediates as memory traffic and includes them — 940 MB of reads and writes for the
+largest tile measured, against 201 MB for the next one down. If bytes were missing, the
+predicted *traffic* would be too low; what is wrong instead is the predicted *rate*.
 
 ![Achieved bandwidth against the working set each core holds, for tiled softmax on the full machine. The rate is near 100 GB/s for a small tile and falls steadily as the tile grows. The dashed line is the fitted threshold, not a documented hardware capacity](cost_model_figures/s18_lx_spill.png)
 
 **Model.** Keep the bytes and lower the rate:
 
 ```text
-bandwidth ×= (cap / working set) ^ 0.15          when working set > cap
+bandwidth ×= (cap / working set) ^ s             when working set > cap
 ```
 
-with `cap = 512 KB` for a tiled reduction and `cap = 2 MB` for a tiled matrix multiply. It
-is inert below the cap, so it touches only the tall-tile end. On tiled softmax at 32 cores
-it takes the error from **10.7 % to 6.0 %** over 60 runs, and the worst point from −39.8 %
-to −17.8 %.
+with `cap = 512 KB, s = 0.06` for a tiled reduction and `cap = 2 MB, s = 0.15` for a tiled
+matrix multiply. It is inert below the cap, so it touches only the tall-tile end.
+
+**The reduction exponent was re-fitted from 0.15 to 0.06 alongside §16's surface, and the
+term barely survives it.** The two act on the same runs and both fall off with the per-core
+tile, so fitting either alone hands it the other's error — and the 0.15 was fitted while §16
+still keyed on rows alone. Re-fitting them jointly, 0.15 over-derates the large-tile end by up
+to 24 % where the measurement wants about 7 %. The decline itself is real and survives: with
+both derates removed, the required efficiency falls from 1.13 at a 256 KB working set to 0.98
+at 3 MB. But on the scored population it is now **not identifiable** — over the 30 tiled
+softmax runs at 32 cores, `s = 0` gives 11.5 % RMS and `s = 0.06` gives 11.4 %, while the old
+`s = 0.15` gives 14.8 %. So the data exclude the old value and cannot distinguish the new one
+from switching the term off. It is kept because the mechanism and the trend are real, at the
+value the joint fit prefers.
 
 **How well understood is this term?** *The direction is right; the thresholds are fitted
 and one of them is unexplained.* That a tile too large for LX costs extra is not
-in question, and the error grows with working set exactly as that predicts. Three things are
+in question, and the error grows with working set exactly as that predicts. Four things are
 weaker than they look:
+
+*The reduction exponent is no longer identified.* See above: on the scored population,
+switching the term off costs 0.1 percentage points.
 
 *The 512 KB threshold does not match the hardware.* This repository documents 2 MB of
 scratchpad per core, of which the compiler can allocate about 1.6 MB. The reduction cap of

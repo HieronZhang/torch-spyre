@@ -192,7 +192,16 @@ def _case_configs():
     return out
 
 
+_FEATS_RE = __import__("regex").compile(r"^MODEL FEATS (.+)$", __import__("regex").M)
+
+
 def _record(rec, phase, key, env, s, lx, raw, dt, **extra):
+    """Store the extracted FEATURES alongside the timing.
+
+    The first run of this sweep kept only times, so the case studies' allocations could not
+    be solved afterwards -- which was the whole point of running them. `BENCH_EMIT_RECORDS=1`
+    already puts the features on stdout; they just have to be kept.
+    """
     row = {
         "phase": phase,
         "key": key,

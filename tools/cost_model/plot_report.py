@@ -1359,7 +1359,14 @@ def fig_coarse_spill(_recs):
     _p = cm.CostParams()
     _cap = _p.lx_spill_cap_bytes / 1e6
     _exp = _p.lx_spill_exp
-    peak = 100.0  # measured plateau of this population, not a model parameter
+    # The plateau this derate starts from is the MODEL's filled-pipeline rate, not a
+    # number read off the plot: a softmax reads and writes about equally, so the memory
+    # term is 2R/bw_peak + alpha*R and `eff` caps out at coarse_underfill_cap. Taking it
+    # from the params keeps this curve and §16's on the same footing -- a hardcoded 100
+    # sat ~13 GB/s below the data and made a matched slope look like a level error.
+    peak = (
+        1.0 / (1.0 / _p.bw_peak_gbps + _p.rw_turnaround_ns_per_byte / 2.0)
+    ) * _p.coarse_underfill_cap
     model = [peak * min(1.0, (_cap / w) ** _exp) for w in wsx]
     ax.plot(
         wsx,
@@ -1430,26 +1437,27 @@ def fig_coarse_spill(_recs):
 
 
 # ============================================================================
-# §15 -- coarse underfill `eff`: a short per-core tile (rpc rows) never fills the
-# streaming pipeline. Softmax effective BW climbs with rpc to a plateau; the model
-# eff = min(0.95, (rpc/13)^0.68) (calibrated) captures the rise. Above rpc~32 a
-# mild decline is unmodeled.
+# §16 -- coarse underfill `eff`: a SMALL per-core tile never fills the streaming
+# pipeline. Softmax effective BW climbs with the per-core tile and plateaus -- and
+# the tile is (height x WIDTH), which is the 2026-08-11 correction this figure now
+# carries: one model curve per COLS, because there is no single curve in height.
 # ============================================================================
 def fig_coarse_eff(_recs):
-    # One marker per CONFIG (not averaged): color = ROWS×COLS shape, label = tile count.
-    # x = per-core tile height h = ROWS/(cores·tiles); LX-fitting points only.
+    # One marker per CONFIG (not averaged): color = COLS, label = tile count.
+    # x = per-core tile height h = ROWS/(cores*tiles).
     #
-    # POPULATION must match the one §16 scores, or the curve reads as an upper envelope
-    # over a cloud. Two families used to be drawn here that the report excludes from every
-    # number: runs below 32 cores (their effective BW tracks the core count -- median
-    # 11/21/41/63/79 GB/s at 1/2/4/8/16 cores -- which is aggregate bandwidth, not
-    # underfill), and reductions narrower than 1024 columns (a different regime, see the
-    # permanent exclusions). Together they were 73 of 131 points and 60 of the 60 that sat
-    # far below the curve. On the scored population, no point falls 25 % below it.
+    # POPULATION. Runs below 32 cores are excluded, as everywhere in the report: their
+    # effective BW tracks the core count (median 11/21/41/63/79 GB/s at 1/2/4/8/16
+    # cores), which is aggregate bandwidth, not underfill, and the model has no term for
+    # it. COLS < 1024 is drawn OPEN, not dropped: those runs are outside the scored
+    # population (the standing fused-reduction scope decision) but they are the evidence
+    # that the derate depends on width at all, and a figure that hides them cannot
+    # support the term it is illustrating.
     from collections import defaultdict
 
+    p = _cost_model().CostParams()
     recs = _load(current_only=False)
-    pts = defaultdict(list)  # (R,C) -> [(h, effBW, tiles)]
+    pts = defaultdict(list)  # COLS -> [(h, effBW, tiles, in_scope)]
     for r in recs:
         if (
             r.get("op") != "softmax_row_tiling"
@@ -1458,68 +1466,87 @@ def fig_coarse_eff(_recs):
         ):
             continue
         R, C, t = r.get("rows"), r.get("cols"), r.get("tiles")
-        if not (R and C and t) or t < 2:
+        if not (R and C and t) or t < 2 or r.get("cores") != 32:
             continue
-        if r.get("cores") != 32 or C < 1024:
-            continue  # the scored population -- see the note above
-        h = R / t / (r.get("cores") or 32)
-        ws = 2 * h * C * 2 / 1e6
-        if ws > 1.2:  # LX-fitting only (isolate underfill from §14 spill)
-            continue
-        pts[(R, C)].append((h, int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"], t))
-    plateau = max(e for v in pts.values() for _, e, _ in v)  # filled-pipeline effBW
+        h = R / t / 32
+        pts[C].append((h, int(r["io_hbm_bytes"]) / 1e3 / r["kernel_us"], t, C >= 1024))
+    # The modelled plateau in BW units, from the params rather than from the data: a
+    # softmax reads and writes about equally, so mem = 2R/bw_peak + alpha*R and the
+    # filled-pipeline rate is 1/(1/bw_peak + alpha/2), which `eff` then scales.
+    plateau = 1.0 / (1.0 / p.bw_peak_gbps + p.rw_turnaround_ns_per_byte / 2.0)
     palette = {
-        (16384, 4096): "#d62728",
-        (16384, 2048): "#1f77b4",
-        (8192, 2048): "#2ca02c",
-        (8192, 4096): "#9467bd",
-        (4096, 4096): "#ff7f0e",
-        (4096, 2048): "#8c564b",
+        128: "#d62728",
+        256: "#ff7f0e",
+        512: "#2ca02c",
+        2048: "#1f77b4",
+        4096: "#9467bd",
     }
-    fig, ax = plt.subplots(figsize=(6.4, 4.5))
-    for (R, C), v in sorted(pts.items()):
-        col = palette.get((R, C), "0.4")
-        for h, eff, t in sorted(v):
+    fig, ax = plt.subplots(figsize=(6.6, 4.6))
+    rr = np.logspace(np.log2(1.5), np.log2(300), 90, base=2)
+    for C, v in sorted(pts.items()):
+        col = palette.get(C, "0.4")
+        scored = v[0][3]
+        for h, eff, t, _ in sorted(v):
             ax.scatter(
-                h, eff, s=46, color=col, zorder=3, edgecolors="white", linewidths=0.5
+                h,
+                eff,
+                s=44,
+                zorder=3,
+                linewidths=0.9,
+                color=col if scored else "none",
+                edgecolors="white" if scored else col,
             )
             ax.annotate(
-                f"{t}t",  # tile count identifies the config within a shape
+                f"{t}t",
                 (h, eff),
                 textcoords="offset points",
                 xytext=(4, 4),
-                fontsize=6.2,
+                fontsize=6.0,
                 color=col,
             )
-        ax.scatter([], [], color=col, s=46, label=f"{R}×{C}  (ROWS×COLS)")
-    rr = np.logspace(np.log2(1.5), np.log2(160), 60, base=2)
-    model = plateau * np.minimum(
-        0.95,
-        (rr / _cost_model().CostParams().coarse_underfill_rfull)
-        ** _cost_model().CostParams().coarse_underfill_exp,
-    )
+        ws = 2 * rr * C * 2
+        spill = np.minimum(1.0, (p.lx_spill_cap_bytes / ws) ** p.lx_spill_exp)
+        model = (
+            plateau
+            * spill
+            * np.array([_cost_model().coarse_underfill_eff(float(x), C, p) for x in rr])
+        )
+        ax.plot(rr, model, "-", color=col, lw=1.4, alpha=0.85)
+        ax.scatter(
+            [],
+            [],
+            color=col if scored else "none",
+            edgecolors=col,
+            s=44,
+            label=f"COLS {C}" + ("" if scored else "  (not scored)"),
+        )
     ax.plot(
-        rr,
-        model,
+        [],
+        [],
         "-",
         color="0.4",
-        lw=1.5,
-        label="model: BW·min(0.95, (height/13)$^{0.68}$)",
+        lw=1.4,
+        label=r"model: BW$\cdot$min(1.08, (h/7.9)$^{0.50}$(C/2048)$^{0.38}$)",
     )
     ax.set_xscale("log", base=2)
-    ax.set_xlabel(
-        "per-core tile height  =  ROWS / (cores × tiles)   [rows]   (label = tile count)"
-    )
+    ax.set_xlabel("per-core tile height  h = ROWS/(cores\u00b7tiles)   [rows]")
     ax.set_ylabel("effective BW  (R+W)/time  (GB/s)")
     ax.set_title(
-        "§16  Underfill `eff`: BW climbs with the per-core tile, then plateaus"
+        "\u00a716  Underfill `eff`: the tile has to be big, not just tall",
+        fontsize=12,
     )
-    # Outside the axes: at 32 cores the points run from h=2 up the climb, straight
-    # through where a lower-right legend used to sit.
+    ax.annotate(
+        "point label = tile count;  32 cores",
+        xy=(0.98, 0.03),
+        xycoords="axes fraction",
+        ha="right",
+        fontsize=7.5,
+        color="0.35",
+    )
     ax.legend(
         loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=7.0, framealpha=0.9
     )
-    fig.subplots_adjust(right=0.68)
+    fig.subplots_adjust(left=0.13, right=0.66, bottom=0.14)
     _save(fig, "s17_underfill")
 
 
