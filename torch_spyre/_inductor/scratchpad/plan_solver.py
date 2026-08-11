@@ -45,13 +45,24 @@ class LifetimeBoundBuffer:
     """
     Defines the data fields required for a plan solver.
 
-    ``uses`` is the sorted list of operation indices at which the buffer is
-    accessed (as returned by ``calculate_liveness``).  It must be non-empty:
-    the ``start_time``/``end_time`` properties index into it and the
-    FirstFit/BestFit scoring divides by ``len(uses)``, so callers must only
-    construct buffers for names that are actually used.  ``first_use_is_read``
-    is True for graph inputs (all accesses are reads) and False for computed
-    buffers (first access is a write, all subsequent accesses are reads).
+    ``uses`` is the strictly increasing list of operation indices at which the
+    buffer is accessed (as returned by ``calculate_liveness``).  It is normally
+    non-empty, and callers that read ``start_time``/``end_time`` require that,
+    since those properties index into it; the FirstFit/BestFit scoring divides
+    by ``len(uses)`` plus a write bonus, which is non-zero for a computed buffer
+    even when ``uses`` is empty.  Emptiness is nevertheless allowed at
+    construction -- see :meth:`__post_init__` for the registration state that
+    needs it.  ``first_use_is_read`` is True for graph inputs (all accesses are
+    reads) and False for computed buffers (first access is a write, all
+    subsequent accesses are reads).
+
+    Both properties of ``uses`` are asserted in ``__post_init__``.  Strictness
+    is what makes ``read_count`` trustworthy: one entry per accessing op means
+    that for a computed buffer ``read_count == 0`` is exactly "written, never
+    read", which the in-place invariants rely on (see
+    :func:`assert_in_place_parent_is_read`).  A repeated index would describe a
+    buffer written and read by the same op, i.e. with a single live tick, and
+    would let such a buffer pass as an in-place parent.
 
     ``start_time`` and ``end_time`` are convenience properties derived from
     ``uses``: ``uses[0]`` and ``uses[-1] + 1`` respectively.
@@ -67,10 +78,35 @@ class LifetimeBoundBuffer:
     # or solver logic paths.
     residency_reason: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        # Not also asserted non-empty: buffers are sometimes registered before
+        # their uses are known and filled in afterwards (see
+        # ``make_buffer_registry`` in tests/inductor/test_scratchpad_patterns.py),
+        # and an empty list is vacuously strictly increasing. Callers that read
+        # ``start_time``/``end_time`` still require a non-empty list.
+        #
+        # This runs at construction only, so it does not see later mutation of
+        # ``uses``; the in-place invariants therefore test the property they need
+        # directly rather than inferring it from ``read_count``.
+        assert all(a < b for a, b in zip(self.uses, self.uses[1:])), (
+            f"buffer {self.name} has uses={self.uses}, which is not strictly "
+            "increasing; uses carries one distinct index per accessing operation"
+        )
+
     @property
     def read_count(self) -> int:
-        """Reports the number of reads base on the number of uses."""
-        return max(0, len(self.uses) - 1)
+        """Number of reads.  For a computed buffer the first use is the producing
+        write, so every use but that one is a read; when ``first_use_is_read``
+        (a graph input) every use is a read.  Exact because ``uses`` holds one
+        distinct index per accessing op.
+
+        This counts the buffer's reads, not the reads residency would save: an
+        input's first read is the clone-in that pinning cannot avoid, so a cost
+        model has to discount it separately (see
+        :meth:`_LifetimeBufferWithCpVars.spill_cost`).  The ``max`` only guards
+        the transient empty-``uses`` state described in :meth:`__post_init__`.
+        """
+        return max(0, len(self.uses) - (0 if self.first_use_is_read else 1))
 
     @property
     def start_time(self) -> int:
@@ -166,6 +202,37 @@ class CoreDivisionBuffer(LifetimeBoundBuffer):
         )
 
 
+def assert_in_place_parent_is_read(
+    parent: "LifetimeBoundBuffer", child_name: str
+) -> None:
+    """Assert an in-place parent's storage is read before it is handed over.
+
+    The child takes the parent's storage over at the parent's last use, so that
+    use has to be a read. For a computed buffer the first use is the write, so a
+    single use means the buffer is written and never read -- handing it to a
+    child would overwrite data nothing ever consumed, and it would make parent
+    and child come alive on the same tick while sharing storage. Graph inputs are
+    exempt: all their uses are reads, so one use is enough.
+
+    Split out of :func:`_assert_in_place_relationships` because the
+    permutation-based layout solvers enforce this one invariant on its own. For
+    them the other two are placement-time gates rather than preconditions: a
+    child that outgrows its parent, or a pair whose lifetimes do not abut, is
+    simply not placed in-place (see ``_can_inplace``), so asserting either here
+    would reject inputs those solvers handle correctly.
+    """
+    # Tested as "a use strictly after the first" rather than via ``read_count``:
+    # the two agree whenever ``uses`` is strictly increasing, but ``uses`` is
+    # validated at construction and can be mutated afterwards, and this way a
+    # repeated index cannot pass as a read.
+    has_read_after_write = len(parent.uses) > 1 and parent.uses[-1] > parent.uses[0]
+    assert parent.first_use_is_read or has_read_after_write, (
+        f"In-place parent {parent.name} is a computed buffer that is never read "
+        f"(uses={parent.uses}), so it cannot hand its storage to child "
+        f"{child_name}"
+    )
+
+
 def _assert_in_place_relationships(
     buffers: Sequence["LifetimeBoundBuffer"],
 ) -> None:
@@ -179,6 +246,7 @@ def _assert_in_place_relationships(
                     f"In-place parent {parent_name}.end_time={parent.end_time} must equal "
                     f"child {child.name}.start_time+1={child.start_time + 1}"
                 )
+                assert_in_place_parent_is_read(parent, child.name)
                 # With core_divisions ``size`` is the *total* footprint, so a static
                 # size check doesn't apply; the per-core match is enforced against the
                 # chosen division in ``CpSatLayoutSolver._add_inplace_relaxation``. Only

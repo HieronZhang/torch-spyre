@@ -35,6 +35,11 @@ global_stick_optimizer: bool = os.environ.get("GLOBAL_STICK_OPTIMIZER", "1") == 
 matmul_preferred_layout: Literal["", "on", "output"] = os.environ.get(
     "SPYRE_MATMUL_PREFERRED_LAYOUT", ""
 )  # type: ignore[assignment]
+# Opt-in OpSpec->KTIR emitter (experimental, #3380). When enabled the scheduler
+# emits ``async_compile.ktir(...)`` instead of the SDSC bundle, and
+# ``create_tensor_arg`` populates the op-spec buffer name so the emitter has a
+# stable per-buffer identity. Inert by default: the SDSC/flex path is unchanged.
+ktir_emitter: bool = os.environ.get("TORCH_SPYRE_KTIR", "0") == "1"
 
 allow_all_ops_in_lx_planning: bool = False
 
