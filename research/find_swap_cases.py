@@ -106,36 +106,46 @@ def _wl(name, cores, **kw):
 
 
 def grid():
-    """Configs in priority order: heterogeneous programs first, flash boundary after.
+    """Configs in priority order, tuned by the smoke run.
 
-    The case-study programs are the ones that could produce a *large* swap, and they are
-    unproven on this build; flash is proven to produce swaps but only small ones. Running the
-    unproven-but-valuable set first means a truncated budget still answers the question that
-    matters.
+    The smoke run settled three things. `block_norm_mlp` (6 buffers in LX) and `attn_scores`
+    (5) both land in the contested band and are swept widely. `mlp_up` at Granite width put
+    only ONE buffer in LX -- its intermediates are ~1 MB per core each, so capacity does not
+    bind, it is simply exceeded -- so it is swept small instead, where more than one can fit.
+    And flash at `H=2` does not compile at all: the work-division pass splits the head
+    dimension and 2 does not divide 4 (`buf5 dim d0 size=2 is not evenly divisible by
+    split=4`), so the head count starts at 4.
     """
     out = []
-    # 1. The designed heterogeneous case, across the capacity boundary.
+    # 1. The designed heterogeneous case: a reduction, a broadcast and matmul operands in
+    #    one bundle. Spread across the capacity boundary in both width and length.
     for cores in (8, 32):
-        for seq in (512, 1024):
-            for ff in (4096, 12800):
+        for seq in (256, 512, 1024):
+            for ff in (2048, 4096, 12800):
                 out.append(_wl("block_norm_mlp", cores, batch=2, seq=seq, d_ff=ff))
-    # 2. Two large same-size intermediates plus a shared input.
+    # 2. Attention through the softmax, unequal Lq/Lk -- the buffer ratio changes with Lk,
+    #    which is the ratio that makes a swap pay.
     for cores in (8, 32):
-        for ff in (4096, 12800):
-            out.append(_wl("mlp_up", cores, batch=2, seq=512, d_ff=ff))
-    # 3. Attention through the softmax, unequal Lq/Lk -- different buffer ratios.
+        for heads in (4, 8):
+            for lk in (512, 1024, 2048):
+                out.append(
+                    _wl("attn_scores", cores, batch=1, heads=heads, seq_q=512, seq_k=lk)
+                )
+    # 3. mlp_up, small enough that more than one intermediate fits.
     for cores in (8, 32):
-        for lk in (512, 2048):
-            out.append(_wl("attn_scores", cores, batch=1, heads=8, seq_q=512, seq_k=lk))
-    # 4. Flash at low head count, where the known swap is relatively largest.
+        for seq in (128, 256):
+            for ff in (1024, 2048):
+                out.append(_wl("mlp_up", cores, batch=2, seq=seq, d_ff=ff))
+    # 4. Flash, where the known swap is relatively largest (it scales as 1/(H*D)) and the
+    #    core count moves the capacity boundary that creates the contention.
     for cores in (4, 8, 16):
-        for h in (2, 4, 8):
+        for h in (4, 8):
             for lseq in (512, 1024):
                 out.append(_flash(h, lseq, lseq, cores))
     # 5. Flash with Lq != Lk, which changes the size ratio of the contending pair.
     for cores in (8, 16):
         for lq, lk in ((512, 2048), (2048, 512)):
-            out.append(_flash(4, lq, lk, cores))
+            out.append(_flash(8, lq, lk, cores))
     return out
 
 
