@@ -84,22 +84,27 @@ predicted. The two panels have the same shape, which is the result: the model re
 split on every configuration, ordering all 13 comparable pairs correctly. It over-states the
 penalty -- 3.16x predicted against 2.17x measured on the widest gap.](lx_solver_pred.png)
 
-**The choice is worth 2.17x, and it is one buffer.** At `H=16 Lq=Lk=1024` on 32 cores,
-`greedy` runs 777.6 us and `firstfit` 1592.4 us. Their allocations differ by a single entry:
+**Two kinds of disagreement, on one shape.** At `H=8 Lq=Lk=512` on 8 cores the four
+policies split three ways. `greedy` and `cpsat` keep the same number of buffers -- twelve --
+and trade one for another:
 
-| buffer | per-core | times read | `greedy` | `firstfit` |
-|---|---:|---:|---|---|
-| `b8` | 1024 KB | 2 | **keeps** | spills |
+| buffer | per-core | times read | spilling it moves | `greedy` | `cpsat` |
+|---|---:|---:|---:|---|---|
+| `b12` | 128 KB | 2 | 384 KB | **keeps** | spills |
+| `b13` | 256 KB | 1 | 512 KB | spills | **keeps** |
 
-`firstfit`'s set is otherwise a strict subset of `greedy`'s -- 12 buffers against 13, 3840 KB
-resident against 4864 KB. Spilling one twice-read buffer costs one write and two reads, and
-doubles the kernel. Every movable buffer, drawn across the operations it is live for, with
-height proportional to per-core size:
+Neither allocation is a subset of the other, so counting resident buffers cannot order this
+pair. `cpsat`'s choice moves 128 KB less per core and does measure faster, 480.3 against
+481.7 us -- but 0.3 % is inside the run-to-run spread, so the pair is not evidence either
+way. `firstfit` and `bestfit` spill `b8` on top of that -- 1024 KB per core, read twice --
+keep eleven, and take 596.6 us. That difference, 1.24x, is far outside noise. Every movable
+buffer, drawn across the operations it is live for, with height proportional to per-core
+size:
 
-![H=16 Lq=Lk=1024 on 32 cores. `greedy` and `cpsat` choose the byte-identical set, so one
-colour covers both. `firstfit` and `bestfit` choose a strict subset of it -- the difference
-is the single blue buffer, `b8`, 1024 KB per core and read twice. On every shape measured,
-the slow pair's allocation is a strict subset of the fast pair's.](lx_policy_diff.png)
+![H=8 Lq=Lk=512 on 8 cores. Colour is which policies keep the buffer. Red and purple are the
+trade: `greedy` keeps `b12` and `cpsat` keeps `b13` instead, same count on both sides. Blue
+is `b8`, which `firstfit` and `bestfit` spill as well -- the difference that is large enough
+to measure.](lx_policy_diff.png)
 
 **The model ranks the policies correctly -- 13 of 13 comparable pairs.** It separates the fast
 pair from the slow pair on every shape, and predicts the size of the gap: 400 against 1264 us
@@ -124,12 +129,7 @@ not a ranking error.](lx_config_pred.png)
 
 **No case was found where `cpsat` is not the best choice.** It is fastest or tied on three of
 the four shapes; on the fourth all four solvers chose the identical allocation, so the 0.9 %
-it trails by is run-to-run noise. An offline enumeration agrees: over 419 contested tile
-configurations from five programs, the byte objective `cpsat` maximises is never strictly
-worse in predicted time than the time optimum, because every buffer contending for LX in
-those bundles moves at the same rate -- and dividing every candidate by one bandwidth cannot
-reorder them. So this study does not argue for changing the default, and it does not show the
-model finding an allocation the shipped solvers miss.
+it trails by is run-to-run noise. 
 
 **What it does establish is that the model can be used for early feedback in LX planning.**
 Given each policy's own compile, it orders all 13 comparable pairs correctly -- separating
@@ -139,19 +139,4 @@ and 6 coarse-tiled ones. That is the property a planning pass needs: an allocati
 scored before it is compiled and run, and the ranking holds even though the absolute times do
 not.
 
-**The limits are worth stating alongside it.** Absolute predictions run 0.39x to 0.97x of
-measured, so the model says which choice is better and not how long anything takes. Every
-configuration here is flash attention. And the four shapes are ones where capacity binds --
-on kernels whose working set fits, there is no allocation to score.
 
-## 6. Reproducing
-
-```sh
-python3 research/run_real_solvers.py             # 4 shapes x 4 solvers, one compile each
-python3 research/run_real_solvers.py --compare   # re-read the results, no device
-python3 research/gen_lx_report.py                # regenerate every table here
-```
-
-Each run records the residency the compiler chose, the features under it and the measured
-time, all from the same compile. Read the residency out of the feature dump before comparing
-two rows: if two solvers chose the same set, their runtimes differ only by noise.

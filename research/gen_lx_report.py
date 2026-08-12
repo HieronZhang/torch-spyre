@@ -326,10 +326,13 @@ def real_solvers():
 
 
 def policy_figure():
-    """One decision, drawn: every movable buffer, and the single one the policies differ on.
+    """One decision, drawn: who keeps what, and the two different kinds of disagreement.
 
-    Uses the real solver runs, not a reconstruction. On this shape `firstfit`'s set is a
-    strict subset of `greedy`'s -- they differ by one buffer -- so the figure is the claim.
+    This shape is the interesting one. `greedy` and `cpsat` keep the SAME NUMBER of buffers
+    and disagree about WHICH -- greedy keeps `b12` (small, read twice), cpsat keeps `b13`
+    (twice the size, read once) -- so neither allocation is a subset of the other and
+    "more resident is faster" cannot explain the pair. `firstfit` and `bestfit` then drop
+    `b8` on top of that, which is the subset difference and the one worth 1.24x.
     """
     import matplotlib
 
@@ -347,32 +350,44 @@ def policy_figure():
         r["solver"]: r
         for r in rows
         if r.get("feats")
-        and r["env"]["FA_H"] == "16"
-        and r["env"]["FA_LQ"] == "1024"
-        and r["env"]["SENCORES"] == "32"
+        and r["env"]["FA_H"] == "8"
+        and r["env"]["FA_LQ"] == "512"
+        and r["env"]["SENCORES"] == "8"
     }
-    if "greedy" not in sel or "firstfit" not in sel:
+    if not {"greedy", "cpsat", "firstfit"} <= set(sel):
         return "(shape not measured)"
-    g, f, c = sel["greedy"], sel["firstfit"], sel["cpsat"]
-    A, B, C = set(g["lx"]), set(f["lx"]), set(c["lx"])
-    # greedy and cpsat pick the byte-identical set here, so one colour covers both; saying
-    # so is the point, not an omission.
-    same_gc = A == C
+    g, c, f = sel["greedy"], sel["cpsat"], sel["firstfit"]
+    G, C, F = set(g["lx"]), set(c["lx"]), set(f["lx"])
     feats = g["feats"]
     fp, life, rc = (
         L.buffer_footprints(feats),
         L.buffer_lifetimes(feats),
         L.read_counts(feats),
     )
+    # A buffer's colour is WHO KEEPS IT, so the swap shows up as two different colours on
+    # two buffers rather than as an absence the reader has to notice.
+    C_ALL, C_GC, C_G, C_C, C_NONE = (
+        "#1baf7a",
+        "#2a78d6",
+        "#d1495b",
+        "#8250c4",
+        "#eda100",
+    )
+    style = {
+        (1, 1, 1): (C_ALL, "kept by all four"),
+        (1, 1, 0): (C_GC, "kept by greedy and cpsat only"),
+        (1, 0, 1): (C_G, "greedy keeps, cpsat spills"),
+        (0, 1, 0): (C_C, "cpsat keeps, greedy spills"),
+        (0, 0, 0): (C_NONE, "spilled by all four"),
+    }
     order = sorted(fp, key=lambda x: (life[x][0], -fp[x]))
     fig, ax = plt.subplots(figsize=(11.0, 5.2))
-    # Three states, three categorical hues -- validated as a set (worst adjacent pair
-    # dE 9.1 protan). Grey read as "background" and made the shared buffers look like
-    # chrome rather than data; they are two thirds of the allocation.
-    C_BOTH, C_ONLY, C_NONE = "#1baf7a", "#2a78d6", "#eda100"
+    used = {}
     for i, b_ in enumerate(order):
         s0, s1 = life[b_]
-        col = C_BOTH if (b_ in A and b_ in B) else C_ONLY if b_ in A else C_NONE
+        sig = (int(b_ in G), int(b_ in C), int(b_ in F))
+        col, lab = style.get(sig, ("#94a3b8", "other"))
+        used[lab] = col
         h = 0.22 + 0.56 * (fp[b_] / max(fp.values()))
         ax.barh(
             i,
@@ -384,11 +399,14 @@ def policy_figure():
             linewidth=1.0,
             zorder=3,
         )
-        if (b_ in A) != (b_ in B):
+        if sig != (1, 1, 1) and sig != (0, 0, 0):
+            note = f"{fp[b_] // 1024} KB, read {rc.get(b_, 0)}x"
+            if sig in ((1, 0, 1), (0, 1, 0)):
+                note += "   <- the swap"
             ax.text(
                 s1 + 0.3,
                 i,
-                f"{fp[b_] // 1024} KB, read {rc.get(b_, 0)}x",
+                note,
                 va="center",
                 fontsize=9,
                 color="#1a365d",
@@ -403,21 +421,16 @@ def policy_figure():
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
     ax.set_title(
-        "H=16 Lq=Lk=1024, 32 cores: the policies differ by ONE buffer\n"
-        "greedy and cpsat "
-        + ("choose the identical set" if same_gc else "differ slightly")
-        + f" -- {len(A)} buffers, {g['kernel_us']:,.0f} and "
-        f"{c['kernel_us']:,.0f} us; firstfit and bestfit keep {len(B)}, "
-        f"a strict subset, and take {f['kernel_us']:,.0f} us "
-        f"({f['kernel_us'] / g['kernel_us']:.2f}x)",
+        "H=8 Lq=Lk=512, 8 cores: two different kinds of disagreement\n"
+        f"greedy and cpsat both keep {len(G)} buffers and TRADE one for another "
+        f"({g['kernel_us']:,.1f} vs {c['kernel_us']:,.1f} us, inside run-to-run "
+        f"spread); firstfit and bestfit drop a third buffer as well, keep {len(F)}, "
+        f"and take {f['kernel_us']:,.1f} us "
+        f"({f['kernel_us'] / c['kernel_us']:.2f}x)",
         fontsize=11,
     )
     ax.legend(
-        handles=[
-            Patch(facecolor=C_BOTH, label="kept by all four policies"),
-            Patch(facecolor=C_ONLY, label="kept by greedy and cpsat only"),
-            Patch(facecolor=C_NONE, label="spilled by both"),
-        ],
+        handles=[Patch(facecolor=v, label=k) for k, v in used.items()],
         frameon=False,
         fontsize=9,
         loc="upper center",
