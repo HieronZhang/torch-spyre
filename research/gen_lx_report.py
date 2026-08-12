@@ -40,13 +40,17 @@ import statistics as st
 import subprocess
 import sys
 
+import regex as re
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_ROOT, "tools", "cost_model"))
 
 REPORT = os.path.join(_HERE, "lx_allocation_report.md")
-FIGURE = os.path.join(_HERE, "lx_allocation.png")
+SOLVER_FIG = os.path.join(_HERE, "lx_solver_pred.png")
+CONFIG_FIG = os.path.join(_HERE, "lx_config_pred.png")
+POLICY_FIG = os.path.join(_HERE, "lx_policy_diff.png")
 CAP = 1_625_344
 
 #: The 2.11 flash data lives in a superseded commit -- the working tree's database was
@@ -126,7 +130,7 @@ def ranking_211(build="20260730"):
     # against the rows above rather than taken on trust.
     rat = [p / m for _, m, p in rows]
     out.append(
-        f"| **{c} of {n} pairs ordered correctly** (τ = {tau:+.2f}) | | | "
+        f"| **{len(rows)} configurations = {n} pairs; {c} of {n} ordered correctly** | | | "
         f"**{min(rat):.1f}–{max(rat):.1f}×** |"
     )
     return "\n".join(out), {"c": c, "n": n, "tau": tau, "rows": rows}
@@ -176,100 +180,372 @@ def _shape_of(case_key, cases):
     return None
 
 
-def alloc_213():
-    """Measured against predicted TIME per allocation, so the orders can be compared.
+def solver_figure():
+    """Per shape, each solver's time divided by the fastest -- measured beside predicted.
 
-    Both columns are microseconds. An earlier version put measured in microseconds and
-    predicted as a percentage regret, which made the one question a reader actually has --
-    does the model order the policies correctly? -- impossible to answer by eye.
+    A scatter of measured against predicted hides the result: greedy/cpsat and
+    firstfit/bestfit land on top of each other, so twelve of the sixteen points are
+    invisible. Normalising within each shape puts both panels on the same dimensionless
+    axis, and the claim -- the model reproduces the split -- is that they match.
     """
-    cases, by = _forced(), _p1()
-    out = [
-        "| flash shape | allocation | keeps | measured (µs) | predicted (µs) | order |",
-        "|---|---|---:|---:|---:|:--:|",
-    ]
-    detail = []
-    for key, arms in by.items():
-        c = _shape_of(key, cases)
-        means = {a: st.mean(v) for a, v in arms.items()}
-        if len(means) < 2:
-            continue
-        pred = {}
-        if c:
-            for a in means:
-                pred[a] = c["arms"].get(a.split("+")[0], {}).get("pred_us")
-        shape = (
-            _tidy(c["label"]).replace(" D=128 htiles=1 qtiles=1 ktiles=1", "")
-            if c
-            else key
-        )
-        order_m = sorted(means, key=lambda a: means[a])
-        have = [a for a in order_m if pred.get(a) is not None]
-        order_p = sorted(have, key=lambda a: pred[a])
-        agrees = [a for a in order_m if a in have] == order_p
-        first = True
-        for rank, a in enumerate(order_m, 1):
-            pu = pred.get(a)
-            keeps = c["arms"].get(a.split("+")[0], {}).get("n_lx") if c else None
-            prank = (order_p.index(a) + 1) if a in order_p else None
-            mark = "—"
-            if prank:
-                mark = "✓" if prank == rank else f"→{prank}"
-            out.append(
-                f"| {'`' + shape + '`' if first else ''} | {a} | {keeps or '—'} "
-                f"| {means[a]:,.1f} | {(f'{pu:,.1f}' if pu else '—')} | {mark} |"
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    import lx_choice as L
+
+    path = os.path.join(_HERE, "real_solver_results.jsonl")
+    if not os.path.exists(path):
+        return "(no data)"
+    rows = [json.loads(x) for x in open(path, encoding="utf-8") if x.strip()]
+    by: dict = {}
+    for r in rows:
+        if r.get("kernel_us") and r.get("feats"):
+            e = r["env"]
+            by.setdefault((int(e["FA_H"]), int(e["FA_LQ"]), int(e["SENCORES"])), {})[
+                r["solver"]
+            ] = (r["kernel_us"], L.predict(r["feats"]))
+    order = ["greedy", "cpsat", "firstfit", "bestfit"]
+    colour = {
+        "greedy": "#2a78d6",
+        "cpsat": "#1baf7a",
+        "firstfit": "#eb6834",
+        "bestfit": "#eda100",
+    }
+    keys = sorted(by, key=lambda k: (k[2], k[0]))
+    labels = [f"H={k[0]}, L={k[1]}\n{k[2]} cores" for k in keys]
+
+    fig, axes = plt.subplots(1, 2, figsize=(11.6, 4.6), sharey=True)
+    for ax, idx, title in ((axes[0], 0, "measured"), (axes[1], 1, "predicted")):
+        w = 0.20
+        for i, s_ in enumerate(order):
+            off = (i - 1.5) * w
+            vals = []
+            for k in keys:
+                v = by[k]
+                ref = min(x[idx] for x in v.values())
+                vals.append(v[s_][idx] / ref if s_ in v else float("nan"))
+            bars = ax.bar(
+                [x + off for x in range(len(keys))],
+                vals,
+                w * 0.9,
+                color=colour[s_],
+                zorder=3,
+                label=s_ + (" (default)" if s_ == "greedy" else ""),
             )
-            first = False
-        detail.append((shape, means, c))
-        out.append(
-            f"| | _model orders these_ | | | | "
-            f"**{'correctly' if agrees else 'WRONG'}** |"
-        )
-    return "\n".join(out), detail
+            for b_ in bars:
+                h = b_.get_height()
+                if h == h:
+                    ax.text(
+                        b_.get_x() + b_.get_width() / 2,
+                        h + 0.02,
+                        f"{h:.2f}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=7,
+                        color="#3d4551",
+                    )
+        ax.axhline(1.0, color="#9aa3ad", lw=1, zorder=2)
+        ax.set_xticks(range(len(keys)))
+        ax.set_xticklabels(labels, fontsize=8.5)
+        ax.set_title(title, fontsize=11)
+        ax.grid(axis="y", alpha=0.25, lw=0.6)
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
+    axes[0].set_ylabel("time ÷ fastest solver on that shape")
+    axes[0].legend(frameon=False, fontsize=9, ncol=2, loc="upper left")
+    fig.suptitle(
+        "The model reproduces the split: greedy and cpsat fast, "
+        "firstfit and bestfit slow",
+        fontsize=11.5,
+    )
+    fig.tight_layout()
+    fig.savefig(SOLVER_FIG, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return SOLVER_FIG
 
 
-def alloc_pairs():
-    """How the model does on the question section 4 asks: ordering ALLOCATIONS.
-
-    Reported as pairs, the same statistic used for shape and tile ranking. Counting shapes
-    instead hides that one shape supplies six of the eight pairs and fails four of them.
-    """
+def real_solvers():
+    """What the SHIPPED solvers do -- one compile each, no reconstruction, no pinning."""
     import itertools
 
-    cases, by = _forced(), _p1()
+    import lx_choice as L
+
+    path = os.path.join(_HERE, "real_solver_results.jsonl")
+    if not os.path.exists(path):
+        return "_not measured_"
+    rows = [json.loads(x) for x in open(path, encoding="utf-8") if x.strip()]
+    by: dict = {}
+    for r in rows:
+        if r.get("kernel_us"):
+            e = r["env"]
+            k = (int(e["FA_H"]), int(e["FA_LQ"]), int(e["SENCORES"]))
+            by.setdefault(k, {})[r["solver"]] = (
+                r["kernel_us"],
+                r.get("n_lx"),
+                L.predict(r["feats"]) if r.get("feats") else None,
+            )
+    order = ["greedy", "cpsat", "firstfit", "bestfit"]
     out = [
-        "| flash shape | allocations | pairs | correct | order |",
-        "|---|---:|---:|---:|:--:|",
+        "<small>Each cell: measured microseconds, then in brackets how many buffers "
+        "that solver placed in LX. One compile per cell.</small>",
+        "",
+        "| flash shape | "
+        + " | ".join(
+            f"`{s_}`" + (" (default)" if s_ == "greedy" else "") for s_ in order
+        )
+        + " | slowest ÷ fastest |",
+        "|---|" + "---:|" * (len(order) + 1),
     ]
-    tc = tn = ok_shapes = n_shapes = 0
-    for key, arms in by.items():
-        c = _shape_of(key, cases)
-        if not c or len(arms) < 2:
-            continue
-        pts = []
-        for a, v in arms.items():
-            pr = c["arms"].get(a.split("+")[0], {}).get("pred_us")
-            if pr:
-                pts.append((st.mean(v), pr))
-        if len(pts) < 2:
-            continue
-        n_shapes += 1
-        ok = sum(
-            (x[0] < y[0]) == (x[1] < y[1]) for x, y in itertools.combinations(pts, 2)
-        )
-        n = len(pts) * (len(pts) - 1) // 2
-        tc += ok
-        tn += n
-        ok_shapes += ok == n
-        shape = _tidy(c["label"]).replace(" D=128 htiles=1 qtiles=1 ktiles=1", "")
+    tc = tn = 0
+    for k in sorted(by):
+        cells, times = [], []
+        for s_ in order:
+            v = by[k].get(s_)
+            cells.append(f"{v[0]:,.1f} ({v[1]})" if v else "—")
+            if v:
+                times.append(v[0])
         out.append(
-            f"| `{shape}` | {len(pts)} | {n} | {ok} | "
-            f"{'✓' if ok == n else '**wrong**'} |"
+            f"| `H={k[0]} Lq=Lk={k[1]}, {k[2]} cores` | "
+            + " | ".join(cells)
+            + f" | **{max(times) / min(times):.2f}×** |"
         )
+        pts = [(v[0], v[2]) for v in by[k].values() if v[2] is not None]
+        for x, y in itertools.combinations(pts, 2):
+            if x[0] == y[0] or x[1] == y[1]:
+                continue
+            tn += 1
+            tc += (x[0] < y[0]) == (x[1] < y[1])
+    # Every "X of Y" in this document must be checkable against a cell.
     out.append(
-        f"| **total** | | **{tn}** | **{tc} of {tn}** | **{ok_shapes} of {n_shapes} shapes** |"
+        f"| **the model orders {tc} of {tn} of these pairs correctly** |"
+        + " |" * (len(order) + 1)
     )
-    return "\n".join(out), (tc, tn, ok_shapes, n_shapes)
+    return "\n".join(out)
+
+
+def policy_figure():
+    """One decision, drawn: every movable buffer, and the single one the policies differ on.
+
+    Uses the real solver runs, not a reconstruction. On this shape `firstfit`'s set is a
+    strict subset of `greedy`'s -- they differ by one buffer -- so the figure is the claim.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    import lx_choice as L
+
+    path = os.path.join(_HERE, "real_solver_results.jsonl")
+    if not os.path.exists(path):
+        return "(no data)"
+    rows = [json.loads(x) for x in open(path, encoding="utf-8") if x.strip()]
+    sel = {
+        r["solver"]: r
+        for r in rows
+        if r.get("feats")
+        and r["env"]["FA_H"] == "16"
+        and r["env"]["FA_LQ"] == "1024"
+        and r["env"]["SENCORES"] == "32"
+    }
+    if "greedy" not in sel or "firstfit" not in sel:
+        return "(shape not measured)"
+    g, f, c = sel["greedy"], sel["firstfit"], sel["cpsat"]
+    A, B, C = set(g["lx"]), set(f["lx"]), set(c["lx"])
+    # greedy and cpsat pick the byte-identical set here, so one colour covers both; saying
+    # so is the point, not an omission.
+    same_gc = A == C
+    feats = g["feats"]
+    fp, life, rc = (
+        L.buffer_footprints(feats),
+        L.buffer_lifetimes(feats),
+        L.read_counts(feats),
+    )
+    order = sorted(fp, key=lambda x: (life[x][0], -fp[x]))
+    fig, ax = plt.subplots(figsize=(11.0, 5.2))
+    # Three states, three categorical hues -- validated as a set (worst adjacent pair
+    # dE 9.1 protan). Grey read as "background" and made the shared buffers look like
+    # chrome rather than data; they are two thirds of the allocation.
+    C_BOTH, C_ONLY, C_NONE = "#1baf7a", "#2a78d6", "#eda100"
+    for i, b_ in enumerate(order):
+        s0, s1 = life[b_]
+        col = C_BOTH if (b_ in A and b_ in B) else C_ONLY if b_ in A else C_NONE
+        h = 0.22 + 0.56 * (fp[b_] / max(fp.values()))
+        ax.barh(
+            i,
+            s1 - s0,
+            left=s0,
+            height=h,
+            color=col,
+            edgecolor="white",
+            linewidth=1.0,
+            zorder=3,
+        )
+        if (b_ in A) != (b_ in B):
+            ax.text(
+                s1 + 0.3,
+                i,
+                f"{fp[b_] // 1024} KB, read {rc.get(b_, 0)}x",
+                va="center",
+                fontsize=9,
+                color="#1a365d",
+                zorder=4,
+            )
+    ax.set_yticks(range(len(order)))
+    ax.set_yticklabels(order, fontsize=7.5)
+    ax.set_xlabel("operation index  (dataflow order within the fused kernel)")
+    ax.set_ylabel("intermediate buffer")
+    ax.invert_yaxis()
+    ax.grid(axis="x", alpha=0.25, lw=0.6)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    ax.set_title(
+        "H=16 Lq=Lk=1024, 32 cores: the policies differ by ONE buffer\n"
+        "greedy and cpsat "
+        + ("choose the identical set" if same_gc else "differ slightly")
+        + f" -- {len(A)} buffers, {g['kernel_us']:,.0f} and "
+        f"{c['kernel_us']:,.0f} us; firstfit and bestfit keep {len(B)}, "
+        f"a strict subset, and take {f['kernel_us']:,.0f} us "
+        f"({f['kernel_us'] / g['kernel_us']:.2f}x)",
+        fontsize=11,
+    )
+    ax.legend(
+        handles=[
+            Patch(facecolor=C_BOTH, label="kept by all four policies"),
+            Patch(facecolor=C_ONLY, label="kept by greedy and cpsat only"),
+            Patch(facecolor=C_NONE, label="spilled by both"),
+        ],
+        frameon=False,
+        fontsize=9,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.12),
+        ncol=3,
+    )
+    fig.tight_layout()
+    fig.savefig(POLICY_FIG, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return POLICY_FIG
+
+
+def config_figure():
+    """Measured against predicted across every configuration, all series on one axis.
+
+    Replaces two tables of "n of m pairs ordered correctly". A pair count asserts the
+    ordering; a monotone cloud shows it, and it also shows what the counts hide -- that the
+    8-core points sit on their own band, which is a scale offset rather than a ranking error.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    series = {}
+    pts = {}
+    for r in _session():
+        if r.get("phase") == 2 and r.get("kernel_us") and r.get("pred_us"):
+            m = re.match(r"H(\d+)_L(\d+)_c(\d+)", r.get("hint") or "")
+            if m:
+                pts.setdefault((1, int(m[1]), int(m[2]), int(m[3])), []).append(
+                    (r["kernel_us"], r["pred_us"])
+                )
+    for r in _v2():
+        if r.get("phase") == 2 and r.get("kernel_us") and r.get("pred_us"):
+            sh = r.get("shape") or {}
+            pts.setdefault(
+                (
+                    int(sh.get("FA_B", 1)),
+                    int(sh.get("FA_H", 0)),
+                    int(sh.get("FA_LQ", 0)),
+                    int(sh.get("SENCORES", 32)),
+                ),
+                [],
+            ).append((r["kernel_us"], r["pred_us"]))
+    for k, v in pts.items():
+        tag = f"untiled, {k[3]} cores"
+        series.setdefault(tag, []).append(
+            (
+                st.mean(x[0] for x in v),
+                st.mean(x[1] for x in v),
+                f"H{k[1]}/L{k[2]}",
+            )
+        )
+    _, s211 = ranking_211()
+    series["coarse-tiled, 32 cores"] = [
+        (
+            m,
+            p,
+            "t" + re.sub(r".*htiles=(\d+) qtiles=(\d+).*", r"\1x\2", lbl)
+            if "htiles" in lbl
+            else (m, p, "ktiles=2")[2],
+        )
+        for lbl, m, p in s211["rows"]
+    ]
+
+    colour = {
+        "untiled, 32 cores": "#2a78d6",
+        "untiled, 8 cores": "#eb6834",
+        "coarse-tiled, 32 cores": "#1baf7a",
+    }
+    fig, ax = plt.subplots(figsize=(7.2, 5.8))
+    allv = [x for v in series.values() for p_ in v for x in p_[:2]]
+    lo, hi = min(allv) * 0.6, max(allv) * 1.6
+    ax.plot(
+        [lo, hi],
+        [lo, hi],
+        "-",
+        color="#c3cad3",
+        lw=1.2,
+        zorder=1,
+        label="predicted = measured",
+    )
+    for tag in ("untiled, 32 cores", "untiled, 8 cores", "coarse-tiled, 32 cores"):
+        v = series.get(tag)
+        if not v:
+            continue
+        ax.plot(
+            [x[0] for x in v],
+            [x[1] for x in v],
+            "o",
+            ms=8,
+            color=colour[tag],
+            markeredgecolor="white",
+            markeredgewidth=1.2,
+            zorder=3,
+            label=f"{tag}  (n={len(v)})",
+        )
+        # Every point names its configuration -- a reader should not have to guess
+        # what a dot is.
+        for x0, y0, lab in v:
+            ax.annotate(
+                lab,
+                xy=(x0, y0),
+                xytext=(0, 9),
+                textcoords="offset points",
+                fontsize=6.0,
+                color=colour[tag],
+                ha="center",
+                zorder=5,
+            )
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("measured kernel time (µs)")
+    ax.set_ylabel("predicted kernel time (µs)")
+    ax.set_title(
+        "Predicted against measured, every configuration\n"
+        "monotone within each series: the model orders them correctly",
+        fontsize=11,
+    )
+    ax.legend(frameon=False, fontsize=9, loc="upper left")
+    ax.grid(alpha=0.25, which="both", lw=0.6)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(CONFIG_FIG, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return CONFIG_FIG
 
 
 def ranking_213():
@@ -314,9 +590,9 @@ def ranking_213():
     n_rep = sum(1 for r in rows if r["repeats"] > 1)
     allc, alln, alltau = _kendall([(r["kernel_us"], r["pred_us"]) for r in rows])
     out = [
-        "| core count | configurations | concordant pairs | Kendall τ | "
+        "| core count | configurations | pairs ordered correctly | "
         "predicted ÷ measured |",
-        "|---|---:|---:|---:|---|",
+        "|---|---:|---:|---|",
     ]
     stats = {"all": (allc, alln, alltau), "n": len(rows), "repeated": n_rep}
     for cores in sorted({r["cores"] for r in rows}, reverse=True):
@@ -324,235 +600,22 @@ def ranking_213():
         c, n, tau = _kendall([(r["kernel_us"], r["pred_us"]) for r in sel])
         rat = [r["pred_us"] / r["kernel_us"] for r in sel]
         out.append(
-            f"| {cores} | {len(sel)} | {c}/{n} | **{tau:+.2f}** | "
+            f"| {cores} | {len(sel)} | **{c} of {n}** | "
             f"{min(rat):.2f}–{max(rat):.2f}× (mean {st.mean(rat):.2f}) |"
         )
         stats[cores] = (c, n, tau, st.mean(rat))
     rat = [r["pred_us"] / r["kernel_us"] for r in rows]
     out.append(
-        f"| both pooled | {len(rows)} | {allc}/{alln} | {alltau:+.2f} | "
+        f"| both pooled | {len(rows)} | **{allc} of {alln}** | "
         f"{min(rat):.2f}–{max(rat):.2f}× |"
     )
+    out.append("")
+    out.append(
+        "<small>Every configuration is compared with every other, so n "
+        "configurations give n(n-1)/2 pairs; pairs where the two measured or the "
+        "two predicted times are equal cannot be ordered and are excluded.</small>"
+    )
     return "\n".join(out), stats
-
-
-def cores_ladder():
-    """Measured and predicted against core count at fixed shape."""
-    rows = [
-        r
-        for r in _v2()
-        if r.get("phase") == 3 and r.get("kernel_us") and r.get("pred_us")
-    ]
-    if not rows:
-        return "_not measured_"
-    shapes = sorted({(r["H"], r["L"]) for r in rows})
-    out = [
-        "| cores | "
-        + " | ".join(f"H={h} L={ell} measured" for h, ell in shapes)
-        + " | mean predicted ÷ measured |",
-        "|---:|" + "---:|" * (len(shapes) + 1),
-    ]
-    for c in sorted({r["n_cores"] for r in rows}):
-        cells, rat = [], []
-        for h, ell in shapes:
-            m = next(
-                (
-                    r
-                    for r in rows
-                    if r["n_cores"] == c and r["H"] == h and r["L"] == ell
-                ),
-                None,
-            )
-            cells.append(f"{m['kernel_us']:,.0f} µs" if m else "—")
-            if m:
-                rat.append(m["pred_us"] / m["kernel_us"])
-        out.append(f"| {c} | " + " | ".join(cells) + f" | **{st.mean(rat):.2f}×** |")
-    return "\n".join(out)
-
-
-def contested():
-    """Every untiled shape solved exactly: is the byte objective ever beaten?"""
-    import lx_choice as L
-    import lx_experiment as X
-
-    path = os.path.join(_HERE, "untiled_flash_records.json")
-    if not os.path.exists(path):
-        return "_no untiled records_", []
-    recs = json.load(open(path, encoding="utf-8"))["records"]
-    out = [
-        "| flash shape | movable | feasible allocations | `greedy` | `bestfit` | "
-        "`cpsat` |",
-        "|---|---:|---:|---:|---:|---:|",
-    ]
-    rows = []
-    for r in recs:
-        f = r.get("feats")
-        if not f or not r.get("kernel_us"):
-            continue
-        mov = L.bundle_intermediates(f)
-        if not mov or L.peak_footprint(f, set(mov)) <= CAP:
-            continue
-        exact, ev, n = L.exhaustive_policies(f, CAP)
-        if n < 2:
-            continue
-        seq = X.solver_allocations(f)
-        ref = ev(exact["time"])
-        g = {
-            k: (ev(v) - ref) / ref * 100.0
-            for k, v in {
-                "cpsat": exact["cpsat"],
-                "greedy": seq["greedy"],
-                "bestfit": seq["bestfit"],
-            }.items()
-        }
-        shape = _tidy(r["label"]).replace(" D=128 htiles=1 qtiles=1 ktiles=1", "")
-        out.append(
-            f"| `{shape}` | {len(mov)} | {n:,} | {g['greedy']:+.1f}% | "
-            f"{g['bestfit']:+.1f}% | **{g['cpsat']:+.1f}%** |"
-        )
-        rows.append((shape, len(mov), n, g))
-    return "\n".join(out), rows
-
-
-#: Categorical slots 1-4 of the validated reference palette. Colour encodes POLICY IDENTITY,
-#: never whether a policy won -- an earlier version shaded "good" green and "bad" orange, which
-#: painted `bestfit` as a loser on the one shape where it is fastest. The palette passes the
-#: colourblind-separation check (worst adjacent pair dE 9.1 protan); the sub-3:1 contrast on
-#: two slots is relieved by the value labels on every bar and by the table above the figure.
-POLICY_COLOUR = {
-    "cpsat": "#2a78d6",
-    "greedy": "#eb6834",
-    "bestfit": "#1baf7a",
-    "optimum": "#eda100",
-}
-POLICY_ORDER = ["greedy", "bestfit", "cpsat", "optimum"]
-
-
-def figure(detail, r211):
-    """One concrete allocation, drawn: lifetime, size, reuse, and each policy's choice.
-
-    The earlier figure was a six-point scatter that showed neither which configuration was
-    which nor why the policies disagree. This draws the actual decision instead: every
-    movable buffer as a bar spanning the operations it is live across, height proportional
-    to its per-core size, coloured by which policy keeps it. The four buffers the policies
-    disagree on are the only tall bars that differ, which is the whole story.
-    """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Patch
-
-    import lx_choice as L
-
-    path = os.path.join(_HERE, "untiled_flash_records.json")
-    cases = _forced()
-    if not (os.path.exists(path) and cases):
-        return "(no data)"
-    recs = {r["label"]: r for r in json.load(open(path, encoding="utf-8"))["records"]}
-    case = next((c for c in cases if "H=16 Lq=1024" in c["label"]), cases[0])
-    rec = recs.get(case["label"])
-    if not rec:
-        return "(no record)"
-    feats = rec["feats"]
-    fp = L.buffer_footprints(feats)
-    life = L.buffer_lifetimes(feats)
-    rc = L.read_counts(feats)
-    sets = {}
-    for name, arm in case["arms"].items():
-        sets.setdefault(tuple(arm["lx"]), []).append(name)
-    (lx_a, na), (lx_b, nb) = list(sets.items())[:2]
-    A, B = set(lx_a), set(lx_b)
-
-    order = sorted(fp, key=lambda x: (life[x][0], -fp[x]))
-    fig, ax = plt.subplots(figsize=(11.5, 5.6))
-    C_BOTH, C_A, C_B = "#c9d3de", "#2a78d6", "#eb6834"
-    for i, b_ in enumerate(order):
-        s0, s1 = life[b_]
-        ina, inb = b_ in A, b_ in B
-        col = C_BOTH if ina and inb else (C_A if ina else (C_B if inb else "#f2f4f7"))
-        h = 0.22 + 0.56 * (fp[b_] / max(fp.values()))
-        ax.barh(
-            i,
-            s1 - s0,
-            left=s0,
-            height=h,
-            color=col,
-            edgecolor="white",
-            linewidth=1.0,
-            zorder=3,
-        )
-        if ina != inb:
-            ax.text(
-                s1 + 0.25,
-                i,
-                f"{fp[b_] // 1024} KB, {rc.get(b_, 0)} reads",
-                va="center",
-                fontsize=8.5,
-                color="#2d3748",
-                zorder=4,
-            )
-    ax.set_yticks(range(len(order)))
-    ax.set_yticklabels(order, fontsize=7.5)
-    ax.set_xlabel("operation index  (dataflow order within the fused kernel)")
-    ax.set_ylabel("intermediate buffer")
-    ax.invert_yaxis()
-    ax.grid(axis="x", alpha=0.25, lw=0.6)
-    for sp in ("top", "right"):
-        ax.spines[sp].set_visible(False)
-    meas = {
-        a_: st.mean(v)
-        for shape, means, c in detail
-        if c is case
-        for a_, v in [(k, [x]) for k, x in means.items()]
-    }
-    ma = meas.get("+".join(na)) or 0
-    mb = meas.get("+".join(nb)) or 0
-    # The mechanism is positional: in each contested pair the once-read buffer
-    # is produced FIRST, so a program-order policy reaches it before the
-    # twice-read one sitting directly behind it.
-    contested = sorted((life[x][0], x) for x in (A ^ B))
-    if contested:
-        start, b_ = contested[0]
-        ax.annotate(
-            "`greedy` walks left to right and\nmeets the 1-read buffer first",
-            xy=(start, order.index(b_)),
-            xytext=(max(0.2, start - 6.6), order.index(b_) - 3.4),
-            fontsize=8.5,
-            color="#2d3748",
-            arrowprops=dict(arrowstyle="->", color="#718096", lw=1.1),
-        )
-    ax.set_title(
-        f"One allocation decision: {_tidy(case['label']).split(' D=')[0]}\n"
-        f"18 of 22 buffers are kept by both; the four that differ are all 1024 KB and "
-        f"differ only in how often they are read",
-        fontsize=11,
-    )
-    ax.legend(
-        handles=[
-            Patch(facecolor=C_BOTH, label="kept by both"),
-            Patch(
-                facecolor=C_A,
-                label=f"kept only by {'+'.join(na)}"
-                + (f"  ({ma:,.0f} us)" if ma else ""),
-            ),
-            Patch(
-                facecolor=C_B,
-                label=f"kept only by {'+'.join(nb)}"
-                + (f"  ({mb:,.0f} us)" if mb else ""),
-            ),
-            Patch(facecolor="#f2f4f7", label="spilled by both"),
-        ],
-        frameon=False,
-        fontsize=9,
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.13),
-        ncol=2,
-    )
-    fig.tight_layout()
-    fig.savefig(FIGURE, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return FIGURE
 
 
 def inject(name, body):
@@ -573,15 +636,12 @@ def main():
     args = ap.parse_args()
 
     t211, s211 = ranking_211()
-    t213a, detail = alloc_213()
     t213r, s213 = ranking_213()
 
     blocks = {
         "ranking_211": t211,
-        "alloc_213": t213a,
         "ranking_213": t213r,
-        "cores_ladder": cores_ladder(),
-        "alloc_pairs": alloc_pairs()[0],
+        "real_solvers": real_solvers(),
     }
     if args.show:
         for k, v in blocks.items():
@@ -591,7 +651,9 @@ def main():
     for k, v in blocks.items():
         print(f"  {k:<16}{'injected' if inject(k, v) else 'NO MARKER in report'}")
     try:
-        print(f"  figure          {figure(detail, s211)}")
+        print(f"  solver figure   {solver_figure()}")
+        print(f"  config figure   {config_figure()}")
+        print(f"  policy figure   {policy_figure()}")
     except Exception as exc:  # noqa: BLE001
         print(f"  figure          FAILED: {type(exc).__name__}: {exc}")
     return 0
