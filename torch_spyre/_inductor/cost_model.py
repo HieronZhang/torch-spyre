@@ -87,14 +87,18 @@ reads ``arg0`` in both ``amax`` and ``sub``, but the fused kernel loads it from 
 and serves the 2nd read on-chip -- the naive per-op sum double-counts it (~+25% at the
 floor; at the floor softmax runs at ~100 GB/s = the balanced-copy rate, i.e. 1 read +
 1 write, confirming the once-count). (2) UNDERFILL: tiling an output dim cuts each core's
-per-tile height (rpc = ROWS/(cores*tiles)); a short tile underfills the streaming pipeline.
-``coarse_underfill_eff = min(cap, (rpc/r_full)**exp)`` (cap~0.95, r_full~13, exp~0.68),
-SEPARATE from the matmul ``pt_eff``. Re-fit on the softmax rpc sweep; the cross-COLS control
-(COLS 2048 vs 4096 at matched rpc -> per-byte cost equal to +/-4%) proved the derate keys on
-ROWS (rpc), NOT tile bytes, and that it is the tile-SIZE effect, not the tile COUNT L (four
-T=4..32 points at rpc=16 cost the same). Efficiency plateaus ~0.95 at rpc 16-32 and cliffs
-below (rpc4~0.45, rpc2~0.28). KNOWN residuals: a mild efficiency decline above rpc~32
-(rpc128~0.82, unmodeled, rows-driven); and when the per-core WORKING SET overflows the
+per-tile SIZE -- rpc = ROWS/(cores*tiles) rows of COLS -- and a small tile underfills the
+streaming pipeline. ``coarse_underfill_eff = min(cap, (rpc/r_full)**exp *
+(COLS/col_ref)**col_exp)`` (cap~1.08, r_full~7.9 at col_ref 2048, exp~0.50, col_exp~0.38),
+SEPARATE from the matmul ``pt_eff``. Re-fit 2026-08-11 on 48 tiled softmax rows at
+cores=32 spanning rpc 2..256 AND COLS 128..4096; the width term is that re-fit's finding
+and REPLACES the earlier rows-only reading, whose cross-COLS control (2048 vs 4096) sat
+entirely inside the plateau and so could not see a width dependence. It remains a
+tile-SIZE effect, not a tile-COUNT one (four T=4..32 points at rpc=16 cost the same).
+KNOWN residuals: at cores 8 and 16 the memory term has no core-count scaling at all, so a
+coarse-tiled softmax there is UNDER-predicted by 30-50% (identified and controlled --
+matched tile shape, tile count ruled out -- but deliberately unmodeled; see the report);
+and when the per-core WORKING SET overflows the
 practically available LX (~512 KB/core) the intermediates SPILL to HBM. The extractor already
 counts those spilled bytes as HBM (they show up read+written), so it is NOT a byte miss -- but
 that spilled traffic runs SLOWER than the modeled rate, so the effective bandwidth is DERATED
@@ -339,28 +343,78 @@ class CostParams:
     # keying tile_rows_per_core on the row-dim split, not total cores).
     underfill_exponent: float = 0.35
     # COARSE-TILING (fused pointwise / softmax) underfill -- SEPARATE from the matmul
-    # pt_eff above. Re-fit 2026-07-08 on the softmax rpc sweep (rpc = per-core rows per
-    # tile = ROWS/(cores*T)); the cross-COLS control (COLS 2048 vs 4096 at matched rpc,
-    # per-byte cost equal to +/-4%) proved the derate keys on ROWS (rpc), NOT tile
-    # bytes. eff = min(cap, (rpc/r_full)**exp): plateau ~0.95 at rpc~16-32, steep
-    # underfill cliff below (rpc4~0.45, rpc2~0.28). A MILD rise above rpc~32 (rpc128
-    # eff~0.82) is a known, unmodeled residual (rows-driven, mechanism TBD -- within the
-    # +/-15-20% bar).
-    coarse_underfill_rfull: float = 13.0
-    coarse_underfill_exp: float = 0.68
-    coarse_underfill_cap: float = 0.95
+    # pt_eff above. RE-FIT 2026-08-11 as a TWO-variable surface on 48 tiled
+    # softmax_row_tiling rows at cores=32 (h = ROWS/(cores*T) = 2..256, COLS =
+    # 128..4096), backing the derate out of the measurement with the LX-spill term also
+    # disabled so the two are not entangled:
+    #
+    #   eff = min(cap, (h/r_full)**exp * (COLS/col_ref)**col_exp)
+    #
+    # WHY IT GAINED A WIDTH. The previous single-variable fit keyed on ROWS alone, on the
+    # strength of a cross-COLS control at COLS 2048 vs 4096. That control was blind, not
+    # wrong: at both those widths the required efficiency is already at the plateau for
+    # every h it sampled, so it could not see a width term. Sweeping down to COLS 128
+    # shows the required efficiency rising steadily with width at fixed h (at h=4:
+    # 0.18 -> 0.32 -> 0.49 -> 0.68 for COLS 128/256/512/2048), i.e. a narrow tensor needs
+    # a much taller tile to fill the pipeline. The fitted exponents (0.50 on h, 0.38 on
+    # COLS) say the governing quantity is close to the per-core TILE SIZE h*COLS -- the
+    # bytes each core streams per tile -- with a weak residual preference for taller
+    # tiles. That is the opposite of the retired conclusion, and it is the reading the
+    # mechanism (a stream too short to amortise pipeline fill) predicted all along.
+    #
+    # RMS 9.0 % in log units over the 48 fitted rows, 4.8 % over the 29 with COLS >= 1024
+    # (the in-scope width band -- see eval_model.in_scope). The width evidence itself
+    # comes from COLS 128..512, which the standing scope decision puts OUT of the scored
+    # population: those rows fix the shape but are not part of any accuracy claim.
+    coarse_underfill_rfull: float = 7.9  # rows/core at full fill, AT col_ref
+    coarse_underfill_exp: float = 0.50  # tile-HEIGHT exponent
+    coarse_underfill_col_ref: float = 2048.0  # width r_full is quoted at
+    coarse_underfill_col_exp: float = 0.38  # tensor-WIDTH exponent
+    # PLATEAU. 1.08, not 1.0: it is a fitted RATIO, not a physical efficiency. On this
+    # build a coarse-tiled fused softmax with a large per-core tile runs ~8 % FASTER than
+    # the modeled memory term, so the surface has to be able to speed the model up. The
+    # offset is fused-softmax-specific (pointwise, which sets the base rate, runs -6 %
+    # mean the other way), so it is absorbed here rather than in bw_peak_gbps -- but it is
+    # DOUBLE DUTY, and the deciding experiment is an untiled COLS sweep at cores=32: the
+    # three untiled in-scope rows we have disagree (+22 %, -14 %, -14 %), too few to
+    # separate a base-rate offset from a tiling one. Weakly identified: 1.06..1.11 span
+    # 0.1 pp of RMS.
+    coarse_underfill_cap: float = 1.08
+    # MATMUL keeps the PRE-2026-08-11 rows-only curve, frozen. Every row behind the new
+    # surface is a softmax row; a coarse-tiled matmul was always priced by extrapolating
+    # the softmax fit onto it, and nothing in the re-sweep says the new shape transfers.
+    # The one piece of evidence available says it does not: swapping tiled matmul onto the
+    # new surface moves matmul_row from 38.3 to 41.7 % RMS (mean -36.4 -> -39.8), because
+    # the shallower height curve stops derating its short tiles. That is weak evidence --
+    # matmul_row under-predicts by a third for reasons unrelated to this term -- but it
+    # points the wrong way, so the matmul branch does not move. Re-fit it when a coarse
+    # matmul tile-count sweep exists. See `coarse_underfill_eff_matmul`.
+    coarse_underfill_rfull_matmul: float = 13.0
+    coarse_underfill_exp_matmul: float = 0.68
+    coarse_underfill_cap_matmul: float = 0.95
+    #: Smallest per-core tile height the MATMUL curve was fitted at (see `_eff0` sibling).
+    coarse_underfill_h0_matmul: float = 2.0
     # LX-SPILL bandwidth derate. When a coarse-tiled kernel's per-core working set (its
     # live intermediate tiles, ~2 of them) overflows the practically available LX (~512
     # KB/core), those intermediates spill to HBM. The extractor ALREADY counts the
     # spilled bytes as HBM (they show up read+written), so this is NOT a byte miss --
     # but that spilled traffic runs SLOWER than the modeled rate, so the effective
     # bandwidth is derated: BW *= min(1, (lx_spill_cap / ws_per_core) ** lx_spill_exp),
-    # ws > cap only. Softmax-calibrated: 10.7 -> 6.0 % RMS, worst -39.8 -> -17.8 %, on
-    # softmax_row_tiling / 32 cores / tiles>=2 / in-scope (n=60). NOTE 512 KB is NOT a
-    # documented capacity -- this repo documents 2 MB physical and ~1.6 MB allocatable
-    # per core. The value is fitted; do not describe it as matching the hardware.
+    # ws > cap only. NOTE 512 KB is NOT a documented capacity -- this repo documents 2 MB
+    # physical and ~1.6 MB allocatable per core. The value is fitted; do not describe it
+    # as matching the hardware.
+    #
+    # EXPONENT RE-FIT 2026-08-11, 0.15 -> 0.06, JOINTLY with the coarse-underfill surface
+    # above. The two act on the same rows and both fall off with the per-core tile, so
+    # fitting either alone hands it the other's error: the 0.15 fit was taken with the
+    # underfill surface keyed on rows only, and on the current build it over-derated the
+    # large-tile end by up to 24 % where the measurement wants ~7 %. The decline itself is
+    # real and survives the joint fit -- D falls from 1.13 at ws 256 KB to 0.98 at 3 MB --
+    # it is just much milder than the old value. Weakly identified (0.03..0.09 spans
+    # 0.07 pp of RMS); the CAP is barely identified at all (256 KB..512 KB spans 0.02 pp),
+    # so it is left where it was.
     lx_spill_cap_bytes: float = 524288.0  # ~512 KB/core practically available LX
-    lx_spill_exp: float = 0.15
+    lx_spill_exp: float = 0.06
     # Matmul-specific spill calibration (see _lx_spill_bw_derate). Defaults make the
     # term fire only on the largest matmul tiles (it acts on 19 in-scope rows).
     # The cap is only weakly identified: 1 MB..infinity spans 0.44 pp of RMS.
@@ -544,6 +598,14 @@ class CostParams:
     tx_cat1_b: float = 0.8
     tx_cat1_d: float = 0.0
     tx_cat1_floor_gbps: float = 90.0
+    #: Smallest value the coarse-underfill surface was fitted at -- its support corner
+    #: (COLS 128, h 4). Below it the fit is not evaluated; the curve is anchored here and
+    #: continued with `gamma`. Was a bound on h alone; now on the surface VALUE, because
+    #: with a width term the support boundary is no longer a single tile height.
+    coarse_underfill_eff0: float = 0.248
+    #: Decay exponent BELOW the anchor. Not fitted -- see `coarse_underfill_eff`. Small
+    #: enough to bound the derate, non-zero so the tile still orders configurations.
+    coarse_underfill_gamma: float = 0.1
     bw_reduce_outer_gbps: float = 113.0  # cross-row (dim0) reduction (sumcol)
     # Row-reduction READ rate falls with ROWS (the read pipeline degrades as each core
     # streams more rows), op-independent, saturating. Fit on the reduction-rows sweep
@@ -645,33 +707,88 @@ def underfill_eff(
     return min(1.0, (rows_per_core / r_full) ** p.underfill_exponent)
 
 
+def _op_cols(o) -> float:
+    """The op's row WIDTH: the longest last logical dim over its operands. This is the
+    length of one contiguous run in the device layout, so it is what sets how much a core
+    streams per row -- used by both the underfill surface and the LX working set."""
+    return max((a.logical[-1] for a in o.args if a.logical), default=0)
+
+
 def coarse_underfill_eff(
-    rpc: float, params: CostParams | None = None, cap: float | None = None
+    rpc: float,
+    cols: float,
+    params: CostParams | None = None,
+    cap: float | None = None,
 ) -> float:
     """Pipeline-fill efficiency for a COARSE-tiled (fused pointwise / softmax) kernel whose
-    per-core tile is ``rpc`` rows tall (rpc = ROWS/(cores*tiles)). DISTINCT from the matmul
-    pt_eff (``underfill_eff``): re-fit on the softmax rpc sweep, where efficiency plateaus
-    at ``coarse_underfill_cap`` (~0.95) around rpc 16-32 and derates as
-    ``(rpc/r_full)**exp`` below (rpc4~0.45, rpc2~0.28). The cross-COLS control proved this
-    keys on ROWS (rpc), not tile bytes. ``rpc<=0`` (unknown/untiled) -> 1.0 (no derate).
-    (A mild efficiency decline above rpc~32 is a known, unmodeled residual.)
+    per-core tile is ``rpc`` rows tall (rpc = ROWS/(cores*tiles)) and ``cols`` wide.
+    DISTINCT from the matmul pt_eff (``underfill_eff``). ``rpc<=0`` (untiled) or
+    ``cols<=0`` (width unknown) -> 1.0 (no derate).
 
-    ``cap`` overrides the plateau. The 0.95 plateau is a SOFTMAX measurement; there is no
-    matmul measurement supporting it, and on a tiled matmul the tile is almost always far
-    above the knee (``tile_rows_per_core`` 32-1024, median 64, vs ``r_full`` = 13), so the
-    term would contribute ONLY its cap -- a flat 5 % memory penalty that models nothing.
-    The caller passes ``cap=1.0`` for matmul so the SHAPE part (the knee, which does fire
-    on 30 of 175 tiled-matmul rows and is a real short-tile effect) is kept while the
-    softmax-specific plateau is not applied where it was never calibrated. Same reasoning
-    already applied to the sibling ``_lx_spill_bw_derate``, which is gated off for matmul.
+        eff = min(cap, (rpc/r_full)**exp * (cols/col_ref)**col_exp)
+
+    BOTH variables matter, and the width one is the 2026-08-11 correction: the surface
+    used to key on ``rpc`` alone, and over-predicted a wide tiled softmax by 26-54 % while
+    under-predicting a narrow one. What the tile really has to be is BIG -- the fitted
+    exponents (0.50, 0.38) put the governing quantity close to ``rpc*cols``, the elements
+    each core streams per tile -- so ``r_full`` is now the full-fill height AT ``col_ref``,
+    and a tensor half as wide needs ~1.7x the height. See CostParams for the fit.
+
+    SOFTMAX / fused-pointwise ONLY. A coarse-tiled MATMUL goes through
+    ``coarse_underfill_eff_matmul``, which is the pre-re-fit rows-only curve held frozen:
+    every row behind this surface is a softmax row, and the one check available says the
+    new shape does not transfer to matmul. Same split as the sibling
+    ``_lx_spill_bw_derate``, which already carries a separate cap/exponent pair for matmul.
+    """
+    p = params or CostParams()
+    if rpc <= 0 or cols <= 0:
+        return 1.0
+    raw = (rpc / p.coarse_underfill_rfull) ** p.coarse_underfill_exp * (
+        cols / p.coarse_underfill_col_ref
+    ) ** p.coarse_underfill_col_exp
+    # OUTSIDE THE FIT, DO NOT EXTRAPOLATE THE FIT. The surface is calibrated over a
+    # (rpc, cols) box whose smallest corner -- cols 128, rpc 4 -- puts it at
+    # `coarse_underfill_eff0`. Below that it was being evaluated anyway, and being an
+    # unbounded power law it kept diverging: a recorded flash bundle carried rpc 0.0078,
+    # giving eff 0.0065 -- a 155x derate that inflated its prediction 42x.
+    #
+    # So the curve is ANCHORED at the smallest VALUE it was fitted at and continues below
+    # with a much weaker exponent. The anchor is on the surface value rather than on rpc
+    # because with two variables the edge of the support is no longer one tile height.
+    # Two properties matter:
+    #   * inside the fit nothing changes at all, so no calibrated point moves;
+    #   * below it the tile still ORDERS configurations -- a plain floor does not, and
+    #     measurably collapsed two distinct flash tilings onto one prediction.
+    #
+    # `coarse_underfill_gamma` is a FORM choice, not a fitted constant: the only data below
+    # the anchor is six flash bundles, far too few to fit an exponent, and no more can be
+    # collected while coarse tiling does not compile. Re-fit it when tiled measurements
+    # exist there again.
+    ceil_ = p.coarse_underfill_cap if cap is None else cap
+    e0 = p.coarse_underfill_eff0
+    if raw >= e0:
+        return min(ceil_, raw)
+    return min(ceil_, e0) * (raw / e0) ** p.coarse_underfill_gamma
+
+
+def coarse_underfill_eff_matmul(rpc: float, params: CostParams | None = None) -> float:
+    """Coarse-tiling underfill for a tiled MATMUL: ``min(0.95, (rpc/13)**0.68)``, anchored
+    at ``rpc = 2`` and continued below with ``gamma``.
+
+    This is the surface as it stood before the 2026-08-11 two-variable re-fit, kept for
+    matmul alone and deliberately FROZEN -- see ``coarse_underfill_rfull_matmul``. It is
+    an extrapolation from softmax either way (no matmul measurement calibrates it), but it
+    is the extrapolation the tiled-matmul accuracy figures were taken under, and the new
+    one scores worse there. ``rpc<=0`` (untiled/unknown) -> 1.0.
     """
     p = params or CostParams()
     if rpc <= 0:
         return 1.0
-    return min(
-        p.coarse_underfill_cap if cap is None else cap,
-        (rpc / p.coarse_underfill_rfull) ** p.coarse_underfill_exp,
-    )
+    h0, ceil_ = p.coarse_underfill_h0_matmul, p.coarse_underfill_cap_matmul
+    r_full, exp = p.coarse_underfill_rfull_matmul, p.coarse_underfill_exp_matmul
+    if rpc >= h0:
+        return min(ceil_, (rpc / r_full) ** exp)
+    return min(ceil_, (h0 / r_full) ** exp) * (rpc / h0) ** p.coarse_underfill_gamma
 
 
 def _lx_spill_working_set(ops: list) -> float:
@@ -680,8 +797,7 @@ def _lx_spill_working_set(ops: list) -> float:
     ws = 0.0
     for o in ops:
         if o.tiles_output_dim and o.tile_rows_per_core > 0:
-            cols = max((a.logical[-1] for a in o.args if a.logical), default=0)
-            ws = max(ws, 2.0 * o.tile_rows_per_core * cols * o.dtype_bytes)
+            ws = max(ws, 2.0 * o.tile_rows_per_core * _op_cols(o) * o.dtype_bytes)
     return ws
 
 
@@ -1122,8 +1238,9 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     a fused kernel loads each distinct EXTERNAL input from HBM ONCE (re-reads served
     on-chip), so a shared input is not double-counted; reads and writes are summed over
     the bundle before the turnaround term (shared bus). ``eff_underfill`` derates the
-    bandwidth term when OUTPUT-dim (coarse) tiling shortens each core's per-tile height
-    (``coarse_underfill_eff``, keyed on per-core rows per tile).
+    bandwidth term when OUTPUT-dim (coarse) tiling shrinks each core's per-tile stream
+    (``coarse_underfill_eff``, keyed on per-core rows per tile AND the row width;
+    ``coarse_underfill_eff_matmul``, rows only, for a tiled matmul).
     Matmul ops add an ADDITIVE compute term (MACs/cores/(mac_peak*pt_eff)).
     """
     p = params or CostParams()
@@ -1253,18 +1370,17 @@ def predict_ops(ops: list, params: CostParams | None = None) -> float:
     # the streaming pipeline, derating the bandwidth term. The smallest tile in the
     # bundle governs (worst underfill). 1.0 (no derate) when nothing is output-tiled.
     eff = 1.0
+    # A matmul bundle keeps the pre-re-fit rows-only curve: the new surface is fitted
+    # entirely on softmax and scores WORSE on tiled matmul (see the CostParams note).
+    _mm = any(getattr(o, "is_matmul", False) for o in ops)
     for o in ops:
         if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
-            # NOTE (2026-08-03): passing `cap=1.0` here for matmul is the RIGHT change
-            # on its own terms -- the 0.95 plateau is a softmax measurement and a tiled
-            # matmul's tile is far above the knee, so the term contributes only a flat 5
-            # % that models nothing. It is NOT applied yet because it is entangled with
-            # the loop-invariant re-read: alone it makes the model faster while
-            # `matmul_row` already UNDER-predicts, so it regresses (RMS 21.8 -> 22.5,
-            # mean -13.7 -> -14.8). Together with the re-read at alpha=1 it helps (RMS
-            # 18.2 -> 16.6). Ship the PAIR, once the extractor sets per-arg
-            # `loop_factor`.
-            eff = min(eff, coarse_underfill_eff(o.tile_rows_per_core, p))
+            e = (
+                coarse_underfill_eff_matmul(o.tile_rows_per_core, p)
+                if _mm
+                else coarse_underfill_eff(o.tile_rows_per_core, _op_cols(o), p)
+            )
+            eff = min(eff, e)
     # LX-SPILL bandwidth derate: a coarse-tiled kernel whose per-core working set (~2
     # live intermediate tiles) overflows LX spills to HBM, and that spilled traffic runs
     # slower than the modeled rate. Bytes are already counted as HBM; here we derate the
@@ -1392,12 +1508,16 @@ def explain(ops: list, params: CostParams | None = None) -> str:
     )
     turn = p.rw_turnaround_ns_per_byte * min(R, W)
     # Underfill derate (output-dim tiling): smallest per-core tile governs.
-    eff, eff_rows = 1.0, 0.0
+    eff, eff_rows, eff_cols = 1.0, 0.0, 0.0
     for o in ops:
         if o.loop_trip > 1 and o.tiles_output_dim and o.tile_rows_per_core > 0:
-            e = coarse_underfill_eff(o.tile_rows_per_core, p)
+            e = (
+                coarse_underfill_eff_matmul(o.tile_rows_per_core, p)
+                if is_mm
+                else coarse_underfill_eff(o.tile_rows_per_core, _op_cols(o), p)
+            )
             if e < eff:
-                eff, eff_rows = e, o.tile_rows_per_core
+                eff, eff_rows, eff_cols = e, o.tile_rows_per_core, _op_cols(o)
     # Matmul compute (additive): sum the per-op compute term for any matmul ops.
     mm_us, mm_lines = 0.0, []
     for o in ops:
@@ -1441,10 +1561,22 @@ def explain(ops: list, params: CostParams | None = None) -> str:
         f"= {turn / 1000:.2f} us"
     )
     if eff < 1.0:
+        if is_mm:
+            shape = (
+                f"({eff_rows:.1f}/{p.coarse_underfill_rfull_matmul:g})"
+                f"**{p.coarse_underfill_exp_matmul}"
+            )
+            ceil_ = p.coarse_underfill_cap_matmul
+        else:
+            shape = (
+                f"({eff_rows:.1f}/{p.coarse_underfill_rfull:g})"
+                f"**{p.coarse_underfill_exp}"
+                f" * ({eff_cols:.0f}/{p.coarse_underfill_col_ref:.0f})"
+                f"**{p.coarse_underfill_col_exp}"
+            )
+            ceil_ = p.coarse_underfill_cap
         lines.append(
-            f"     eff_underfill = min({p.coarse_underfill_cap},"
-            f"({eff_rows:.1f}/{p.coarse_underfill_rfull:.0f})"
-            f"**{p.coarse_underfill_exp}) = {eff:.3f}  "
+            f"     eff_underfill = min({ceil_}, {shape}) = {eff:.3f}  "
             f"-> (base+turn)/eff = {(base + turn) / eff / 1000:.2f} us"
         )
     split_us = 0.0
