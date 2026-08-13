@@ -124,6 +124,10 @@ _LBL_FA = re.compile(
 )
 _LBL_FA_WD = re.compile(r"\bwd=(\S+)")
 _RUN_HDR = re.compile(r"^===\s+(.*?)\s+===\s*$")
+# A label that IS the environment, e.g. `BENCH_COLS=1024 BENCH_OP=mmwd WD_M=4 ...`.
+# The sweep writes its run headers this way, so for anything it measured the label
+# is the authoritative record of what ran -- more complete than the parsed fields.
+_LBL_ENV = re.compile(r"[A-Z][A-Z0-9_]*=\S*(?:\s+[A-Z][A-Z0-9_]*=\S*)*")
 
 
 def _shape_env(r):
@@ -214,6 +218,17 @@ def _env_from_record(r):
     op = r.get("op")
     if not op:
         return None  # the parser never identified the op; nothing to run
+
+    # FAST PATH, and the exact one. When the label is the environment itself, use it
+    # verbatim rather than reconstructing: reconstruction reads structured fields and
+    # prose-style labels (`M=.. K=.. N=..`), so on an env-style label it silently drops
+    # BENCH_N, BENCH_B and every WD_* -- and a config that reconstructs to fewer
+    # variables than it ran with does not match its own plan entry, which made
+    # --skip-measured offer to re-measure 692 configurations that were already done.
+    label = (r.get("label") or "").strip()
+    if label and _LBL_ENV.fullmatch(label):
+        return dict(kv.split("=", 1) for kv in label.split())
+
     env = {"BENCH_OP": op}
     for field, var in (
         ("rows", "BENCH_ROWS"),

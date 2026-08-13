@@ -278,6 +278,12 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--smoke", action="store_true", help="one compile per program")
     ap.add_argument("--analyze", action="store_true", help="rank results, no device")
+    ap.add_argument(
+        "--resume",
+        action="store_true",
+        help="measure only the (config, solver) pairs --out has no measurement for. "
+        "A pair that FAILED is retried, since a timeout or a crash is not a result.",
+    )
     args = ap.parse_args()
 
     if args.analyze:
@@ -291,10 +297,26 @@ def main():
                 seen.add(c["program"])
                 sel.append(c)
         cfgs = sel
+    # Resume by RESULT, not by position: the run order is deterministic but a config can
+    # be skipped mid-sweep (the greedy short-circuit below), so "how far did it get" is
+    # not the same question as "what is missing".
+    have: set = set()
+    if args.resume and os.path.exists(args.out):
+        with open(args.out, encoding="utf-8") as fh:
+            for line in fh:
+                r = json.loads(line)
+                if r.get("kernel_us") is not None:
+                    have.add((r["label"], r["solver"]))
+        todo = sum(
+            1 for c in cfgs for s in SOLVERS if (c["label"], s) not in have
+        )
+        print(f"resuming: {len(have)} pairs already measured, {todo} to run")
+
     if args.dry_run:
-        print(f"{len(cfgs)} configs x {len(SOLVERS)} solvers")
-        for c in cfgs:
-            print(f"  {c['label']}")
+        pairs = [(c["label"], s) for c in cfgs for s in SOLVERS if (c["label"], s) not in have]
+        print(f"{len(cfgs)} configs x {len(SOLVERS)} solvers -> {len(pairs)} runs")
+        for lbl, s in pairs:
+            print(f"  {lbl:50s} {s}")
         return 0
 
     deadline = time.time() + args.budget_min * 60
@@ -306,6 +328,9 @@ def main():
             stopped = c["label"]
             break
         solvers = ["greedy"] if args.smoke else SOLVERS
+        solvers = [s for s in solvers if (c["label"], s) not in have]
+        if not solvers:
+            continue
         for solver in solvers:
             env = dict(c["env"])
             env["LAYOUT_SOLVER"] = solver
@@ -335,7 +360,11 @@ def main():
             print(
                 f"  {c['label'][:38]:<40}{solver:<10}{(len(got or [])):>5}{shown:>11}"
             )
-            if us is None and solver == "greedy" and not args.smoke:
+            # Short-circuit on a greedy failure: if the DEFAULT policy cannot compile a
+            # config, the other three are usually a waste of device time. Suppressed
+            # under --resume, where the whole point is to fill in the pairs an earlier
+            # short-circuit skipped.
+            if us is None and solver == "greedy" and not args.smoke and not args.resume:
                 print("    (greedy failed -- skipping the other solvers)")
                 break
     fh.close()
